@@ -1125,7 +1125,10 @@ class Database:
                 except (TypeError, ValueError):
                     pass
             if not doc and title and release_year and not str(imdb_id or "").startswith("tgauto"):
-                doc = await col.find_one({"title": title, "release_year": release_year})
+                doc = await col.find_one({
+                    "title": title, "release_year": release_year,
+                    "imdb_id": {"$not": {"$regex": "^tgauto"}},
+                })
             if doc:
                 return doc, f"storage_{db_index}", db_index
         return None, None, None

@@ -655,7 +655,7 @@
                         <input id="ma-m-backdrop" type="url" class="ma-input" placeholder="Left empty = generated from title">
                     </div>
                 </div>
-                <p class="text-xs text-text-secondary -mt-2">Only <span class="text-text font-semibold">Title *</span>, stream link and quality are required. Empty optional fields are auto-filled &mdash; poster &amp; backdrop become a random gradient cover with the title text.</p>
+                <p class="text-xs text-text-secondary -mt-2">For a single manual addition, title, stream link and quality are required; empty optional fields are auto-filled. For auto-add, all fields are optional: missing titles use filenames, artwork uses generated covers, and genres, ratings and descriptions are not invented. Search selections copy metadata rather than attaching uploads to an existing title.</p>
 
                 <!-- TV episode fields -->
                 <div id="ma-tv-fields" class="hidden grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -757,7 +757,7 @@
             const res = await fetch('/api/media/auto-add', {method: 'DELETE'});
             if (!res.ok) throw new Error('Could not stop auto-add.');
             maRenderAutoStatus(await res.json());
-            showToast('Auto-add stopped. Already captured files are kept.', 'success', 'Auto-add');
+            showToast('Auto-add stopped. An in-progress file may finish; captured files are kept.', 'success', 'Auto-add');
         } catch (e) {
             showToast(e.message, 'error', 'Auto-add');
         } finally { btn.disabled = false; }

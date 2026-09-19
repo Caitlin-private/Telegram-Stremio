@@ -2124,6 +2124,10 @@ async def _set_online_manual_session(payload: dict, media_type: str, selected_id
 #----- Real (TMDB/IMDb) titles parse season/episode/quality from each file; personal
 #----- (hand-made) titles need a season for TV since their files carry no metadata.
 async def set_manual_session_api(payload: dict) -> dict:
+    from Backend.helper.channel_auto_add import get_session
+    capture = await get_session(db)
+    if capture["status"] in ("active", "scheduled"):
+        raise HTTPException(status_code=409, detail="Turn off auth-channel auto-add before starting a manual upload session.")
     tmdb_id = payload.get("tmdb_id")
     db_index = payload.get("db_index")
     media_type = _normalize_media_type(payload.get("media_type", "movie"))

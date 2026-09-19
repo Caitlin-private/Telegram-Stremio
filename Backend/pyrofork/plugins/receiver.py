@@ -212,6 +212,10 @@ async def file_receive_handler(client: Client, message: Message):
         if accepts_message(capture, uploaded_at):
             try:
                 async with db_lock:
+                    current = await get_session(db)
+                    # Stop/restart cancels waiting captures; an insert already in progress finishes.
+                    if current.get("session_id") != capture.get("session_id") or not accepts_message(current, uploaded_at):
+                        return
                     await capture_message(db, message, capture)
                 LOGGER.info(f"[Auto Add] Captured auth-channel message {message.id}.")
             except Exception as exc:

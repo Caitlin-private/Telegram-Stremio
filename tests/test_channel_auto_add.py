@@ -100,4 +100,27 @@ class SessionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(stored["expires_at"])
         self.assertEqual(session["status"], "active")
         state.find_one.return_value = dict(stored)
-        self.assertEqual((await capture.get_session(db))["session_id"], session
+        self.assertEqual((await capture.get_session(db))["session_id"], session["session_id"])
+        self.assertNotIn("_id", await capture.get_session(db))
+        self.assertEqual((await capture.stop_session(db))["status"], "off")
+        state.update_one.assert_awaited_once_with(
+            {"_id": capture.STATE_ID}, {"$set": {"enabled": False}}, upsert=True,
+        )
+
+    async def test_missing_catalog_is_rejected_before_saving(self):
+        db = self.make_db()
+        db.get_custom_catalog.return_value = None
+        with self.assertRaises(ValueError):
+            await capture.start_session(db, {"catalog_ids": ["missing"]})
+        db.dbs["tracking"]["state"].replace_one.assert_not_awaited()
+
+    async def test_exclusive_catalog_cannot_be_combined(self):
+        db = self.make_db()
+        db.get_custom_catalog.side_effect = [{"exclusive": True}, {"exclusive": False}]
+        with self.assertRaises(ValueError):
+            await capture.start_session(db, {"catalog_ids": ["one", "two"]})
+        db.dbs["tracking"]["state"].replace_one.assert_not_awaited()
+
+
+if __name__ == "__main__":
+    unittest.main()
