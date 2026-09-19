@@ -44,6 +44,7 @@ def normalize_batch(payload):
             raise ValueError("Select between 1 and 20 catalogues.")
         if any(not isinstance(c, str) or not re.fullmatch(r"[0-9a-fA-F]{24}", c) for c in catalogs):
             raise ValueError("Invalid catalogue ID.")
+        catalogs = [c.lower() for c in catalogs]
     return action, list(refs.values()), list(dict.fromkeys(catalogs)) if action == "add_to_catalogs" else []
 
 

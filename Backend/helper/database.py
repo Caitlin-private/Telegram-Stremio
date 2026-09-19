@@ -117,6 +117,7 @@ class Database:
         for collection_name in ("movie", "tv"):
             try:
                 await db[collection_name].create_index([("tmdb_id", ASCENDING)])
+                await db[collection_name].create_index([("updated_on", DESCENDING), ("_id", DESCENDING)])
                 await db[collection_name].create_index([("imdb_id", ASCENDING)])
                 await db[collection_name].create_index([("kitsu_id", ASCENDING)])
             except Exception as e:

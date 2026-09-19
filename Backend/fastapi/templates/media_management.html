@@ -369,80 +369,6 @@
     `;
     }
 
-    function updatePagination(currentPage, totalPages) {
-        const pagination = document.getElementById('pagination');
-        const paginationInner = document.getElementById('pagination-inner');
-
-        if (totalPages <= 1) {
-            pagination.classList.add('hidden');
-            paginationInner.innerHTML = '';
-            return;
-        }
-
-        pagination.classList.remove('hidden');
-        let paginationHTML = '';
-
-        if (currentPage > 1) {
-            paginationHTML += `
-                <button onclick='loadMedia(${currentPage - 1}, ${JSON.stringify(currentSearch)})'
-                        class="px-4 py-2 rounded-2xl glass-panel hover:bg-surface-2 text-text text-sm font-bold transition border border-hairline">
-                    Previous
-                </button>
-            `;
-        }
-
-        const startPage = Math.max(1, currentPage - 2);
-        const endPage = Math.min(totalPages, currentPage + 2);
-
-        if (startPage > 1) {
-            paginationHTML += `
-                <button onclick='loadMedia(1, ${JSON.stringify(currentSearch)})'
-                        class="px-4 py-2 rounded-2xl glass-panel hover:bg-surface-2 text-text text-sm font-bold transition border border-hairline">
-                    1
-                </button>
-            `;
-            if (startPage > 2) {
-                paginationHTML += `<span class="px-2 text-text-secondary text-sm">...</span>`;
-            }
-        }
-
-        for (let i = startPage; i <= endPage; i++) {
-            const isActive = i === currentPage;
-            paginationHTML += `
-                <button onclick='loadMedia(${i}, ${JSON.stringify(currentSearch)})'
-                        class="px-4 py-2 rounded-2xl text-sm font-bold transition border
-                               ${isActive
-                                   ? 'bg-primary text-white border-primary shadow-lg shadow-primary/20'
-                                   : 'glass-panel hover:bg-surface-2 text-text border-hairline'}">
-                    ${i}
-                </button>
-            `;
-        }
-
-        if (endPage < totalPages) {
-            if (endPage < totalPages - 1) {
-                paginationHTML += `<span class="px-2 text-text-secondary text-sm">...</span>`;
-            }
-            paginationHTML += `
-                <button onclick='loadMedia(${totalPages}, ${JSON.stringify(currentSearch)})'
-                        class="px-4 py-2 rounded-2xl glass-panel hover:bg-surface-2 text-text text-sm font-bold transition border border-hairline">
-                    ${totalPages}
-                </button>
-            `;
-        }
-
-        if (currentPage < totalPages) {
-            paginationHTML += `
-                <button onclick='loadMedia(${currentPage + 1}, ${JSON.stringify(currentSearch)})'
-                        class="px-4 py-2 rounded-2xl glass-panel hover:bg-surface-2 text-text text-sm font-bold transition border border-hairline">
-                    Next
-                </button>
-            `;
-        }
-
-        paginationInner.innerHTML = paginationHTML;
-    }
-
     function updateMediaInfo(data) {
         const mediaInfo = document.getElementById('media-info');
         const resultsInfo = document.getElementById('results-info');
@@ -489,6 +415,8 @@
 
     if (!confirm(`Delete "${title}" and all its streams?\n\nIts backing Telegram messages will also be deleted. This cannot be undone.`)) return;
 
+    bulkBusy = true;
+    syncMediaSelection();
     try {
         const response = await fetch(`/api/media/delete?tmdb_id=${encodeURIComponent(tmdbId)}&db_index=${encodeURIComponent(dbIndex)}&media_type=${encodeURIComponent(itemType)}`, {
             method: 'DELETE',
@@ -503,7 +431,6 @@
             selectedMedia.delete(`${itemType}:${dbIndex}:${tmdbId}`);
             syncMediaSelection();
             showToast(`"${title}" deleted successfully`, 'success', 'Deleted');
-            loadMedia(currentPage, currentSearch); // Refresh grid
         } else {
             const error = await response.json().catch(() => ({}));
             showToast(error.detail || `Error deleting "${title}"`, 'error', 'Delete Failed');
@@ -511,6 +438,10 @@
     } catch (error) {
         console.error('Error deleting media:', error);
         showToast(`Error deleting "${title}": ${error.message}`, 'error', 'Network Error');
+    } finally {
+        bulkBusy = false;
+        syncMediaSelection();
+        await loadMedia(currentPage, currentSearch);
     }
 }
 

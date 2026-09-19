@@ -125,6 +125,30 @@ class LibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["failed"], 1)
         self.assertEqual(result["results"][0]["catalog_ids"], ["a" * 24])
 
+    async def test_exclusive_catalog_validation_and_existing_lock(self):
+        ref = {"media_type": "movie", "tmdb_id": -10, "db_index": 1}
+        db = SimpleNamespace(dbs={"storage_1": {}},
+            get_document=AsyncMock(return_value={"exclusive_catalog_id": "a" * 24}),
+            get_custom_catalog=AsyncMock(side_effect=[{"exclusive": True}, {"exclusive": False}]))
+        add = AsyncMock()
+        with self.assertRaises(ValueError):
+            await library.bulk_library(db, {"action": "add_to_catalogs", "items": [ref],
+                "catalog_ids": ["a" * 24, "b" * 24]}, AsyncMock(), add)
+        add.assert_not_awaited()
+        db.get_custom_catalog = AsyncMock(return_value={"name": "Other"})
+        result = await library.bulk_library(db, {"action": "add_to_catalogs", "items": [ref],
+            "catalog_ids": ["b" * 24]}, AsyncMock(), add)
+        self.assertEqual(result["failed"], 1)
+        add.assert_not_awaited()
+
+    def test_changed_python_files_parse(self):
+        root = Path(__file__).resolve().parents[1]
+        for name in ("Backend/helper/media_library.py", "Backend/helper/database.py",
+                     "Backend/fastapi/main.py", "Backend/fastapi/routes/api_routes.py",
+                     "Backend/fastapi/routes/template_routes.py", "Backend/fastapi/routes/stremio_routes.py"):
+            with self.subTest(path=name):
+                compile((root / name).read_text(), name, "exec")
+
     def test_no_promotional_stream_injection(self):
         source = (Path(__file__).resolve().parents[1] / "Backend/fastapi/routes/stremio_routes.py").read_text()
         self.assertNotIn("_donation", source)
