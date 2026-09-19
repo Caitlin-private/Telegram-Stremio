@@ -158,8 +158,8 @@ async def dashboard_page(request: Request, _: bool = Depends(require_auth)):
     return templates.TemplateResponse("dashboard.html", ctx)
 
 
-#----- Media management shell (movie/tv)
-async def media_management_page(request: Request, media_type: str = "movie", custom: bool = False, _: bool = Depends(require_auth)):
+#----- Media management shell (combined library, movies or series)
+async def media_management_page(request: Request, media_type: str = "all", custom: bool = False, _: bool = Depends(require_auth)):
     ctx = _base_context(request)
     ctx["current_user"] = get_current_user(request)
     ctx["media_type"] = media_type

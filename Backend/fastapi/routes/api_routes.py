@@ -146,38 +146,28 @@ def _resolve_covers(items) -> None:
 
 #----- Media management
 async def list_media_api(
-    media_type: str = Query("movie", regex="^(movie|tv)$"),
+    media_type: str = Query("all", regex="^(all|movie|tv)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(24, ge=1, le=100),
     search: str = Query("", max_length=100),
     custom: bool = Query(False)
 ):
+    from Backend.helper.media_library import list_library
     try:
-        key = "movies" if media_type == "movie" else "tv_shows"
-        #----- Custom (manually added) titles carry a negative synthetic tmdb_id
-        extra_filter = {"tmdb_id": {"$lt": 0}} if custom else None
-        if search:
-            result = await db.search_documents(search, page, page_size)
-            filtered_results = [
-                item for item in result['results']
-                if item.get('media_type') == media_type and (not custom or int(item.get('tmdb_id') or 0) < 0)
-            ]
-            total_filtered = len(filtered_results)
-            start_index = (page - 1) * page_size
-            resp = {
-                "total_count": total_filtered,
-                "current_page": page,
-                "total_pages": (total_filtered + page_size - 1) // page_size,
-                key: filtered_results[start_index:start_index + page_size],
-            }
-        elif media_type == "movie":
-            resp = await db.sort_movies([], page, page_size, extra_filter=extra_filter)
-        else:
-            resp = await db.sort_tv_shows([], page, page_size, extra_filter=extra_filter)
-        _resolve_covers(resp.get(key))
-        return resp
+        result = await list_library(db, media_type, page, page_size, search, custom)
+        _resolve_covers(result["items"])
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def bulk_media_api(payload: dict):
+    from Backend.helper.media_library import bulk_library
+    try:
+        return await bulk_library(db, payload, delete_media_api, add_custom_catalog_item_api)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
 
 async def delete_media_api(
     tmdb_id: str | int,
@@ -1553,8 +1543,17 @@ async def add_custom_catalog_item_api(catalog_id: str, payload: dict):
         raise HTTPException(status_code=404, detail="Catalog not found.")
 
     added = await db.add_item_to_custom_catalog(catalog_id, int(tmdb_id), int(db_index), media_type)
+    if not added:
+        catalog = await db.get_custom_catalog(catalog_id)
+        present = catalog and any(
+            item.get("tmdb_id") == int(tmdb_id) and item.get("db_index") == int(db_index)
+            and item.get("media_type") == media_type for item in catalog.get("items", [])
+        )
+        if not present:
+            raise HTTPException(status_code=500, detail="Failed to add title to catalogue.")
     visibility_synced = None
-    if added:
+    if catalog:
+        #----- Also resync on retries after a partially completed batch.
         #----- Adding to a hidden/restricted catalog adopts that visibility onto the title
         cat_vis = catalog.get("visibility")
         if cat_vis in ("owner", "tokens"):

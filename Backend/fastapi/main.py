@@ -82,6 +82,7 @@ from Backend.fastapi.routes.api_routes import (
     link_token_user_api,
     list_custom_catalogs_api,
     list_media_api,
+    bulk_media_api,
     manage_subscriber_api,
     manual_add_media_api,
     list_manual_add_catalogs_api,
@@ -294,7 +295,7 @@ async def admin_dashboard(request: Request, _: bool = Depends(require_auth)):
     return await admin_dashboard_page(request, _)
 
 @app.get("/media/manage", response_class=HTMLResponse)
-async def media_management(request: Request, media_type: str = "movie", custom: bool = False, _: bool = Depends(require_auth)):
+async def media_management(request: Request, media_type: str = Query("all", regex="^(all|movie|tv)$"), custom: bool = False, _: bool = Depends(require_auth)):
     return await media_management_page(request, media_type, custom, _)
 
 @app.get("/catalogs", response_class=HTMLResponse)
@@ -307,7 +308,7 @@ async def edit_media(request: Request, tmdb_id: int, db_index: int, media_type: 
 
 @app.get("/api/media/list")
 async def list_media(
-    media_type: str = Query("movie", regex="^(movie|tv)$"),
+    media_type: str = Query("all", regex="^(all|movie|tv)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(24, ge=1, le=100),
     search: str = Query("", max_length=100),
@@ -315,6 +316,11 @@ async def list_media(
     _: bool = Depends(require_auth)
 ):
     return await list_media_api(media_type, page, page_size, search, custom)
+
+@app.post("/api/media/bulk")
+async def bulk_media(payload: dict, _: bool = Depends(require_auth)):
+    return await bulk_media_api(payload)
+
 
 @app.delete("/api/media/delete")
 async def delete_media(tmdb_id: int, db_index: int, media_type: str, _: bool = Depends(require_auth)):
