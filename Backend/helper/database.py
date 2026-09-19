@@ -1124,7 +1124,7 @@ class Database:
                     doc = await col.find_one({"kitsu_id": kid})
                 except (TypeError, ValueError):
                     pass
-            if not doc and title and release_year:
+            if not doc and title and release_year and not str(imdb_id or "").startswith("tgauto"):
                 doc = await col.find_one({"title": title, "release_year": release_year})
             if doc:
                 return doc, f"storage_{db_index}", db_index

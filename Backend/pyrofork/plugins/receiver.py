@@ -10,6 +10,7 @@ import Backend
 from Backend import db
 from Backend.helper.announcer import announce_new_media
 from Backend.helper.auto_catalog import start_single_media_catalog_sync
+from Backend.helper.channel_auto_add import accepts_message, capture_message, get_session
 from Backend.helper.encrypt import encode_string
 from Backend.helper.manual_add import resolve_telegram_message, stamp_caption_with_id
 from Backend.helper.requests_manager import auto_fulfill
@@ -203,6 +204,20 @@ async def _handle_personal_session(client: Client, message: Message) -> None:
 async def file_receive_handler(client: Client, message: Message):
     if is_skip_channel(message):
         return
+
+    # Capture only new supported media in explicitly authorized channels.
+    if str(message.chat.id) in SettingsManager.current().auth_channels and _is_supported_media(message):
+        capture = await get_session(db)
+        uploaded_at = message.date.timestamp()
+        if accepts_message(capture, uploaded_at):
+            try:
+                async with db_lock:
+                    await capture_message(db, message, capture)
+                LOGGER.info(f"[Auto Add] Captured auth-channel message {message.id}.")
+            except Exception as exc:
+                # Never delete or send capture failures to the metadata-failure channel.
+                LOGGER.exception(f"[Auto Add] Could not capture message {message.id}: {exc}")
+            return
 
     session = Backend.MANUAL_SESSION
     is_manual = _is_manual_channel(message.chat.id)

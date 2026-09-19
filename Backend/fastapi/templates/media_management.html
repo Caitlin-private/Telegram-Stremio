@@ -569,6 +569,32 @@
             </div>
 
             <div class="px-5 sm:px-6 py-5 space-y-5 max-h-[75vh] overflow-y-auto">
+                <section class="rounded-2xl border border-hairline p-4 space-y-3" aria-label="Auth-channel auto-add">
+                    <label class="flex items-center gap-2 font-bold text-text">
+                        <input id="ma-auto" type="checkbox" onchange="maToggleAuto()" class="accent-emerald-500">
+                        Auto-add new AUTH-channel media
+                    </label>
+                    <p class="text-xs text-text-secondary">Capture every supported incoming media file without requiring metadata or a TMDB match. Reuse the fields below; leave custom details and catalogues empty to use the original filename in Untagged. Each file gets its own entry; split parts are joined.</p>
+                    <div id="ma-auto-options" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label for="ma-auto-duration" class="ma-label">Run for</label>
+                            <select id="ma-auto-duration" class="ma-input">
+                                <option value="5">5 minutes</option><option value="15">15 minutes</option>
+                                <option value="60">1 hour</option><option value="">Until I turn off</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="ma-auto-delay" class="ma-label">Start delay</label>
+                            <select id="ma-auto-delay" class="ma-input">
+                                <option value="0">Start now</option><option value="5">Start in 5 minutes</option>
+                                <option value="15">Start in 15 minutes</option>
+                            </select>
+                        </div>
+                        <p class="sm:col-span-2 text-xs text-text-secondary">No stream links needed. Only new uploads during the active window are captured, even after closing this page. Before the start time and after stopping, normal indexing resumes. Subtitles keep their existing handling.</p>
+                    </div>
+                    <p id="ma-auto-status" role="status" aria-live="polite" class="text-sm text-text-secondary">Checking auto-add status…</p>
+                    <button id="ma-auto-stop" type="button" onclick="maStopAuto()" class="hidden px-4 py-2 rounded-xl bg-red-500 text-white font-bold">Turn off auto-add</button>
+                </section>
                 <!-- Type -->
                 <div>
                     <label class="ma-label">Type</label>
@@ -599,8 +625,8 @@
                 <!-- Title details -->
                 <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
                     <div class="sm:col-span-2">
-                        <label class="ma-label">Title *</label>
-                        <input id="ma-m-title" class="ma-input" placeholder="Custom title">
+                        <label class="ma-label">Title (optional for auto-add)</label>
+                        <input id="ma-m-title" class="ma-input" placeholder="Custom title / original filename for auto-add">
                     </div>
                     <div>
                         <label class="ma-label">Year (optional)</label>
@@ -660,7 +686,7 @@
                         <div>
                             <label class="ma-label">Quality *</label>
                             <select id="ma-quality" class="ma-input">
-                                <option value="">Select</option>
+                                <option value="">Auto-detect (auto-add only)</option>
                                 <option>480p</option><option>720p</option><option selected>1080p</option>
                                 <option>2160p</option><option value="__custom">Custom…</option>
                             </select>
@@ -695,6 +721,47 @@
     let maType = mediaType;
     let maSelectedId = null;
     let maSearchList = [];
+    let maAutoTimer = null;
+
+    function maToggleAuto() {
+        const enabled = document.getElementById('ma-auto').checked;
+        document.getElementById('ma-auto-options').classList.toggle('hidden', !enabled);
+        document.getElementById('ma-submit').textContent = enabled ? 'Start auto-add' : 'Add Content';
+        if (enabled) document.getElementById('ma-quality').value = '';
+        document.getElementById('ma-quality-custom').classList.toggle('hidden', document.getElementById('ma-quality').value !== '__custom');
+    }
+
+    function maRenderAutoStatus(data) {
+        const running = ['active', 'scheduled'].includes(data.status);
+        const status = document.getElementById('ma-auto-status');
+        status.textContent = running
+            ? `Auto-add ${data.status}${data.status === 'scheduled' ? ' — starts ' + new Date(data.starts_at * 1000).toLocaleString() : ''}. ${data.expires_at == null ? 'Runs until turned off.' : 'Stops ' + new Date(data.expires_at * 1000).toLocaleString() + '.'}`
+            : `Auto-add ${data.status === 'expired' ? 'expired' : 'off'}.`;
+        document.getElementById('ma-auto-stop').classList.toggle('hidden', !running);
+    }
+
+    async function maLoadAutoStatus() {
+        try {
+            const res = await fetch('/api/media/auto-add');
+            if (!res.ok) throw new Error('Could not load auto-add status.');
+            maRenderAutoStatus(await res.json());
+        } catch (e) {
+            document.getElementById('ma-auto-status').textContent = e.message;
+        }
+    }
+
+    async function maStopAuto() {
+        const btn = document.getElementById('ma-auto-stop');
+        btn.disabled = true;
+        try {
+            const res = await fetch('/api/media/auto-add', {method: 'DELETE'});
+            if (!res.ok) throw new Error('Could not stop auto-add.');
+            maRenderAutoStatus(await res.json());
+            showToast('Auto-add stopped. Already captured files are kept.', 'success', 'Auto-add');
+        } catch (e) {
+            showToast(e.message, 'error', 'Auto-add');
+        } finally { btn.disabled = false; }
+    }
 
     function maEsc(s) {
         return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -860,6 +927,11 @@
     }
 
     function openManualAdd() {
+        document.getElementById('ma-auto').checked = false;
+        maToggleAuto();
+        clearInterval(maAutoTimer);
+        maLoadAutoStatus();
+        maAutoTimer = setInterval(maLoadAutoStatus, 5000);
         maSetType(mediaType);
         ['ma-name','ma-season','ma-episode','ma-episode-title','ma-m-title','ma-m-year','ma-m-rating','ma-m-genres','ma-m-description','ma-m-poster','ma-m-backdrop','ma-quality-custom','ma-search-query'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
         maResetParts();
@@ -878,6 +950,7 @@
     }
 
     function closeManualAdd() {
+        clearInterval(maAutoTimer);
         document.getElementById('manual-add-modal').classList.add('hidden');
         document.body.style.overflow = '';
     }
@@ -939,9 +1012,10 @@
         const parts = maCollectParts();
         const quality = maQuality();
         const title = document.getElementById('ma-m-title').value.trim();
-        if (!title) { showToast('Enter a title.', 'error', 'Error'); return; }
-        if (!parts.length) { showToast('Paste at least one Telegram message link.', 'error', 'Error'); return; }
-        if (!quality) { showToast('Select a quality.', 'error', 'Error'); return; }
+        const auto = document.getElementById('ma-auto').checked;
+        if (!auto && !title) { showToast('Enter a title.', 'error', 'Error'); return; }
+        if (!auto && !parts.length) { showToast('Paste at least one Telegram message link.', 'error', 'Error'); return; }
+        if (!auto && !quality) { showToast('Select a quality.', 'error', 'Error'); return; }
 
         const payload = {
             media_type: maType,
@@ -963,20 +1037,31 @@
         if (maType === 'tv') {
             const s = document.getElementById('ma-season').value.trim();
             const e = document.getElementById('ma-episode').value.trim();
-            if (s === '' || e === '') { showToast('Season and episode are required.', 'error', 'Error'); return; }
-            payload.season_number = Number(s);
-            payload.episode_number = Number(e);
+            if (!auto && (s === '' || e === '')) { showToast('Season and episode are required.', 'error', 'Error'); return; }
+            payload.season_number = s === '' ? null : Number(s);
+            payload.episode_number = e === '' ? null : Number(e);
             payload.episode_title = document.getElementById('ma-episode-title').value.trim() || undefined;
         }
 
+        if (auto) {
+            const duration = document.getElementById('ma-auto-duration').value;
+            payload.duration_minutes = duration === '' ? null : Number(duration);
+            payload.delay_minutes = Number(document.getElementById('ma-auto-delay').value);
+            payload.quality = quality;
+        }
         btn.disabled = true;
         try {
-            const res = await fetch('/api/media/manual-add', {
+            const res = await fetch(auto ? '/api/media/auto-add' : '/api/media/manual-add', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(payload)
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.detail || 'Failed to add content');
+            if (auto) {
+                maRenderAutoStatus(data);
+                showToast('Auto-add enabled. You can close this page.', 'success', 'Auto-add');
+                return;
+            }
             showToast(data.message || 'Added successfully.', 'success', 'Added');
             closeManualAdd();
             if (data.media_type === mediaType) {

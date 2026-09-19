@@ -766,6 +766,36 @@ async def admin_restart(_: bool = Depends(require_auth)):
     return await restart_app_api()
 
 
+#----- Timed auth-channel capture, independent of the browser lifetime.
+@app.get("/api/media/auto-add")
+async def channel_auto_add_status(_: bool = Depends(require_auth)):
+    from Backend import db
+    from Backend.helper.channel_auto_add import get_session
+    return await get_session(db)
+
+
+@app.post("/api/media/auto-add")
+async def channel_auto_add_start(payload: dict, _: bool = Depends(require_auth)):
+    import Backend
+    from Backend.helper.channel_auto_add import start_session
+    from Backend.helper.settings_manager import SettingsManager
+    if Backend.MANUAL_SESSION:
+        raise HTTPException(status_code=409, detail="Stop the manual upload session before starting auto-add.")
+    if not SettingsManager.current().auth_channels:
+        raise HTTPException(status_code=400, detail="Configure at least one AUTH channel first.")
+    try:
+        return await start_session(Backend.db, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/media/auto-add")
+async def channel_auto_add_stop(_: bool = Depends(require_auth)):
+    from Backend import db
+    from Backend.helper.channel_auto_add import stop_session
+    return await stop_session(db)
+
+
 #----- Tools (WebUI replacement for /scan, /rescan, /dbcheck bot commands)
 @app.get("/admin/tools", response_class=HTMLResponse)
 async def admin_tools(request: Request, _: bool = Depends(require_auth)):
