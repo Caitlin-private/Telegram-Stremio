@@ -8,7 +8,10 @@ from pyrogram.types import Message
 
 import Backend
 from Backend import db
-from Backend.helper.announcer import announce_new_media
+from Backend.helper.announcer import announce_new_media, _build_caption, _build_markup
+from Backend.config import Telegram
+from datetime import datetime
+from pyrogram.enums.parse_mode import ParseMode
 from Backend.helper.auto_catalog import start_single_media_catalog_sync
 from Backend.helper.channel_auto_add import accepts_message, capture_message, get_session
 from Backend.helper.encrypt import encode_string
@@ -339,3 +342,80 @@ async def file_deleted_handler(client: Client, messages: list[Message]):
                 LOGGER.error(f"Failed to scrub deleted message {msg_id}: {ex}")
     except Exception as e:
         LOGGER.error(f"Error handling deleted messages: {e}")
+
+#----- User private media upload
+@Client.on_message(filters.private & (filters.document | filters.video))
+async def user_upload_handler(client: Client, message: Message):
+    settings = SettingsManager.current()
+    if not settings.allow_user_uploads:
+        return
+
+    # Approval Check
+    user_id = message.from_user.id if message.from_user else message.chat.id
+    is_approved = False
+
+    if settings.subscription:
+        user = await db.get_user(user_id)
+        if db.is_subscription_active(user):
+            is_approved = True
+    else:
+        if user_id == Telegram.OWNER_ID:
+            is_approved = True
+
+    if not is_approved:
+        return
+
+    if not _is_supported_media(message):
+        await message.reply_text("> Not supported", quote=True)
+        return
+
+    auth_channels = settings.auth_channels
+    if not auth_channels:
+        await message.reply_text("Error: No AUTH_CHANNEL configured.", quote=True)
+        return
+
+    target_channel = auth_channels[0]
+
+    # Extract
+    _, title, msg_id, raw_size, size, channel = _extract_fields(message)
+
+    metadata_info = await metadata(clean_filename(title), int(target_channel), msg_id, override_id=extract_default_id(message.caption or ""))
+
+    if metadata_info is None:
+        base_url = settings.base_url
+        await message.reply_text(
+            f"auto adding failed try another file with proper name and year on the message or request it on {base_url}/request and contact administrator",
+            quote=True
+        )
+        return
+
+    try:
+        copied = await message.copy(int(target_channel))
+
+        # Now parse using the new copied msg ID
+        metadata_info = await metadata(clean_filename(title), int(target_channel), copied.id, override_id=extract_default_id(copied.caption or ""))
+        if metadata_info is None:
+             raise Exception("Failed parsing on copied message")
+
+        title = _finalize_title(title, metadata_info)
+        await file_queue.put((metadata_info, int(target_channel), copied.id, size, raw_size, title))
+
+        caption = _build_caption(metadata_info)
+        markup = _build_markup(metadata_info)
+        poster = metadata_info.get("backdrop") or metadata_info.get("poster")
+
+        if poster:
+            try:
+                await message.reply_photo(photo=poster, caption=caption, parse_mode=ParseMode.HTML, reply_markup=markup, quote=True)
+                return
+            except Exception as e:
+                pass
+
+        await message.reply_text(text=caption, parse_mode=ParseMode.HTML, reply_markup=markup, disable_web_page_preview=True, quote=True)
+
+    except FloodWait as e:
+        from asyncio import sleep as asleep
+        await asleep(e.value)
+        await message.reply_text(f"Got Floodwait of {str(e.value)}s")
+    except Exception as e:
+        LOGGER.error(f"User upload error: {e}")

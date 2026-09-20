@@ -13,6 +13,7 @@ _DEFAULTS: Dict[str, Any] = {
     "replace_mode": True,
     "duplicate_protection": False,
     "hide_catalog": False,
+    "allow_user_uploads": False,
     "auth_channels": [],
     "tmdb_api": "",
     "tvdb_api": "",
@@ -104,6 +105,10 @@ class Settings:
     @property
     def hide_catalog(self) -> bool:
         return bool(self._d["hide_catalog"])
+
+    @property
+    def allow_user_uploads(self) -> bool:
+        return bool(self._d.get("allow_user_uploads", False))
 
     @property
     def subscription(self) -> bool:

@@ -266,6 +266,17 @@
                     </span>
                 </span>
             </label>
+            <label class="toggle-wrap">
+                <input type="checkbox" class="toggle-input" id="allow_user_uploads"
+                    {% if settings.allow_user_uploads %}checked{% endif %}>
+                <span class="toggle-track"></span>
+                <span class="toggle-label">
+                    <strong>Allow User Uploads</strong>
+                    <span style="color:var(--text-sec);font-size:0.8rem;display:block">
+                        Allow approved subscribers to upload media files via bot DM
+                    </span>
+                </span>
+            </label>
         </div>
     </div>
 
@@ -1483,6 +1494,7 @@ async function saveSettings() {
         replace_mode:                  document.getElementById('replace_mode').checked,
         duplicate_protection:          document.getElementById('duplicate_protection').checked,
         hide_catalog:                  document.getElementById('hide_catalog').checked,
+        allow_user_uploads:            document.getElementById('allow_user_uploads').checked,
         admin_username:                document.getElementById('admin_username').value.trim(),
         admin_password:                document.getElementById('admin_password').value,  // blank = keep
         session_secret:                document.getElementById('session_secret').value,  // blank = keep
@@ -1623,6 +1635,7 @@ function renderSettings(s) {
     document.getElementById('duplicate_protection').checked = !!s.duplicate_protection;
     toggleDuplicateProtection();
     document.getElementById('hide_catalog').checked = !!s.hide_catalog;
+    document.getElementById('allow_user_uploads').checked = !!s.allow_user_uploads;
     document.getElementById('subscription').checked = !!s.subscription;
     document.getElementById('show_proxy_and_non_proxy_both').checked = !!s.show_proxy_and_non_proxy_both;
     document.getElementById('global_search').checked = !!s.global_search;
