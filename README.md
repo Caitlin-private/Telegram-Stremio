@@ -1,3 +1,13 @@
+---
+title: Telegram Stremio
+emoji: 🎬
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 8000
+pinned: false
+---
+
 <p align="center">
   <img src="https://iili.io/KhN0ztj.png" alt="Logo" width="400"/>
 </p>
