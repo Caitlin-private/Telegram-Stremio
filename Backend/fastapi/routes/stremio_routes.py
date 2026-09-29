@@ -15,6 +15,7 @@ from Backend import __version__, db
 from Backend.config import Telegram
 from Backend.helper.analytics import client_ip_from, record_client
 from Backend.fastapi.security.tokens import verify_token
+from Backend.helper.cf_stream import cf_enabled, cf_stream_url
 from Backend.fastapi.themes import DEFAULT_THEME, DEFAULT_STYLE, get_theme
 from Backend.helper.fanart import fanart_artwork
 from Backend.helper.global_search import global_search, is_global_search_enabled
@@ -33,7 +34,6 @@ templates = Jinja2Templates(directory="Backend/fastapi/templates")
 ADDON_NAME = "Telegram"
 ADDON_VERSION = __version__
 PAGE_SIZE = 15
-
 
 def build_proxy_url(original_url: str) -> str | None:
     settings = SettingsManager.current()
@@ -776,6 +776,12 @@ def _streams_from_global_results(token: str, global_results: list) -> list:
             stream_title += f" · 📦 {r.get('part_count', 0)} {kind}"
         url = f"{SettingsManager.current().base_url}/dl/{token}/{r['token']}/{quote(r['title'])}"
         size_bytes = parse_size_to_bytes(r.get("size", ""))
+        if cf_enabled():
+            cf_url = cf_stream_url(token, r['token'], quote(r['title']))
+            if SettingsManager.current().cf_stream_mode == "cloudflare":
+                url = cf_url
+            else:
+                streams.append({"name": f"{stream_name} (Cloudflare)", "title": stream_title, "url": cf_url, "size_bytes": size_bytes})
         streams.append({"name": stream_name, "title": stream_title, "url": url, "size_bytes": size_bytes})
     return streams
 
@@ -1048,14 +1054,19 @@ async def get_streams(
 
                 original_url = f"{SettingsManager.current().base_url}/dl/{token}/{quality.get('id')}/video.mkv"
                 proxy_url = build_proxy_url(original_url)
+                cf_url = cf_stream_url(token, quality.get('id'), "video.mkv") if cf_enabled() else None
+                cf_only = cf_url and SettingsManager.current().cf_stream_mode == "cloudflare"
 
-                if SettingsManager.current().show_proxy_and_non_proxy_both and proxy_url:
-                    streams.append({"name": f"{stream_name} (Proxy)", "title": stream_title, "url": proxy_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
-                    streams.append({"name": f"{stream_name} (Direct)", "title": stream_title, "url": original_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
-                elif proxy_url:
-                    streams.append({"name": stream_name, "title": stream_title, "url": proxy_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
-                else:
-                    streams.append({"name": stream_name, "title": stream_title, "url": original_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
+                if cf_url:
+                    streams.append({"name": stream_name if cf_only else f"{stream_name} (Cloudflare)", "title": stream_title, "url": cf_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
+                if not cf_only:
+                    if SettingsManager.current().show_proxy_and_non_proxy_both and proxy_url:
+                        streams.append({"name": f"{stream_name} (Proxy)", "title": stream_title, "url": proxy_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
+                        streams.append({"name": f"{stream_name} (Direct)", "title": stream_title, "url": original_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
+                    elif proxy_url:
+                        streams.append({"name": stream_name, "title": stream_title, "url": proxy_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
+                    else:
+                        streams.append({"name": stream_name, "title": stream_title, "url": original_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
     elif is_global_search_enabled():
         try:
             is_anime = bool(is_kitsu or (media_details and media_details.get("is_anime")))

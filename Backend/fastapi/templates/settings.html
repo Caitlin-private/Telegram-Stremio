@@ -1018,6 +1018,43 @@ document.addEventListener('DOMContentLoaded', sessLoadStatus);
         </label>
     </div>
 
+
+    <!-- ── Cloudflare Streaming ────────────────────────────────────────── -->
+    <div class="settings-card">
+        <h2><i class="fa-brands fa-cloudflare"></i> Cloudflare Streaming</h2>
+        <p style="font-size:0.8rem;color:var(--text-sec);margin:-0.25rem 0 1rem">
+            Stream video from a Cloudflare streaming Worker instead of this server. Catalogs, tokens and
+            limits stay here; the Worker reports each token's usage back. Enter the URL and secret you were given.
+        </p>
+        <a href="https://proxy.weebzonex.workers.dev" target="_blank" rel="noopener" class="add-btn" style="display:inline-flex;align-items:center;gap:.5rem;margin-bottom:1rem;text-decoration:none">
+            <i class="fa-solid fa-bolt"></i> Get Cloudflare streaming
+        </a>
+        <p style="font-size:0.75rem;color:var(--text-sec);margin:-0.5rem 0 1rem">
+            Recommended on free hosts (Koyeb, Render, orkestr): video then streams fast from Cloudflare instead of a slow, sleeping free server.
+            After buying, you get the Worker URL and secret on Telegram.
+        </p>
+        <div style="margin-bottom:1rem">
+            <label class="s-label" for="cf_stream_url">Worker URL</label>
+            <input type="url" id="cf_stream_url" class="s-input"
+                value="{{ settings.cf_stream_url }}"
+                placeholder="https://telestream.your-name.workers.dev">
+        </div>
+        <div style="margin-bottom:1rem">
+            <label class="s-label" for="cf_stream_secret">Shared Secret</label>
+            <input type="password" id="cf_stream_secret" class="s-input"
+                value="{{ settings.cf_stream_secret }}"
+                placeholder="The secret that came with your Worker URL"
+                autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+            <label class="s-label" for="cf_stream_mode">Stremio Links</label>
+            <select id="cf_stream_mode" class="s-input">
+                <option value="off" {% if settings.cf_stream_mode == "off" %}selected{% endif %}>Off — stream from this server</option>
+                <option value="cloudflare" {% if settings.cf_stream_mode == "cloudflare" %}selected{% endif %}>Cloudflare only</option>
+                <option value="both" {% if settings.cf_stream_mode == "both" %}selected{% endif %}>Both — Cloudflare and direct</option>
+            </select>
+        </div>
+    </div>
     
     <!-- ── WebDAV ──────────────────────────────────────────────────────── -->
     <div class="settings-card">
@@ -1523,6 +1560,9 @@ async function saveSettings() {
         show_proxy_and_non_proxy_both: document.getElementById('show_proxy_and_non_proxy_both').checked,
         mediaflow_proxy:               document.getElementById('mediaflow_proxy').checked,
         mediaflow_password:            document.getElementById('mediaflow_password').value,
+        cf_stream_url:                 document.getElementById('cf_stream_url').value.trim(),
+        cf_stream_secret:              document.getElementById('cf_stream_secret').value.trim(),
+        cf_stream_mode:                document.getElementById('cf_stream_mode').value,
         webdav_user:                   document.getElementById('webdav_user').value.trim(),
         webdav_password:               document.getElementById('webdav_password').value,
         multi_tokens:                  collectList('multi_tokens'),
@@ -1668,6 +1708,9 @@ function renderSettings(s) {
     document.getElementById('http_proxy_url').value = s.http_proxy_url || '';
     document.getElementById('mediaflow_proxy').checked = !!s.mediaflow_proxy;
     document.getElementById('mediaflow_password').value = s.mediaflow_password || '';
+    document.getElementById('cf_stream_url').value = s.cf_stream_url || '';
+    document.getElementById('cf_stream_secret').value = s.cf_stream_secret || '';
+    document.getElementById('cf_stream_mode').value = s.cf_stream_mode || 'off';
     const wu = document.getElementById('webdav_user');
     if (wu) wu.value = s.webdav_user || '';
     const wp = document.getElementById('webdav_password');
