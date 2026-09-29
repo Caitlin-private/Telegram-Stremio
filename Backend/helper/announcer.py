@@ -1,11 +1,13 @@
 from asyncio import create_task
 from datetime import datetime
+from html import escape
 
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait, MessageDeleteForbidden, MessageIdInvalid
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from Backend import db
+from Backend.helper.bot_media import media_payload
 from Backend.helper.settings_manager import SettingsManager
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import StreamBot, get_streambot_url
@@ -49,10 +51,10 @@ async def _store_announcement_msg(media_type: str, tmdb_id, chat_id, message_id:
 
 def _build_caption(info: dict) -> str:
     is_tv = info.get("media_type") == "tv"
-    title = info.get("title") or "Unknown"
+    title = escape(str(info.get("title") or "Unknown"))
     header = f"{'📺' if is_tv else '🎬'} <b>{title}</b>"
     if info.get("year"):
-        header += f" ({info['year']})"
+        header += f" ({escape(str(info['year']))})"
 
     lines = [header, "", f"🗂 <b>Type:</b> {'Series' if is_tv else 'Movie'}"]
     if info.get("rate"):
@@ -62,15 +64,15 @@ def _build_caption(info: dict) -> str:
             pass
     genres = info.get("genres") or []
     if genres:
-        lines.append(f"🎭 <b>Genres:</b> {', '.join(genres[:4])}")
+        lines.append(f"🎭 <b>Genres:</b> {escape(', '.join(str(g) for g in genres[:4]))}")
     if info.get("quality"):
-        lines.append(f"📶 <b>Quality:</b> {info['quality']}")
+        lines.append(f"📶 <b>Quality:</b> {escape(str(info['quality']))}")
 
     desc = (info.get("description") or "").strip()
     if desc:
         if len(desc) > 320:
             desc = desc[:317].rstrip() + "..."
-        lines += ["", f"<i>{desc}</i>"]
+        lines += ["", f"<i>{escape(desc)}</i>"]
     return "\n".join(lines)
 
 
@@ -87,6 +89,9 @@ def _build_markup(info: dict):
     bot_url = get_streambot_url()
     if bot_url and bot_url != "https://t.me/":
         rows.append([InlineKeyboardButton("🤖 Get Addon", url=bot_url)])
+        payload = media_payload(info.get("media_type"), info.get("tmdb_id"))
+        if payload:
+            rows.append([InlineKeyboardButton("🎬 View media", url=f"{bot_url}?start={payload}")])
     return InlineKeyboardMarkup(rows) if rows else None
 
 

@@ -927,3 +927,27 @@ If Telegram-Stremio is useful to you, you can support its development here:
 <sub>Want to help? Open an issue or a pull request.</sub>
 
 </div>
+
+### Private media search and announcement cards
+
+Registered users can send a movie or series name in the bot's private chat.
+The bot searches the local library (including alternate titles) and returns up
+to five matching announcement-style cards with a poster, description and:
+
+- **WebDAV**: the exact movie/series folder, with the requesting user's token.
+- **Open in Stremio**: the existing quick-open title link, when an IMDb ID is available.
+
+The WebDAV folder lists movie qualities or series seasons/episodes. Its paths
+come from the actual virtual filesystem, including duplicate-name suffixes.
+WebDAV Basic authentication, if configured, still applies. Install your personal
+addon from /start in Stremio before using quick-open links.
+
+New announcements use **View media** to open the same private card. No personal
+tokens are put in channel posts, and the bot no longer forwards source files.
+Previously published **Get the file** links resolve their source title and show
+the new card too; the old post's button label is not automatically edited.
+
+Access uses existing registered API tokens and the server's normal subscription,
+manual-grant, expiry and usage-limit checks. Active subscribers and the owner can
+obtain a personal token if needed; unknown users are directed to /start. No new
+configuration is required. Restart the application after updating.

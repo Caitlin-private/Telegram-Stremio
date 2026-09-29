@@ -4,6 +4,7 @@ from pyrogram import Client, enums, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from Backend import db
+from Backend.helper.bot_media import show_link
 from Backend.config import Telegram
 from Backend.helper.settings_manager import SettingsManager
 from Backend.logger import LOGGER
@@ -16,6 +17,14 @@ def _currency_symbol(code):
 #----- /start: hand out the Stremio addon link, gated by subscription state
 @Client.on_message(filters.command('start') & filters.private, group=10)
 async def send_start_message(client: Client, message: Message):
+    command = message.command or []
+    if len(command) > 1 and command[1].startswith(("file_", "media_")):
+        try:
+            await show_link(message, command[1])
+        except Exception as exc:
+            LOGGER.warning(f"Media card failed: {type(exc).__name__}")
+            await message.reply_text("Unable to open this title right now. Please try again later.")
+        return
     try:
         user_id = (message.from_user.id if message.from_user else None) or (message.sender_chat.id if message.sender_chat else None) or message.chat.id
         base_url = SettingsManager.current().base_url
