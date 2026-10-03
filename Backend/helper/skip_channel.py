@@ -1,6 +1,7 @@
 from asyncio import sleep as asleep
 
 from pyrogram import Client
+from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
 from pyrogram.types import Message
 
@@ -28,17 +29,33 @@ async def route_to_skip_channel(client: Client, message: Message) -> None:
     skip_chat = int(skip) if str(skip).lstrip("-").replace("-100", "").isdigit() else skip
 
     try:
-        await message.copy(skip_chat)
+        copied = await message.copy(skip_chat)
     except FloodWait as e:
         await asleep(e.value)
         try:
-            await message.copy(skip_chat)
+            copied = await message.copy(skip_chat)
         except Exception as e2:
             LOGGER.error(f"[SkipChannel] Copy failed for message {message.id}: {e2}")
             return
     except Exception as e:
         LOGGER.error(f"[SkipChannel] Could not copy message {message.id} to skip channel: {e}")
         return
+
+    # Reply to the copy, never the source, and never post a traceback/log dump.
+    from Backend.helper.metadata.parse import analyze_metadata_failure
+    from Backend.helper.pyro import clean_filename
+    media = message.document or message.video
+    title = message.caption or getattr(media, "file_name", None) or "Unnamed media"
+    try:
+        reason = analyze_metadata_failure(clean_filename(title))
+        text = f"Metadata failed for file: {title[:1000]} (ID: {message.id})\nReason: {reason}"
+        try:
+            await client.send_message(skip_chat, text[:4000], reply_to_message_id=copied.id, parse_mode=ParseMode.DISABLED)
+        except FloodWait as wait:
+            await asleep(wait.value)
+            await client.send_message(skip_chat, text[:4000], reply_to_message_id=copied.id, parse_mode=ParseMode.DISABLED)
+    except Exception as exc:
+        LOGGER.warning(f"[SkipChannel] Could not send reason for message {message.id}: {exc}")
 
     if settings.delete_on_metadata_fail:
         try:

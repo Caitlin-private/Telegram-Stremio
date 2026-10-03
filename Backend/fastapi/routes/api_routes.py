@@ -2327,6 +2327,9 @@ LOG_FILE = "log.txt"
 
 #----- Aggregate content + system metrics across all storage DBs (was /stats)
 async def get_db_stats_api() -> dict:
+    from Backend.helper.system_memory import memory_status
+    from Backend.helper.stats_display import live_counts
+    from Backend.helper.custom_dl import ACTIVE_STREAMS, STALE_STREAM_IDLE
     try:
         total_movies = total_tv = total_episodes = total_streams = total_db_size = 0
 
@@ -2355,6 +2358,8 @@ async def get_db_stats_api() -> dict:
             "status": "success",
             "data": {
                 "version": __version__,
+                "ram": memory_status(),
+                **live_counts(list(ACTIVE_STREAMS.values()), time(), STALE_STREAM_IDLE),
                 "movies": total_movies,
                 "tv_shows": total_tv,
                 "episodes": total_episodes,

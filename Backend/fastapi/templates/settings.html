@@ -1814,6 +1814,7 @@ function rebuildDatabaseList(dbList) {
 
 /* ── System & Maintenance ───────────────────────────────────────────────── */
 const STAT_FIELDS = [
+    ['ram_display', 'RAM Free / Total'],
     ['movies', 'Movies'], ['tv_shows', 'TV Shows'], ['episodes', 'Episodes'],
     ['streams', 'Streams'], ['db_size', 'DB Size'],
     ['auth_channels', 'AUTH Channels'], ['version', 'Version'],
@@ -1835,7 +1836,7 @@ async function loadDbStats(btn) {
         if (data.status !== 'success') throw new Error(data.message || 'failed');
         const s = data.data;
         grid.innerHTML = STAT_FIELDS.map(([k, label]) =>
-            `<div class="stat-box"><div class="v">${escapeHtml(String(s[k] ?? '—'))}</div><div class="l">${label}</div></div>`
+            `<div class="stat-box"><div class="v">${escapeHtml(String(k === 'ram_display' ? (s.ram?.display ?? 'Unavailable') : (s[k] ?? '—')))}</div><div class="l">${label}</div></div>`
         ).join('');
     } catch (e) {
         grid.innerHTML = `<div class="hint" style="grid-column:1/-1;color:#ef4444">Failed to load stats.</div>`;

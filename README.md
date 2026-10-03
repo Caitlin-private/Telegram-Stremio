@@ -951,3 +951,15 @@ Access uses existing registered API tokens and the server's normal subscription,
 manual-grant, expiry and usage-limit checks. Active subscribers and the owner can
 obtain a personal token if needed; unknown users are directed to /start. No new
 configuration is required. Restart the application after updating.
+# Added status features
+
+Skipped media copied to the configured skip channel now receives a plain-text
+reply beginning with `Metadata failed for file`, followed by the filename,
+source message ID, and the existing metadata failure explanation. No log dump
+or traceback is posted. This applies to live ingestion and channel scans.
+
+System & Maintenance shows **RAM Free / Total** on stats refresh. Free means
+available memory; detected Linux container limits cap the reported capacity.
+The owner can send `/stats` privately to the manager bot for RAM, movies, TV shows,
+episodes, streams, database size, version, uptime, live streams and active users.
+Active users counts distinct access tokens currently streaming (not all subscribers).
