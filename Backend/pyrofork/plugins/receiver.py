@@ -415,7 +415,7 @@ async def user_upload_handler(client: Client, message: Message):
         # Share the insertion lock with channel ingestion: simultaneous forwards
         # must see the first committed upload before deciding to copy again.
         async with db_lock:
-            existing = (await db.find_upload_duplicate(metadata_info, title, size, raw_size)
+            existing = (await db.find_existing_duplicate(metadata_info, title, size)
                         if settings.duplicate_protection else None)
             if existing:
                 metadata_info.update(_base_from_doc(existing))

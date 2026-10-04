@@ -1406,8 +1406,8 @@ class Database:
             result.append(quality_to_update)
         return result
 
-    async def find_upload_duplicate(self, info: dict, name: str, size: str, raw_size: int = 0):
-        """Read-only duplicate check before copying private uploads to storage."""
+    async def find_existing_duplicate(self, info: dict, name: str, size: str):
+        """Preflight using the exact duplicate policy used by channel insertion."""
         year = info.get('year')
         try:
             year = int(str(year)[:4]) if year else None
@@ -1415,7 +1415,7 @@ class Database:
             year = None
         doc, _, _ = await self._find_existing_media(
             self._collection_for(info.get('media_type')), info.get('imdb_id'),
-            info.get('tmdb_id'), info.get('title'), year, self.current_db_index,
+            info.get('tmdb_id'), info.get('title'), year, len(self.dbs) - 1,
             kitsu_id=info.get('kitsu_id'),
         )
         if not doc:
@@ -1427,17 +1427,11 @@ class Database:
                          for episode in season.get('episodes', [])
                          if episode.get('episode_number') == info.get('episode_number')
                          for q in episode.get('telegram', [])]
-        key = self._dup_key({'quality': info.get('quality'), 'name': name, 'size': size})
-        for quality in qualities:
-            if info.get('group_key'):
-                if quality.get('group_key') == info['group_key'] and any(
-                    p.get('part_number') == (info.get('part_number') or 1)
-                    and p.get('size_bytes') == raw_size for p in quality.get('parts', [])
-                ):
-                    return doc
-            elif not quality.get('group_key') and self._dup_key(quality) == key:
-                return doc
-        return None
+        incoming = {'quality': info.get('quality'), 'name': name, 'size': size,
+                    'group_key': info.get('group_key')}
+        return doc if self._matches_protected_duplicate(
+            qualities, incoming, self._is_personal_tmdb(doc.get('tmdb_id'))
+        ) else None
 
     #----- Identity of a non-split stream for duplicate protection (quality + name + size)
     @staticmethod
@@ -1452,6 +1446,20 @@ class Database:
             return int(tmdb_id) < 0
         except (TypeError, ValueError):
             return False
+
+    def _matches_protected_duplicate(self, existing_qualities, incoming, is_personal=False):
+        """Single shared policy for auth-channel inserts and private uploads.
+
+        Replacement mode, split-part merging and personal titles retain their
+        existing channel behavior rather than using a separate upload policy.
+        """
+        settings = SettingsManager.current()
+        if (settings.replace_mode or not settings.duplicate_protection
+                or is_personal or incoming.get('group_key')):
+            return False
+        key = self._dup_key(incoming)
+        return any(not q.get('group_key') and self._dup_key(q) == key
+                   for q in existing_qualities)
 
     async def _apply_quality_update(
         self, existing_qualities: List[dict], quality_to_update: dict,
@@ -1492,14 +1500,11 @@ class Database:
             return existing_qualities
 
         #----- REPLACE_MODE off: skip exact duplicates when protection is on, else stack.
-        if SettingsManager.current().duplicate_protection and not is_personal:
-            key = self._dup_key(quality_to_update)
-            for q in existing_qualities:
-                if not q.get("group_key") and self._dup_key(q) == key:
-                    LOGGER.info(f"Duplicate protection: skipped existing stream '{quality_to_update.get('name')}'.")
-                    if status is not None:
-                        status["duplicate_skipped"] = True
-                    return existing_qualities
+        if self._matches_protected_duplicate(existing_qualities, quality_to_update, is_personal):
+            LOGGER.info(f"Duplicate protection: skipped existing stream '{quality_to_update.get('name')}'.")
+            if status is not None:
+                status["duplicate_skipped"] = True
+            return existing_qualities
         existing_qualities.append(quality_to_update)
         return existing_qualities
 
