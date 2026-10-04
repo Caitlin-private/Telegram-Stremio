@@ -248,6 +248,11 @@ def is_absolute_episode(parsed: dict, filename: str = "") -> bool:
     return extract_absolute_episode(filename, parsed) is not None
 
 def analyze_metadata_failure(filename: str) -> str:
+    from Backend.helper.multipart_video import video_part
+    from Backend.helper.settings_manager import SettingsManager
+    part = video_part(filename)
+    if part and SettingsManager.current().allow_multipart_video:
+        filename = part['clean']
     if is_multipart_video(filename or ""):
         return (
             "Looks like a multi-part video split (e.g. part1 / cd1) that can't be "

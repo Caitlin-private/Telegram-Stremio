@@ -12,6 +12,7 @@ from Backend.logger import LOGGER
 _DEFAULTS: Dict[str, Any] = {
     "replace_mode": True,
     "duplicate_protection": False,
+    "allow_multipart_video": False,
     "hide_catalog": False,
     "allow_user_uploads": False,
     "auth_channels": [],
@@ -104,6 +105,10 @@ class Settings:
     @property
     def duplicate_protection(self) -> bool:
         return bool(self._d.get("duplicate_protection", False))
+
+    @property
+    def allow_multipart_video(self) -> bool:
+        return bool(self._d.get("allow_multipart_video", False))
 
     @property
     def hide_catalog(self) -> bool:

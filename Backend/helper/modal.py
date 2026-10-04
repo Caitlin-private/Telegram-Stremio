@@ -13,6 +13,8 @@ class QualityPart(BaseModel):
 
 
 class QualityDetail(BaseModel):
+    video_part: Optional[int] = None
+    video_group: Optional[str] = None
     quality: str
     id: str
     name: str

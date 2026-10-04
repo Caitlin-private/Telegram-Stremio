@@ -256,6 +256,15 @@
                 </span>
             </label>
             <label class="toggle-wrap">
+                <input type="checkbox" class="toggle-input" id="allow_multipart_video"
+                    {% if settings.allow_multipart_video %}checked{% endif %}>
+                <span class="toggle-track"></span>
+                <span class="toggle-label">
+                    <strong>Allow multi part video split files</strong>
+                    <span style="color:var(--text-sec);font-size:0.8rem;display:block">These files can't be merged into a single stream so will be listed as parts separately</span>
+                </span>
+            </label>
+            <label class="toggle-wrap">
                 <input type="checkbox" class="toggle-input" id="hide_catalog"
                     {% if settings.hide_catalog %}checked{% endif %}>
                 <span class="toggle-track"></span>
@@ -1530,6 +1539,7 @@ async function saveSettings() {
     const payload = {
         replace_mode:                  document.getElementById('replace_mode').checked,
         duplicate_protection:          document.getElementById('duplicate_protection').checked,
+        allow_multipart_video:         document.getElementById('allow_multipart_video').checked,
         hide_catalog:                  document.getElementById('hide_catalog').checked,
         allow_user_uploads:            document.getElementById('allow_user_uploads').checked,
         admin_username:                document.getElementById('admin_username').value.trim(),
@@ -1673,6 +1683,7 @@ function renderSettings(s) {
     // Toggles
     document.getElementById('replace_mode').checked = !!s.replace_mode;
     document.getElementById('duplicate_protection').checked = !!s.duplicate_protection;
+    document.getElementById('allow_multipart_video').checked = !!s.allow_multipart_video;
     toggleDuplicateProtection();
     document.getElementById('hide_catalog').checked = !!s.hide_catalog;
     document.getElementById('allow_user_uploads').checked = !!s.allow_user_uploads;

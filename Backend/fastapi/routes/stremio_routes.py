@@ -1033,7 +1033,10 @@ async def get_streams(
 
     if media_details and "telegram" in media_details:
         for quality in media_details.get("telegram", []):
+            if quality.get('video_part') and not SettingsManager.current().allow_multipart_video:
+                continue
             if quality.get("id"):
+                stream_offset = len(streams)
                 filename = quality.get("name", "")
                 quality_str = quality.get("quality", "HD")
                 size = quality.get("size", "")
@@ -1052,6 +1055,11 @@ async def get_streams(
                     if label.lower() not in stream_name.lower():
                         stream_name = f"{stream_name} {label}"
 
+                if quality.get('video_part'):
+                    label = f"[Multi-Part · Part {quality['video_part']}]"
+                    stream_name += f" {label}"
+                    stream_title = f"{label}\n{stream_title}"
+
                 original_url = f"{SettingsManager.current().base_url}/dl/{token}/{quality.get('id')}/video.mkv"
                 proxy_url = build_proxy_url(original_url)
                 cf_url = cf_stream_url(token, quality.get('id'), "video.mkv") if cf_enabled() else None
@@ -1067,6 +1075,9 @@ async def get_streams(
                         streams.append({"name": stream_name, "title": stream_title, "url": proxy_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
                     else:
                         streams.append({"name": stream_name, "title": stream_title, "url": original_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
+                for stream in streams[stream_offset:]:
+                    stream['video_part'] = quality.get('video_part')
+                    stream['video_group'] = quality.get('video_group')
     elif is_global_search_enabled():
         try:
             is_anime = bool(is_kitsu or (media_details and media_details.get("is_anime")))
@@ -1108,6 +1119,11 @@ async def get_streams(
             key=lambda s: (get_resolution_priority(s.get("name", "")), s.get("size_bytes", 0)),
             reverse=not ascending
         )
+    from Backend.helper.multipart_video import part_sort_key
+    streams.sort(key=part_sort_key)
+    for stream in streams:
+        stream.pop('video_part', None)
+        stream.pop('video_group', None)
     name_count: dict = {}
     for s in streams:
         name_count[s["name"]] = name_count.get(s["name"], 0) + 1

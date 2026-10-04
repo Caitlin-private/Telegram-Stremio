@@ -1277,6 +1277,8 @@ class Database:
             quality_detail = QualityDetail(
                 quality=metadata_info['quality'],
                 id=metadata_info['encoded_string'],
+                video_part=metadata_info.get('video_part'),
+                video_group=metadata_info.get('video_group'),
                 name=name,
                 size=size,
             )
@@ -1428,7 +1430,8 @@ class Database:
                          if episode.get('episode_number') == info.get('episode_number')
                          for q in episode.get('telegram', [])]
         incoming = {'quality': info.get('quality'), 'name': name, 'size': size,
-                    'group_key': info.get('group_key')}
+                    'group_key': info.get('group_key'), 'video_part': info.get('video_part'),
+                    'video_group': info.get('video_group')}
         return doc if self._matches_protected_duplicate(
             qualities, incoming, self._is_personal_tmdb(doc.get('tmdb_id'))
         ) else None
@@ -1438,7 +1441,7 @@ class Database:
     def _dup_key(quality: dict) -> tuple:
         name = re.sub(r"\s+", " ", str(quality.get("name") or "").strip().lower())
         size = str(quality.get("size") or "").strip().lower()
-        return (quality.get("quality"), name, size)
+        return (quality.get("quality"), name, size, quality.get('video_part'), quality.get('video_group'))
 
     @staticmethod
     def _is_personal_tmdb(tmdb_id) -> bool:
@@ -1475,6 +1478,7 @@ class Database:
                 stale = [
                     q for q in existing_qualities
                     if q.get("quality") == target_quality
+                    and not q.get('video_part')
                     and q.get("group_key") != incoming_group_key
                 ]
                 for q in stale:
@@ -1483,6 +1487,7 @@ class Database:
                     q for q in existing_qualities
                     if not (
                         q.get("quality") == target_quality
+                        and not q.get('video_part')
                         and q.get("group_key") != incoming_group_key
                     )
                 ]
@@ -1490,11 +1495,17 @@ class Database:
 
         #----- Incoming is a normal (non-split) file.
         if replace_mode:
-            stale = [q for q in existing_qualities if q.get("quality") == target_quality]
+            def same_slot(q):
+                if q.get('quality') != target_quality:
+                    return False
+                if q.get('video_part') or quality_to_update.get('video_part'):
+                    return (q.get('video_part'), q.get('video_group')) == (quality_to_update.get('video_part'), quality_to_update.get('video_group'))
+                return True
+            stale = [q for q in existing_qualities if same_slot(q)]
             for q in stale:
                 await self._queue_quality_deletion(q)
             existing_qualities = [
-                q for q in existing_qualities if q.get("quality") != target_quality
+                q for q in existing_qualities if not same_slot(q)
             ]
             existing_qualities.append(quality_to_update)
             return existing_qualities

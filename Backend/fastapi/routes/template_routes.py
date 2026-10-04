@@ -177,6 +177,13 @@ async def edit_media_page(request: Request, tmdb_id: int, db_index: int, media_t
         raise HTTPException(status_code=500, detail=str(e))
 
     api_tokens = await db.get_all_api_tokens()
+    from Backend.helper.multipart_video import part_sort_key
+    def order_parts(qualities):
+        return sorted(sorted(qualities or [], key=lambda q: q.get('quality') or ''), key=part_sort_key)
+    media_details['telegram'] = order_parts(media_details.get('telegram'))
+    for season in media_details.get('seasons', []):
+        for episode in season.get('episodes', []):
+            episode['telegram'] = order_parts(episode.get('telegram'))
     ctx = _base_context(request)
     ctx.update({
         "current_user": get_current_user(request),

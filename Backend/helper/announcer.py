@@ -65,8 +65,6 @@ def _build_caption(info: dict) -> str:
     genres = info.get("genres") or []
     if genres:
         lines.append(f"🎭 <b>Genres:</b> {escape(', '.join(str(g) for g in genres[:4]))}")
-    if info.get("quality"):
-        lines.append(f"📶 <b>Quality:</b> {escape(str(info['quality']))}")
 
     desc = (info.get("description") or "").strip()
     if desc:

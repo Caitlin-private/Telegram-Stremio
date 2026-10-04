@@ -953,6 +953,21 @@ obtain a personal token if needed; unknown users are directed to /start. No new
 configuration is required. Restart the application after updating.
 # Added status features
 
+## Independently playable multipart videos
+
+Enable **Allow multi part video split files** in Settings → General to index
+numbered video segments such as `Movie.2025.1080p.part001.mkv` and `part002.mkv`.
+Include the title/year/quality in every part's filename or caption. These are
+separate playable streams, not merged files. Streams and file listings label
+them `[Multi-Part · Part N]`, group matching releases and place parts last.
+Select the next part manually. Replacement mode only replaces the same release
+and part number, preserving other parts and complete videos.
+
+The toggle defaults to off. Turning it off rejects new parts and hides indexed
+parts from Stremio results (WebDAV refreshes on its existing cache cycle); it
+does not delete stored media. Previously skipped files need forwarding or scanning
+again after enabling the toggle. ZIP/raw archive handling is unchanged.
+
 Skipped media copied to the configured skip channel now receives a plain-text
 reply beginning with `Metadata failed for file`, followed by the filename,
 source message ID, and the existing metadata failure explanation. No log dump
