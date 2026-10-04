@@ -77,6 +77,8 @@ async def resolve_telegram_message(client, url: str = None, chat_id=None, msg_id
         "chat_id": str(message.chat.id).replace("-100", ""),
         "msg_id": message.id,
         "name": file_name,
+        "caption": caption,
+        "file_name": getattr(media, 'file_name', None) or '',
         "raw_size": raw_size,
         "size": get_readable_file_size(raw_size),
         "quality": quality,

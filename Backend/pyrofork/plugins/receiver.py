@@ -12,7 +12,6 @@ from Backend import db
 from Backend.helper.announcer import announce_new_media, _build_caption, _build_markup
 from Backend.config import Telegram
 from datetime import datetime
-from pyrogram.enums.parse_mode import ParseMode
 from Backend.helper.auto_catalog import start_single_media_catalog_sync
 from Backend.helper.channel_auto_add import accepts_message, capture_message, get_session
 from Backend.helper.encrypt import encode_string
@@ -29,7 +28,7 @@ from Backend.logger import LOGGER
 
 file_queue = Queue()
 db_lock = Lock()
-manual_session_lock = Lock()
+from Backend.helper.ingestion_rules import manual_ingestion_lock as manual_session_lock
 
 
 #----- True when the message carries a streamable video or a split-archive part
@@ -128,8 +127,17 @@ def _base_from_doc(doc: dict) -> dict:
 #----- Highest existing episode number in a season, or 0 if none
 def _max_episode(doc: dict, season_number: int) -> int:
     for season in doc.get("seasons", []) or []:
-        if season.get("season_number") == season_number:
-            eps = [e.get("episode_number", 0) for e in season.get("episodes", []) or []]
+        try:
+            same_season = int(season.get("season_number")) == int(season_number)
+        except (TypeError, ValueError):
+            same_season = season.get("season_number") == season_number
+        if same_season:
+            eps = []
+            for episode in season.get("episodes", []) or []:
+                try:
+                    eps.append(int(episode.get("episode_number") or 0))
+                except (TypeError, ValueError):
+                    continue
             return max(eps) if eps else 0
     return 0
 
@@ -174,7 +182,15 @@ async def _handle_personal_session(client: Client, message: Message) -> None:
         if media_type == "tv":
             season_number = session["season"]
             episode_number = session["episode"]
-            if episode_number is None:
+            if session.get('episode_detection') == 'filename':
+                from Backend.helper.ingestion_rules import leading_episode
+                try:
+                    episode_number = leading_episode(resolved.get('caption'), resolved.get('file_name'), name)
+                except ValueError as exc:
+                    LOGGER.warning(f'[Manual Session] {exc}')
+                    await message.reply_text(str(exc), parse_mode=ParseMode.DISABLED)
+                    return
+            elif session.get('episode_detection') == 'order' or episode_number is None:
                 episode_number = _max_episode(doc, season_number) + 1
             thumb_url = ""
             if resolved.get("has_thumb"):

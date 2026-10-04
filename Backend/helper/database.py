@@ -1836,6 +1836,24 @@ class Database:
                 return col.find_one({"kitsu_id": int(kitsu_id)})
             return None
 
+        async def _all_matching_docs(collection_name: str) -> list[tuple[int, dict]]:
+            """Return every matching copy, newest storage bucket first.
+
+            Older installations can contain the same title in more than one
+            storage bucket after a quota rollover or a manual migration.  A
+            stream lookup can still find a later season by walking buckets,
+            but the series metadata endpoint used by Stremio/Nuvio used to
+            stop at the first copy and silently hide seasons from the other
+            bucket.  Keep the current bucket as the primary document and
+            merge the remaining copies at the API boundary.
+            """
+            matches = []
+            for db_idx in range(self.current_db_index, 0, -1):
+                doc = await _find_doc(self.dbs[f"storage_{db_idx}"][collection_name])
+                if doc:
+                    matches.append((db_idx, doc))
+            return matches
+
         for db_idx in range(self.current_db_index, 0, -1):
             db_key = f"storage_{db_idx}"
 
@@ -1916,19 +1934,46 @@ class Database:
                             return details
             
             else:
-                tv_doc = await _find_doc(self.dbs[db_key]["tv"])
-                if tv_doc:
-                    tv_doc = convert_objectid_to_str(tv_doc)
-                    tv_doc["type"] = "tv"
-                    tv_doc["db_index"] = db_idx
-                    return tv_doc
-                
-                movie_doc = await _find_doc(self.dbs[db_key]["movie"])
-                if movie_doc:
-                    movie_doc = convert_objectid_to_str(movie_doc)
-                    movie_doc["type"] = "movie"
-                    movie_doc["db_index"] = db_idx
-                    return movie_doc
+                # Merge duplicate copies of a title before returning the
+                # series metadata used by Stremio/Nuvio.  This is especially
+                # important for later seasons that were written after a
+                # storage bucket rollover.
+                tv_matches = await _all_matching_docs("tv")
+                if tv_matches:
+                    primary_db, tv_doc = tv_matches[0]
+                    merged = convert_objectid_to_str(tv_doc)
+                    for _, secondary in tv_matches[1:]:
+                        secondary = convert_objectid_to_str(secondary)
+                        merged["seasons"] = self._merge_season_lists(
+                            merged.get("seasons") or [], secondary.get("seasons") or []
+                        )
+                        merged["telegram"] = self._merge_telegram_lists(
+                            merged.get("telegram") or [], secondary.get("telegram") or []
+                        )
+                        # Preserve useful metadata if the newest copy is a
+                        # legacy/minimal record.
+                        for key, value in secondary.items():
+                            if merged.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
+                                merged[key] = value
+                    merged["type"] = "tv"
+                    merged["db_index"] = primary_db
+                    return merged
+
+                movie_matches = await _all_matching_docs("movie")
+                if movie_matches:
+                    primary_db, movie_doc = movie_matches[0]
+                    merged = convert_objectid_to_str(movie_doc)
+                    for _, secondary in movie_matches[1:]:
+                        secondary = convert_objectid_to_str(secondary)
+                        merged["telegram"] = self._merge_telegram_lists(
+                            merged.get("telegram") or [], secondary.get("telegram") or []
+                        )
+                        for key, value in secondary.items():
+                            if merged.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
+                                merged[key] = value
+                    merged["type"] = "movie"
+                    merged["db_index"] = primary_db
+                    return merged
         
         return None
 
@@ -2694,23 +2739,32 @@ class Database:
 
     def _merge_season_lists(self, primary: List[dict], secondary: List[dict]) -> List[dict]:
         merged = list(primary or [])
-        season_map = {s.get("season_number"): s for s in merged}
+        def _number_key(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return value
+
+        season_map = {_number_key(s.get("season_number")): s for s in merged}
         for season in (secondary or []):
             season_number = season.get("season_number")
-            target_season = season_map.get(season_number)
+            target_season = season_map.get(_number_key(season_number))
             if not target_season:
                 merged.append(season)
-                season_map[season_number] = season
+                season_map[_number_key(season_number)] = season
                 continue
 
             target_season.setdefault("episodes", [])
-            episode_map = {e.get("episode_number"): e for e in target_season["episodes"]}
+            episode_map = {
+                _number_key(e.get("episode_number")): e
+                for e in target_season["episodes"]
+            }
             for episode in season.get("episodes", []):
                 episode_number = episode.get("episode_number")
-                target_episode = episode_map.get(episode_number)
+                target_episode = episode_map.get(_number_key(episode_number))
                 if not target_episode:
                     target_season["episodes"].append(episode)
-                    episode_map[episode_number] = episode
+                    episode_map[_number_key(episode_number)] = episode
                     continue
                 target_episode["telegram"] = self._merge_telegram_lists(
                     target_episode.get("telegram", []), episode.get("telegram", [])

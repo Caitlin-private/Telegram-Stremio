@@ -1,5 +1,4 @@
 import asyncio
-import asyncio
 import json
 import os
 import random
@@ -31,6 +30,7 @@ from Backend.helper.custom_dl import ByteStreamer, _speed_test_single_client, ru
 from Backend.helper.encrypt import decode_string, encode_string
 from Backend.helper.health import run_health_checks
 from Backend.helper.manual_add import resolve_telegram_message, stamp_caption_by_ref
+from Backend.helper.ingestion_rules import serialize_manual_ingestion
 from Backend.helper.pyro import resolve_video_thumb_url
 from Backend.helper.requests_manager import (
     delete_request,
@@ -1200,15 +1200,15 @@ def _fill_placeholder_metadata(meta: dict) -> None:
 
 
 #----- Manual add: create/append a movie, tv show, season, episode or stream by hand
+@serialize_manual_ingestion
 async def manual_add_media_api(payload: dict) -> dict:
+    from Backend.helper.ingestion_rules import episode_mode, leading_episode, next_episode
     media_type = payload.get("media_type")
     if media_type not in ("movie", "tv"):
         raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'.")
 
     stream = payload.get("stream") or {}
     quality = str(stream.get("quality") or "").strip()
-    if not quality:
-        raise HTTPException(status_code=400, detail="A quality label (e.g. 1080p) is required.")
 
     #----- One source = single file, multiple sources = split file parts (in order)
     part_sources = stream.get("parts")
@@ -1234,7 +1234,12 @@ async def manual_add_media_api(payload: dict) -> dict:
             raise HTTPException(status_code=500, detail=f"Could not read that message: {exc}")
 
     primary = resolved_parts[0]
-    is_split = len(resolved_parts) > 1
+    quality = quality or primary.get('quality') or 'Unknown'
+    try:
+        detection = episode_mode(payload.get('episode_detection')) if media_type == 'tv' else 'fixed'
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    is_split = len(resolved_parts) > 1 and detection == 'fixed'
     raw_name = (stream.get("name") or primary["name"]).strip()
     name = strip_part_suffix(raw_name) if is_split else raw_name
 
@@ -1288,9 +1293,20 @@ async def manual_add_media_api(payload: dict) -> dict:
     if media_type == "tv":
         try:
             season_number = int(payload.get("season_number"))
-            episode_number = int(payload.get("episode_number"))
+            if season_number < 0:
+                raise ValueError('Invalid season')
+            episode_number = int(payload.get("episode_number")) if detection == 'fixed' else 1
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="Season and episode numbers are required for TV.")
+        if detection == 'filename':
+            try:
+                detected_episodes = [leading_episode(p.get('caption'), p.get('file_name'), p['name']) for p in resolved_parts]
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+        elif detection == 'order':
+            existing = await db.find_media_doc('tv', base['tmdb_id'])
+            start_episode = next_episode(existing[0] if existing else {}, season_number)
+            detected_episodes = list(range(start_episode, start_episode + len(resolved_parts)))
         tv_extra = {
             "season_number": season_number,
             "episode_number": episode_number,
@@ -1316,9 +1332,16 @@ async def manual_add_media_api(payload: dict) -> dict:
             "is_anime": False,
         })
         metadata_info.update(tv_extra)
+        part_name = name
+        if media_type == 'tv' and detection != 'fixed':
+            metadata_info['quality'] = str(stream.get('quality') or '').strip() or part.get('quality') or 'Unknown'
+            number = detected_episodes[index - 1]
+            metadata_info['episode_number'] = number
+            metadata_info['episode_title'] = f'S{season_number:02d}E{number:02d}'
+            part_name = part['name']
         updated_id = await db.insert_media(
             metadata_info, channel=p_channel, msg_id=p_msg,
-            size=part["size"], name=name, raw_size=int(part.get("raw_size") or 0),
+            size=part["size"], name=part_name, raw_size=int(part.get("raw_size") or 0),
         )
         if not updated_id:
             raise HTTPException(status_code=500, detail="Failed to add media (validation error).")
@@ -1365,6 +1388,8 @@ async def manual_add_media_api(payload: dict) -> dict:
             pass
 
     message = f"Split stream added ({len(resolved_parts)} parts)." if is_split else "Stream added successfully."
+    if media_type == 'tv' and detection != 'fixed':
+        message = f'Added {len(resolved_parts)} separate episode stream(s).'
     if catalogs_added:
         message += f" Added to: {', '.join(catalogs_added)}."
     return {
@@ -2162,6 +2187,11 @@ async def set_manual_session_api(payload: dict) -> dict:
         #----- Personal: files have no usable metadata, so season/episode come from here
         season = payload.get("season")
         episode = payload.get("episode")
+        from Backend.helper.ingestion_rules import episode_mode
+        try:
+            detection = episode_mode(payload.get('episode_detection'), 'fixed' if episode not in (None, '') else 'order')
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         quality = str(payload.get("quality") or "").strip()
 
         if media_type == "tv":
@@ -2178,12 +2208,17 @@ async def set_manual_session_api(payload: dict) -> dict:
                     raise HTTPException(status_code=400, detail="Episode must be a number.")
             else:
                 episode = None
+            if season < 0 or (episode is not None and episode < 0):
+                raise HTTPException(status_code=400, detail='Season and episode must not be negative.')
+            if detection == 'fixed' and episode is None:
+                raise HTTPException(status_code=400, detail='Enter an episode for fixed episode mode.')
         else:
             season = None
             episode = None
 
         session.update({
             "kind": "personal",
+            "episode_detection": detection,
             "default_id": None,
             "season": season,
             "episode": episode,

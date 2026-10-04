@@ -928,53 +928,6 @@ If Telegram-Stremio is useful to you, you can support its development here:
 
 </div>
 
-### Private media search and announcement cards
+## Caitlin fork
 
-Registered users can send a movie or series name in the bot's private chat.
-The bot searches the local library (including alternate titles) and returns up
-to five matching announcement-style cards with a poster, description and:
-
-- **WebDAV**: the exact movie/series folder, with the requesting user's token.
-- **Open in Stremio**: the existing quick-open title link, when an IMDb ID is available.
-
-The WebDAV folder lists movie qualities or series seasons/episodes. Its paths
-come from the actual virtual filesystem, including duplicate-name suffixes.
-WebDAV Basic authentication, if configured, still applies. Install your personal
-addon from /start in Stremio before using quick-open links.
-
-New announcements use **View media** to open the same private card. No personal
-tokens are put in channel posts, and the bot no longer forwards source files.
-Previously published **Get the file** links resolve their source title and show
-the new card too; the old post's button label is not automatically edited.
-
-Access uses existing registered API tokens and the server's normal subscription,
-manual-grant, expiry and usage-limit checks. Active subscribers and the owner can
-obtain a personal token if needed; unknown users are directed to /start. No new
-configuration is required. Restart the application after updating.
-# Added status features
-
-## Independently playable multipart videos
-
-Enable **Allow multi part video split files** in Settings → General to index
-numbered video segments such as `Movie.2025.1080p.part001.mkv` and `part002.mkv`.
-Include the title/year/quality in every part's filename or caption. These are
-separate playable streams, not merged files. Streams and file listings label
-them `[Multi-Part · Part N]`, group matching releases and place parts last.
-Select the next part manually. Replacement mode only replaces the same release
-and part number, preserving other parts and complete videos.
-
-The toggle defaults to off. Turning it off rejects new parts and hides indexed
-parts from Stremio results (WebDAV refreshes on its existing cache cycle); it
-does not delete stored media. Previously skipped files need forwarding or scanning
-again after enabling the toggle. ZIP/raw archive handling is unchanged.
-
-Skipped media copied to the configured skip channel now receives a plain-text
-reply beginning with `Metadata failed for file`, followed by the filename,
-source message ID, and the existing metadata failure explanation. No log dump
-or traceback is posted. This applies to live ingestion and channel scans.
-
-System & Maintenance shows **RAM Free / Total** on stats refresh. Free means
-available memory; detected Linux container limits cap the reported capacity.
-The owner can send `/stats` privately to the manager bot for RAM, movies, TV shows,
-episodes, streams, database size, version, uptime, live streams and active users.
-Active users counts distinct access tokens currently streaming (not all subscribers).
+See [Caitlin features](docs/CAITLIN.md) and [upstream maintenance](docs/UPSTREAM.md).

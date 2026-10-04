@@ -28,6 +28,8 @@ _EXPLICIT_SEASON_WORD_RE = re.compile(r"(?i)\b(?:season|series)\s*0*\d{1,2}\b")
 
 
 def parse_media_name(name: str) -> dict:
+    from Backend.helper.ingestion_rules import resolution_hint, normalize_resolution_aliases
+    name = normalize_resolution_aliases(name)
     try:
         ptn = PTN.parse(name) or {}
     except Exception as e:
@@ -82,6 +84,7 @@ def parse_media_name(name: str) -> dict:
     except (TypeError, ValueError):
         pass
 
+    parsed['quality'] = resolution_hint(name) or parsed['quality']
     return parsed
 
 

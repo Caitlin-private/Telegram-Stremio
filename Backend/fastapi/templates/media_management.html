@@ -628,10 +628,19 @@
                         <input id="ma-m-backdrop" type="url" class="ma-input" placeholder="Left empty = generated from title">
                     </div>
                 </div>
-                <p class="text-xs text-text-secondary -mt-2">For a single manual addition, title, stream link and quality are required; empty optional fields are auto-filled. For auto-add, all fields are optional: missing titles use filenames, artwork uses generated covers, and genres, ratings and descriptions are not invented. Search selections copy metadata rather than attaching uploads to an existing title.</p>
+                <p class="text-xs text-text-secondary -mt-2">For manual additions, enter a title and stream links. TV also needs a season; automatic episode modes need no episode field. Quality is detected when left empty. For auto-add, missing titles use filenames and artwork uses generated covers. Search selections copy metadata rather than attaching uploads to an existing title.</p>
 
                 <!-- TV episode fields -->
                 <div id="ma-tv-fields" class="hidden grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div class="col-span-2">
+                        <label class="ma-label">Episode detection (manual additions)</label>
+                        <select id="ma-episode-mode" class="ma-input" onchange="document.getElementById('ma-episode').disabled = this.value !== 'fixed'">
+                            <option value="fixed">Specify episode (existing behavior)</option>
+                            <option value="order">By adding order</option>
+                            <option value="filename">By file / message</option>
+                        </select>
+                        <p class="text-xs text-text-secondary">Order: each link becomes the next episode. File/message: a leading number such as 12. The Apothecary Diaries.mkv becomes episode 12. Automatic modes keep links separate, not joined.</p>
+                    </div>
                     <div>
                         <label class="ma-label">Season *</label>
                         <input id="ma-season" type="number" min="0" class="ma-input" placeholder="1">
@@ -650,17 +659,17 @@
                 <div class="space-y-3">
                     <div class="flex items-center justify-between gap-2">
                         <label class="ma-label" style="margin-bottom:0">Stream link(s) *</label>
-                        <button type="button" onclick="maAddPart()" class="text-xs font-bold text-primary shrink-0"><i class="fa-solid fa-plus"></i> Add split part</button>
+                        <button type="button" onclick="maAddPart()" class="text-xs font-bold text-primary shrink-0"><i class="fa-solid fa-plus"></i> Add another link</button>
                     </div>
                     <div id="ma-parts" class="space-y-2"></div>
-                    <p class="text-xs text-text-secondary">Add more parts only for a split file (they join into one stream, in order).</p>
+                    <p class="text-xs text-text-secondary">With automatic TV episode detection, each link is a separate episode. In fixed mode, multiple links are joined as split parts of one file.</p>
                     <p id="ma-resolve-state" class="text-xs text-text-secondary hidden"></p>
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div>
-                            <label class="ma-label">Quality *</label>
+                            <label class="ma-label">Quality (optional)</label>
                             <select id="ma-quality" class="ma-input">
-                                <option value="">Auto-detect (auto-add only)</option>
-                                <option>480p</option><option>720p</option><option selected>1080p</option>
+                                <option value="" selected>Auto-detect</option>
+                                <option>360p</option><option>480p</option><option>540p</option><option>720p</option><option>1080p</option>
                                 <option>2160p</option><option value="__custom">Custom…</option>
                             </select>
                         </div>
@@ -698,6 +707,8 @@
 
     function maToggleAuto() {
         const enabled = document.getElementById('ma-auto').checked;
+        document.getElementById('ma-episode-mode').disabled = enabled;
+        document.getElementById('ma-episode').disabled = !enabled && document.getElementById('ma-episode-mode').value !== 'fixed';
         document.getElementById('ma-auto-options').classList.toggle('hidden', !enabled);
         document.getElementById('ma-submit').textContent = enabled ? 'Start auto-add' : 'Add Content';
         if (enabled) document.getElementById('ma-quality').value = '';
@@ -900,6 +911,7 @@
     }
 
     function openManualAdd() {
+        document.getElementById('ma-episode-mode').value = 'fixed';
         document.getElementById('ma-auto').checked = false;
         maToggleAuto();
         clearInterval(maAutoTimer);
@@ -908,7 +920,7 @@
         maSetType(mediaType === 'all' ? 'movie' : mediaType);
         ['ma-name','ma-season','ma-episode','ma-episode-title','ma-m-title','ma-m-year','ma-m-rating','ma-m-genres','ma-m-description','ma-m-poster','ma-m-backdrop','ma-quality-custom','ma-search-query'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
         maResetParts();
-        document.getElementById('ma-quality').value = '1080p';
+        document.getElementById('ma-quality').value = '';
         document.getElementById('ma-quality-custom').classList.add('hidden');
         document.getElementById('ma-resolve-state').classList.add('hidden');
         document.getElementById('ma-search-state').classList.add('hidden');
@@ -988,7 +1000,6 @@
         const auto = document.getElementById('ma-auto').checked;
         if (!auto && !title) { showToast('Enter a title.', 'error', 'Error'); return; }
         if (!auto && !parts.length) { showToast('Paste at least one Telegram message link.', 'error', 'Error'); return; }
-        if (!auto && !quality) { showToast('Select a quality.', 'error', 'Error'); return; }
 
         const payload = {
             media_type: maType,
@@ -1010,9 +1021,11 @@
         if (maType === 'tv') {
             const s = document.getElementById('ma-season').value.trim();
             const e = document.getElementById('ma-episode').value.trim();
-            if (!auto && (s === '' || e === '')) { showToast('Season and episode are required.', 'error', 'Error'); return; }
+            const mode = auto ? 'fixed' : document.getElementById('ma-episode-mode').value;
+            if (!auto && (s === '' || (mode === 'fixed' && e === ''))) { showToast('Enter a season and an episode if using fixed mode.', 'error', 'Error'); return; }
+            payload.episode_detection = mode;
             payload.season_number = s === '' ? null : Number(s);
-            payload.episode_number = e === '' ? null : Number(e);
+            payload.episode_number = mode !== 'fixed' || e === '' ? null : Number(e);
             payload.episode_title = document.getElementById('ma-episode-title').value.trim() || undefined;
         }
 

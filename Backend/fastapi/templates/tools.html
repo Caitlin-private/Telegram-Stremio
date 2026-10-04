@@ -220,6 +220,15 @@
                 <!-- Personal title: manual metadata -->
                 <div id="ms-personal-fields" class="hidden mt-3">
                     <div id="ms-tv-fields" class="hidden grid grid-cols-2 gap-3">
+                        <div class="col-span-2">
+                            <label class="s-label">Episode detection</label>
+                            <select id="ms-episode-mode" class="s-input" onchange="document.getElementById('ms-episode').disabled = this.value !== 'fixed'">
+                                <option value="order">By adding order</option>
+                                <option value="filename">By file / message</option>
+                                <option value="fixed">Specify episode</option>
+                            </select>
+                            <p class="hint">File/message reads the leading number: 12. The Apothecary Diaries.mkv → episode 12. Missing numbers are rejected, not guessed.</p>
+                        </div>
                         <div>
                             <label class="s-label">Season <span style="color:#ef4444">*</span></label>
                             <input id="ms-season" type="number" min="0" placeholder="e.g. 1"
@@ -231,8 +240,7 @@
                                    style="width:100%;background:color-mix(in srgb,var(--bg) 60%,transparent);border:1px solid var(--border);border-radius:0.9rem;padding:0.6rem 0.9rem;color:var(--text);outline:none">
                         </div>
                         <p class="hint col-span-2" style="margin-top:-0.25rem">
-                            Set an <strong>episode</strong> to pile every forwarded file onto that one episode (multiple qualities).
-                            Leave it <strong>empty</strong> so each file becomes the next episode (E1, E2, E3…).
+                            Choose <strong>Specify episode</strong> for multiple qualities of one episode, or detect each episode by adding order or file/message.
                         </p>
                     </div>
                     <div class="mt-3">
@@ -581,6 +589,8 @@ function pickManualResult(i) {
 
     document.getElementById('ms-season').value = '';
     document.getElementById('ms-episode').value = '';
+    document.getElementById('ms-episode-mode').value = 'order';
+    document.getElementById('ms-episode').disabled = true;
     document.getElementById('ms-quality').value = '';
     document.getElementById('ms-real-season').value = '';
     document.getElementById('ms-selected-box').classList.remove('hidden');
@@ -605,8 +615,12 @@ async function startManualSession() {
             const s = document.getElementById('ms-season').value.trim();
             if (s === '') { showToast('Season number is required for personal TV shows.', 'error', 'Session'); return; }
             payload.season = s;
+            payload.episode_detection = document.getElementById('ms-episode-mode').value;
             const ep = document.getElementById('ms-episode').value.trim();
-            if (ep !== '') payload.episode = ep;
+            if (payload.episode_detection === 'fixed') {
+                if (ep === '') { showToast('Enter an episode for fixed mode.', 'error', 'Session'); return; }
+                payload.episode = ep;
+            }
         }
         const q = document.getElementById('ms-quality').value.trim();
         if (q !== '') payload.quality = q;
@@ -663,7 +677,7 @@ function renderManualSession(session) {
                 detail += ` · Season ${session.season}`;
                 detail += (session.episode !== null && session.episode !== undefined)
                     ? ` · Episode ${session.episode} (all files → this episode)`
-                    : ' · each file → next episode';
+                    : (session.episode_detection === 'filename' ? ' · episode from file/message' : ' · each file → next episode');
             } else {
                 detail += ' · each file → a new quality';
             }

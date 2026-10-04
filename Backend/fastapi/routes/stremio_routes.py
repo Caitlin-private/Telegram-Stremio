@@ -663,22 +663,40 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
             try:
                 return int(s.get("season_number"))
             except (TypeError, ValueError):
-                return 0
+                return None
 
         def _enum(e):
             try:
                 return int(e.get("episode_number"))
             except (TypeError, ValueError):
-                return 0
+                return None
 
-        for season in sorted(seasons, key=_snum):
+        # A title can exist in more than one storage bucket on older
+        # installations.  Database lookup merges those copies, but keep the
+        # response defensive as well: normalize legacy string numbers and do
+        # not emit duplicate/invalid video IDs that Nuvio will discard.
+        seen_video_ids = set()
+        valid_seasons = [s for s in seasons if _snum(s) is not None]
+        for season in sorted(valid_seasons, key=lambda s: _snum(s)):
             s_num = _snum(season)
             episodes = season.get("episodes") or []
-            for episode in sorted(episodes, key=_enum):
+            for episode in sorted(
+                episodes,
+                key=lambda e: _enum(e) if _enum(e) is not None else 10**9,
+            ):
                 e_num = _enum(episode)
-                if not episodes:
-                    continue
                 abs_ep = episode.get("absolute_episode")
+                if e_num is None:
+                    # Some pre-normalization anime records only retained the
+                    # absolute episode number.  It is still a valid playable
+                    # episode, so use it as the relative fallback rather
+                    # than returning an E00 entry that clients hide.
+                    try:
+                        e_num = int(abs_ep) if abs_ep is not None else None
+                    except (TypeError, ValueError):
+                        e_num = None
+                if e_num is None:
+                    continue
                 if parsed["is_kitsu"] and kitsu_id is not None:
                     if abs_ep is not None:
                         episode_id = f"kitsu:{kitsu_id}:{abs_ep}"
@@ -686,6 +704,9 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
                         episode_id = f"kitsu:{kitsu_id}:{s_num}:{e_num}"
                 else:
                     episode_id = f"{meta_id}:{s_num}:{e_num}"
+                if episode_id in seen_video_ids:
+                    continue
+                seen_video_ids.add(episode_id)
                 ep_title = (
                     episode.get("title")
                     or episode.get("episode_title")
