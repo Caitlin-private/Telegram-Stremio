@@ -32,7 +32,5 @@ def format_stats(s):
         f'🗄️ DB size: {s["db_size"]}\n\n'
         '🟢 Live Activity\n'
         f'▶️ Live streams: {s["live_streams"]:,}\n'
-        f'👥 Active users: {s["active_users"]:,}\n\n'
-        'Active users = distinct access tokens currently streaming.\n'
-        f'RAM scope: {ram.get("scope", "Unavailable")}; free means available memory.'
+        f'👥 Active users: {s["active_users"]:,}'
     )

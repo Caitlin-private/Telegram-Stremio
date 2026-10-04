@@ -1,5 +1,6 @@
 from asyncio import Lock, Queue, create_task
 from asyncio import sleep as asleep
+from html import escape
 
 from pyrogram import Client, filters
 from pyrogram.enums.parse_mode import ParseMode
@@ -350,6 +351,18 @@ async def file_deleted_handler(client: Client, messages: list[Message]):
         LOGGER.error(f"Error handling deleted messages: {e}")
 
 #----- User private media upload
+async def _upload_failure(message, title, settings, reason=None):
+    from Backend.helper.metadata.parse import analyze_metadata_failure
+    reason = reason or analyze_metadata_failure(clean_filename(title))
+    LOGGER.warning(f"Metadata failed for file: {title} (ID: {message.id}): {reason}")
+    await message.reply_text(
+        f"Auto adding failed: <code>{escape(reason)}</code>\n\n"
+        f"Fix the file title or request on {escape(settings.base_url.rstrip('/') + '/request')} "
+        "and contact administrator.",
+        quote=True, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+    )
+
+
 @Client.on_message(filters.private & (filters.document | filters.video))
 async def user_upload_handler(client: Client, message: Message):
     settings = SettingsManager.current()
@@ -385,26 +398,45 @@ async def user_upload_handler(client: Client, message: Message):
     # Extract
     _, title, msg_id, raw_size, size, channel = _extract_fields(message)
 
-    metadata_info = await metadata(clean_filename(title), int(target_channel), msg_id, override_id=extract_default_id(message.caption or ""))
+    storage_channel = int(str(target_channel).removeprefix('-100'))
+    try:
+        metadata_info = await metadata(clean_filename(title), storage_channel, msg_id, override_id=extract_default_id(message.caption or ""))
+    except Exception:
+        LOGGER.exception('User upload metadata lookup failed')
+        await _upload_failure(message, title, settings, 'Metadata lookup failed. Please retry or contact the administrator.')
+        return
 
     if metadata_info is None:
-        base_url = settings.base_url
-        await message.reply_text(
-            f"auto adding failed try another file with proper name and year on the message or request it on {base_url}/request and contact administrator",
-            quote=True
-        )
+        await _upload_failure(message, title, settings)
         return
 
     try:
-        copied = await message.copy(int(target_channel))
-
-        # Now parse using the new copied msg ID
-        metadata_info = await metadata(clean_filename(title), int(target_channel), copied.id, override_id=extract_default_id(copied.caption or ""))
-        if metadata_info is None:
-             raise Exception("Failed parsing on copied message")
-
         title = _finalize_title(title, metadata_info)
-        await file_queue.put((metadata_info, int(target_channel), copied.id, size, raw_size, title))
+        # Share the insertion lock with channel ingestion: simultaneous forwards
+        # must see the first committed upload before deciding to copy again.
+        async with db_lock:
+            existing = (await db.find_upload_duplicate(metadata_info, title, size, raw_size)
+                        if settings.duplicate_protection else None)
+            if existing:
+                metadata_info.update(_base_from_doc(existing))
+            else:
+                copied = await message.copy(int(target_channel))
+                storage_channel = int(str(target_channel).removeprefix('-100'))
+                metadata_info['encoded_string'] = await encode_string({'chat_id': storage_channel, 'msg_id': copied.id})
+                insert_status = {}
+                updated = await db.insert_media(metadata_info, channel=storage_channel,
+                    msg_id=copied.id, size=size, raw_size=raw_size, name=title, status=insert_status)
+                if not updated:
+                    await message.reply_text('Auto adding failed: <code>Could not save media to the database.</code>\n\n'
+                        f"Fix the file title or request on {escape(settings.base_url.rstrip('/') + '/request')} and contact administrator.",
+                        parse_mode=ParseMode.HTML, quote=True)
+                    return
+                if insert_status.get('duplicate_skipped'):
+                    create_task(delete_message(int(target_channel), copied.id))
+                else:
+                    start_single_media_catalog_sync(db, tmdb_id=metadata_info.get('tmdb_id'), media_type=metadata_info.get('media_type'))
+                    announce_new_media(metadata_info)
+                    create_task(auto_fulfill(tmdb_id=metadata_info.get('tmdb_id'), imdb_id=metadata_info.get('imdb_id'), media_type=metadata_info.get('media_type')))
 
         caption = _build_caption(metadata_info)
         markup = _build_markup(metadata_info)
@@ -425,3 +457,4 @@ async def user_upload_handler(client: Client, message: Message):
         await message.reply_text(f"Got Floodwait of {str(e.value)}s")
     except Exception as e:
         LOGGER.error(f"User upload error: {e}")
+        await _upload_failure(message, title, settings, 'The file could not be copied or saved. Please retry or contact the administrator.')

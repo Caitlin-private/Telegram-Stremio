@@ -1406,6 +1406,39 @@ class Database:
             result.append(quality_to_update)
         return result
 
+    async def find_upload_duplicate(self, info: dict, name: str, size: str, raw_size: int = 0):
+        """Read-only duplicate check before copying private uploads to storage."""
+        year = info.get('year')
+        try:
+            year = int(str(year)[:4]) if year else None
+        except (ValueError, TypeError):
+            year = None
+        doc, _, _ = await self._find_existing_media(
+            self._collection_for(info.get('media_type')), info.get('imdb_id'),
+            info.get('tmdb_id'), info.get('title'), year, self.current_db_index,
+            kitsu_id=info.get('kitsu_id'),
+        )
+        if not doc:
+            return None
+        qualities = doc.get('telegram', [])
+        if self._collection_for(info.get('media_type')) == 'tv':
+            qualities = [q for season in doc.get('seasons', [])
+                         if season.get('season_number') == info.get('season_number')
+                         for episode in season.get('episodes', [])
+                         if episode.get('episode_number') == info.get('episode_number')
+                         for q in episode.get('telegram', [])]
+        key = self._dup_key({'quality': info.get('quality'), 'name': name, 'size': size})
+        for quality in qualities:
+            if info.get('group_key'):
+                if quality.get('group_key') == info['group_key'] and any(
+                    p.get('part_number') == (info.get('part_number') or 1)
+                    and p.get('size_bytes') == raw_size for p in quality.get('parts', [])
+                ):
+                    return doc
+            elif not quality.get('group_key') and self._dup_key(quality) == key:
+                return doc
+        return None
+
     #----- Identity of a non-split stream for duplicate protection (quality + name + size)
     @staticmethod
     def _dup_key(quality: dict) -> tuple:
