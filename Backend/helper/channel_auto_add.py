@@ -5,6 +5,7 @@ import secrets
 from datetime import datetime
 from hashlib import blake2b
 from time import time
+from Backend.helper.ingestion_rules import episode_mode, leading_episode, ordered_episodes
 
 STATE_ID = "channel_auto_add"
 UNTAGGED_ID = "756e746167676564636174616c"
@@ -84,12 +85,23 @@ def build_session(payload, now=None):
         "media_type": media_type, "manual_metadata": fields, "catalog_ids": catalogs,
         "quality": str(payload.get("quality") or "").strip()[:100],
         "episode_title": str(payload.get("episode_title") or "").strip()[:1000],
+        "selected_id": str(payload.get("selected_id") or "").strip(),
+        "episode_detection": episode_mode(payload.get("episode_detection")),
     }
     for key in ("season_number", "episode_number"):
         value = payload.get(key)
         session[key] = None if value in (None, "") else _integer(value, key)
     session["untagged"] = not (fields or catalogs or session["episode_title"] or
                                any(session[k] is not None for k in ("season_number", "episode_number")))
+    if media_type == "tv":
+        if not fields.get("title") and not session["selected_id"]:
+            raise ValueError("Select a TV show or enter its title.")
+        if session["season_number"] is None:
+            raise ValueError("Enter the season number for TV auto-add.")
+        if session["episode_detection"] == "fixed" and session["episode_number"] is None:
+            raise ValueError("Enter an episode number or choose an automatic episode mode.")
+        session["untagged"] = False
+        session["group_series"] = True
     return session
 
 
@@ -101,6 +113,23 @@ async def get_session(db):
 
 async def start_session(db, payload):
     session = build_session(payload)
+    if session.get("group_series") and session["selected_id"]:
+        from Backend.helper.metadata import fetch_selected_tv_metadata
+        selected = await fetch_selected_tv_metadata(session["selected_id"])
+        if not selected:
+            raise ValueError("Could not resolve the selected TV show. Select it again.")
+        selected = dict(selected)
+        if selected.get("imdb_id"):
+            existing = await db.get_media_details(selected["imdb_id"], media_type="tv")
+            if existing and existing.get("tmdb_id"):
+                selected["tmdb_id"] = existing["tmdb_id"]
+        if not selected.get("tmdb_id"):
+            key = selected.get("imdb_id") or session["selected_id"]
+            selected["tmdb_id"] = -(int.from_bytes(blake2b(key.encode(), digest_size=6).digest(), "big") + 1)
+        selected["imdb_id"] = selected.get("imdb_id") or f"tg{abs(selected['tmdb_id'])}"
+        selected["year"] = selected.get("release_year", 0)
+        selected["rate"] = selected.get("rating", 0)
+        session["series_metadata"] = selected
     catalogs = []
     for catalog_id in session["catalog_ids"]:
         catalog = await db.get_custom_catalog(catalog_id)
@@ -123,6 +152,13 @@ async def stop_session(db):
 
 
 def capture_identity(session, channel, message_id, split_key=None):
+    if session.get("group_series"):
+        selected = session.get("series_metadata") or {}
+        if selected.get("tmdb_id"):
+            return selected["tmdb_id"], selected["imdb_id"]
+        key = f"series:{session['session_id']}"
+        number = int.from_bytes(blake2b(key.encode(), digest_size=6).digest(), "big") + 1
+        return -number, f"tgauto{number}"
     # Independent files never replace one another just because their names match.
     key = f"{channel}:{message_id}"
     if split_key:
@@ -145,6 +181,12 @@ def capture_metadata(session, filename, parsed, channel, message_id, split_key=N
         "logo": "", "cast": [], "runtime": "", "is_anime": False,
         "quality": session.get("quality") or parsed.get("quality") or "Unknown",
     }
+    if session.get("series_metadata"):
+        meta.update(session["series_metadata"])
+        meta.update(fields)
+        if isinstance(meta.get("genres"), str):
+            meta["genres"] = [g.strip() for g in meta["genres"].split(",") if g.strip()]
+        meta["quality"] = session.get("quality") or parsed.get("quality") or "Unknown"
     if media_type == "tv":
         season = session.get("season_number")
         episode = session.get("episode_number")
@@ -188,6 +230,22 @@ async def capture_message(db, message, session):
     elif filename.lower().endswith(".zip"):
         meta["group_key"] = f"capture:{channel}:{message.id}.zip"
         meta["part_number"] = 1
+    if meta["media_type"] == "tv" and session.get("group_series"):
+        mode = session["episode_detection"]
+        if mode == "filename":
+            meta["episode_number"] = leading_episode(message.caption, filename)
+        elif mode == "order":
+            doc = await db.get_media_details(meta["imdb_id"], media_type="tv")
+            number = ordered_episodes(doc, meta["season_number"], [encoded])[0]
+            # Binary split parts belong to the same episode, including after a restart.
+            for season in (doc or {}).get("seasons", []):
+                if str(season.get("season_number")) != str(meta["season_number"]):
+                    continue
+                for episode in season.get("episodes", []):
+                    if meta.get("group_key") and any(q.get("group_key") == meta["group_key"] for q in episode.get("telegram", [])):
+                        number = episode["episode_number"]
+            meta["episode_number"] = int(number)
+        meta["episode_title"] = session.get("episode_title") or f"S{meta['season_number']:02d}E{meta['episode_number']:02d}"
     meta["poster"] = meta["poster"] or gradient_cover_path(meta["title"], portrait=True)
     meta["backdrop"] = meta["backdrop"] or gradient_cover_path(meta["title"])
 

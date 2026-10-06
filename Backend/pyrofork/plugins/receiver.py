@@ -223,7 +223,7 @@ async def file_receive_handler(client: Client, message: Message):
         uploaded_at = message.date.timestamp()
         if accepts_message(capture, uploaded_at):
             try:
-                async with db_lock:
+                async with manual_session_lock, db_lock:
                     current = await get_session(db)
                     # Stop/restart cancels waiting captures; an insert already in progress finishes.
                     if current.get("session_id") != capture.get("session_id") or not accepts_message(current, uploaded_at):

@@ -598,8 +598,8 @@
                 <!-- Title details -->
                 <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
                     <div class="sm:col-span-2">
-                        <label class="ma-label">Title (optional for auto-add)</label>
-                        <input id="ma-m-title" class="ma-input" placeholder="Custom title / original filename for auto-add">
+                        <label class="ma-label">Title (optional for movie auto-add)</label>
+                        <input id="ma-m-title" class="ma-input" placeholder="Selected show or custom title">
                     </div>
                     <div>
                         <label class="ma-label">Year (optional)</label>
@@ -628,18 +628,18 @@
                         <input id="ma-m-backdrop" type="url" class="ma-input" placeholder="Left empty = generated from title">
                     </div>
                 </div>
-                <p class="text-xs text-text-secondary -mt-2">For manual additions, enter a title and stream links. TV also needs a season; automatic episode modes need no episode field. Quality is detected when left empty. For auto-add, missing titles use filenames and artwork uses generated covers. Search selections copy metadata rather than attaching uploads to an existing title.</p>
+                <p class="text-xs text-text-secondary -mt-2">Enter a title and stream links, or enable auth-channel auto-add. TV needs a title and season; automatic episode modes need no episode field. Selected TV shows receive all incoming episodes under that show. Without a search selection, auto-add creates one custom show per session. Quality is detected when left empty.</p>
 
                 <!-- TV episode fields -->
                 <div id="ma-tv-fields" class="hidden grid grid-cols-2 sm:grid-cols-4 gap-3">
                     <div class="col-span-2">
-                        <label class="ma-label">Episode detection (manual additions)</label>
+                        <label class="ma-label">Episode detection</label>
                         <select id="ma-episode-mode" class="ma-input" onchange="document.getElementById('ma-episode').disabled = this.value !== 'fixed'">
                             <option value="fixed">Specify episode (existing behavior)</option>
                             <option value="order">By adding order</option>
                             <option value="filename">By file / message</option>
                         </select>
-                        <p class="text-xs text-text-secondary">Order: each link becomes the next episode. File/message: a leading number such as 12. The Apothecary Diaries.mkv becomes episode 12. Automatic modes keep links separate, not joined.</p>
+                        <p class="text-xs text-text-secondary">Works with links and auth-channel auto-add. Order: each incoming file becomes the next episode after those already saved in this season. File/message: a leading number such as 12. The Apothecary Diaries.mkv becomes episode 12. Fixed mode adds files to one episode.</p>
                     </div>
                     <div>
                         <label class="ma-label">Season *</label>
@@ -707,8 +707,8 @@
 
     function maToggleAuto() {
         const enabled = document.getElementById('ma-auto').checked;
-        document.getElementById('ma-episode-mode').disabled = enabled;
-        document.getElementById('ma-episode').disabled = !enabled && document.getElementById('ma-episode-mode').value !== 'fixed';
+        document.getElementById('ma-episode-mode').disabled = false;
+        document.getElementById('ma-episode').disabled = document.getElementById('ma-episode-mode').value !== 'fixed';
         document.getElementById('ma-auto-options').classList.toggle('hidden', !enabled);
         document.getElementById('ma-submit').textContent = enabled ? 'Start auto-add' : 'Add Content';
         if (enabled) document.getElementById('ma-quality').value = '';
@@ -986,7 +986,7 @@
         const quality = maQuality();
         const title = document.getElementById('ma-m-title').value.trim();
         const auto = document.getElementById('ma-auto').checked;
-        if (!auto && !title) { showToast('Enter a title.', 'error', 'Error'); return; }
+        if ((!auto || maType === 'tv') && !title && !maSelectedId) { showToast('Enter a title or select a show.', 'error', 'Error'); return; }
         if (!auto && !parts.length) { showToast('Paste at least one Telegram message link.', 'error', 'Error'); return; }
 
         const payload = {
@@ -1009,8 +1009,8 @@
         if (maType === 'tv') {
             const s = document.getElementById('ma-season').value.trim();
             const e = document.getElementById('ma-episode').value.trim();
-            const mode = auto ? 'fixed' : document.getElementById('ma-episode-mode').value;
-            if (!auto && (s === '' || (mode === 'fixed' && e === ''))) { showToast('Enter a season and an episode if using fixed mode.', 'error', 'Error'); return; }
+            const mode = document.getElementById('ma-episode-mode').value;
+            if (s === '' || (mode === 'fixed' && e === '')) { showToast('Enter a season and an episode if using fixed mode.', 'error', 'Error'); return; }
             payload.episode_detection = mode;
             payload.season_number = s === '' ? null : Number(s);
             payload.episode_number = mode !== 'fixed' || e === '' ? null : Number(e);
