@@ -6,6 +6,7 @@ from Backend.helper.pyro import clean_filename, finalize_media_name, get_readabl
 from Backend.helper.split_files import parse_split_info, strip_part_suffix
 from Backend.logger import LOGGER
 from Backend.helper.task_manager import edit_message
+from Backend.helper.ingestion_rules import resolution_hint
 
 _PRIVATE_LINK = re.compile(r"t\.me/c/(\d+)(?:/\d+)*/(\d+)")
 _PUBLIC_LINK = re.compile(r"t\.me/([A-Za-z][\w]{3,})/(?:\d+/)?(\d+)")
@@ -29,7 +30,7 @@ def quality_from_height(height: int) -> str:
     if not height:
         return ""
     for threshold, label in ((1800, "2160p"), (1200, "1440p"), (900, "1080p"),
-                             (620, "720p"), (400, "480p"), (260, "360p")):
+                             (620, "720p"), (520, "540p"), (400, "480p"), (260, "360p")):
         if height >= threshold:
             return label
     return "240p"
@@ -65,9 +66,10 @@ async def resolve_telegram_message(client, url: str = None, chat_id=None, msg_id
     parsed = parse_media_name(strip_part_suffix(cleaned) if split_info else cleaned)
     file_name = finalize_media_name(raw_name, bool(split_info))
 
-    #----- Real video dimensions beat the filename; documents fall back to the name
+    # Explicit filename/caption labels win; dimensions are a fallback.
     height = getattr(media, "height", 0) or 0
-    quality = quality_from_height(height) or parsed.get("quality") or ""
+    quality = (resolution_hint(caption, getattr(media, 'file_name', None))
+               or quality_from_height(height) or parsed.get("quality") or "")
 
     #----- Original upload date (forward source if forwarded, else this message's date)
     original_date = getattr(message, "forward_date", None) or getattr(message, "date", None)

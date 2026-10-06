@@ -8,6 +8,7 @@ from urllib.parse import quote, unquote
 import PTN
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.templating import Jinja2Templates
+from fastapi.responses import JSONResponse
 from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import UserNotParticipant
 
@@ -23,6 +24,7 @@ from Backend.helper.metadata.providers.cinemeta import get_detail, get_season
 from Backend.helper.metadata import resolve_cover_url, COMBINED_SEASON, COMBINED_EPISODE_BASE
 from Backend.helper.split_files import parse_combined_episodes, combined_name_key
 from Backend.helper.settings_manager import SettingsManager
+from Backend.helper.series_media import SERIES_PREFIX, series_id, original_id
 from Backend.helper.subtitles import get_subtitles_for, stremio_subtitle_entries
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import StreamBot, get_streambot_url
@@ -117,6 +119,7 @@ def _merge_filters(*filters) -> dict:
 
 
 def _parse_stremio_id(id: str):
+    id = original_id(id)
     parts = id.split(":")
     is_kitsu = parts and parts[0].lower() == "kitsu"
     imdb_id = None
@@ -172,7 +175,9 @@ async def _title_allowed(imdb_id: str = None, token_data: dict = None, kitsu_id:
     doc = await db.get_media_details(imdb_id=imdb_id, kitsu_id=kitsu_id)
     if not doc:
         return True
-    return _token_can_view(doc.get("visibility") or "public", doc.get("allowed_tokens") or [], token_data)
+    visible = await db.get_media_details(imdb_id=imdb_id, kitsu_id=kitsu_id,
+        can_view=lambda d: _token_can_view(d.get('visibility') or 'public', d.get('allowed_tokens') or [], token_data))
+    return visible is not None
 
 
 #----- Available catalog genres
@@ -274,7 +279,7 @@ def convert_to_stremio_meta(item: dict) -> dict:
     media_type = "series" if item.get("media_type") == "tv" else "movie"
     imdb = item.get("imdb_id") or ""
     meta = {
-        "id": imdb,
+        "id": series_id(imdb) if media_type == 'series' else imdb,
         "type": media_type,
         "name": _display_title(item),
         "poster": _poster_url(imdb, item.get("poster")),
@@ -352,22 +357,16 @@ def parse_size_to_bytes(size_str: str) -> int:
 
 
 def get_resolution_priority(stream_name: str) -> int:
-    resolution_map = {
-        "2160p": 2160, "4k": 2160, "uhd": 2160,
-        "1080p": 1080, "fhd": 1080,
-        "720p": 720, "hd": 720,
-        "480p": 480, "sd": 480,
-        "360p": 360,
-    }
-    for res_key, res_value in resolution_map.items():
-        if res_key in stream_name.lower():
-            return res_value
-    return 1
+    from Backend.helper.ingestion_rules import resolution_hint
+    hint = resolution_hint(stream_name)
+    if hint:
+        return int(hint[:-1])
+    return 480 if re.search(r'(?i)(?<![a-z0-9])sd(?![a-z0-9])', stream_name) else 1
 
 
 #----- Canonical quality label used by per-token quality filtering
 def stream_res_label(stream_name: str) -> str:
-    return {2160: "4K", 1080: "1080p", 720: "720p", 480: "480p", 360: "360p"}.get(
+    return {2160: "4K", 1080: "1080p", 720: "720p", 540: "540p", 480: "480p", 360: "360p"}.get(
         get_resolution_priority(stream_name), "other"
     )
 
@@ -604,7 +603,8 @@ async def get_catalog(token: str, media_type: str, id: str, extra: Optional[str]
     metas = [convert_to_stremio_meta(item) for item in items]
     if SettingsManager.current().fanart_enabled:
         await asyncio.gather(*(_apply_fanart(m, it) for m, it in zip(metas, items)))
-    return {"metas": metas}
+    return JSONResponse({"metas": metas, "cacheMaxAge": 0, "staleRevalidate": 0, "staleError": 0},
+                        headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/{token}/meta/{media_type}/{id}.json")
@@ -616,7 +616,8 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
     imdb_id = parsed["imdb_id"] if not parsed["is_kitsu"] else None
     kitsu_id = parsed["kitsu_id"]
 
-    media = await db.get_media_details(imdb_id=imdb_id, kitsu_id=kitsu_id)
+    media = await db.get_media_details(imdb_id=imdb_id, kitsu_id=kitsu_id, media_type=media_type,
+        can_view=lambda d: _token_can_view(d.get('visibility') or 'public', d.get('allowed_tokens') or [], token_data))
     if not media:
         return {"meta": {}}
 
@@ -626,6 +627,8 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
     meta_id = id
     if parsed["is_kitsu"] and kitsu_id is not None:
         meta_id = f"kitsu:{kitsu_id}"
+    elif id.startswith(SERIES_PREFIX):
+        meta_id = series_id(media.get('imdb_id') or imdb_id)
     elif media.get("imdb_id"):
         meta_id = media.get("imdb_id")
 
@@ -698,10 +701,9 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
                 if e_num is None:
                     continue
                 if parsed["is_kitsu"] and kitsu_id is not None:
-                    if abs_ep is not None:
-                        episode_id = f"kitsu:{kitsu_id}:{abs_ep}"
-                    else:
-                        episode_id = f"kitsu:{kitsu_id}:{s_num}:{e_num}"
+                    # Absolute numbering may restart for a sequel; include
+                    # season and episode to keep IDs unique across seasons.
+                    episode_id = f"kitsu:{kitsu_id}:{s_num}:{e_num}"
                 else:
                     episode_id = f"{meta_id}:{s_num}:{e_num}"
                 if episode_id in seen_video_ids:
@@ -731,7 +733,8 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
         meta_obj["videos"] = videos
         if not videos:
             LOGGER.warning(f"[META] series {id} has no episode entries in DB")
-    return {"meta": meta_obj}
+    return JSONResponse({"meta": meta_obj, "cacheMaxAge": 0, "staleRevalidate": 0, "staleError": 0},
+                        headers={"Cache-Control": "private, no-store"})
 
 
 #----- Subtitles for a title/episode, sourced from subtitle files in the channels
@@ -739,7 +742,7 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
 @router.get("/{token}/subtitles/{media_type}/{id}.json")
 async def get_subtitles(token: str, media_type: str, id: str, extra: Optional[str] = None, token_data: dict = Depends(verify_token)):
     try:
-        parts = id.split(":")
+        parts = original_id(id).split(":")
         imdb_id = parts[0]
         season = int(parts[1]) if len(parts) > 1 else None
         episode = int(parts[2]) if len(parts) > 2 else None
@@ -1046,6 +1049,8 @@ async def get_streams(
         episode_number=episode_num,
         kitsu_id=kitsu_id,
         absolute_episode=absolute_episode,
+        media_type=media_type,
+        can_view=lambda d: _token_can_view(d.get('visibility') or 'public', d.get('allowed_tokens') or [], token_data),
     )
 
     streams = []
@@ -1281,7 +1286,7 @@ async def save_addon_config(token: str, payload: dict):
     doc = await db.get_api_token(token)
     if not doc:
         raise HTTPException(status_code=404, detail="Invalid token")
-    valid_q = {"480p", "720p", "1080p", "4K"}
+    valid_q = {"360p", "480p", "540p", "720p", "1080p", "4K"}
     config = {
         "quality_sort": "asc" if payload.get("quality_sort") == "asc" else "desc",
         "quality_filter": [q for q in (payload.get("quality_filter") or []) if q in valid_q],

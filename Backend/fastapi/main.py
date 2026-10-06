@@ -267,6 +267,11 @@ async def public_status():
 @app.get("/open/{app_name}/{media_type}/{content_id}", response_class=HTMLResponse)
 async def open_in_app(app_name: str, media_type: str, content_id: str):
     stremio_type = "series" if media_type in ("series", "tv") else "movie"
+    from Backend.helper.series_media import series_id, SERIES_PREFIX
+    from Backend.helper.settings_manager import SettingsManager
+    if (stremio_type == 'series' and not SettingsManager.current().hide_catalog
+            and not content_id.startswith((SERIES_PREFIX, 'kitsu:'))):
+        content_id = series_id(content_id)
     web = f"https://web.stremio.com/#/detail/{stremio_type}/{content_id}/{content_id}"
     schemes = {
         "nuvio": f"nuvio://meta?type={stremio_type}&id={content_id}",

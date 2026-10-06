@@ -1472,6 +1472,12 @@ class Database:
         incoming_group_key = quality_to_update.get("group_key")
         replace_mode = SettingsManager.current().replace_mode
 
+        if not incoming_group_key and any(q.get('id') == quality_to_update.get('id')
+                                         for q in existing_qualities if q.get('id')):
+            if status is not None:
+                status['duplicate_skipped'] = True
+            return existing_qualities
+
         if incoming_group_key:
             #----- Incoming is a split part.
             if replace_mode:
@@ -1821,160 +1827,37 @@ class Database:
 
 
     async def get_media_details(
-        self, 
+        self,
         imdb_id: str = None,
-        season_number: Optional[int] = None, 
+        season_number: Optional[int] = None,
         episode_number: Optional[int] = None,
         kitsu_id: Optional[int] = None,
         absolute_episode: Optional[int] = None,
+        media_type: str = None,
+        can_view=None,
     ) -> Optional[dict]:
+        from Backend.helper.series_media import merge_media_documents, select_media
 
-        def _find_doc(col):
-            if imdb_id:
-                return col.find_one({"imdb_id": imdb_id})
-            if kitsu_id is not None:
-                return col.find_one({"kitsu_id": int(kitsu_id)})
+        if imdb_id:
+            query = {"imdb_id": imdb_id}
+        elif kitsu_id is not None:
+            query = {"kitsu_id": int(kitsu_id)}
+        else:
             return None
-
-        async def _all_matching_docs(collection_name: str) -> list[tuple[int, dict]]:
-            """Return every matching copy, newest storage bucket first.
-
-            Older installations can contain the same title in more than one
-            storage bucket after a quota rollover or a manual migration.  A
-            stream lookup can still find a later season by walking buckets,
-            but the series metadata endpoint used by Stremio/Nuvio used to
-            stop at the first copy and silently hide seasons from the other
-            bucket.  Keep the current bucket as the primary document and
-            merge the remaining copies at the API boundary.
-            """
-            matches = []
-            for db_idx in range(self.current_db_index, 0, -1):
-                doc = await _find_doc(self.dbs[f"storage_{db_idx}"][collection_name])
-                if doc:
-                    matches.append((db_idx, doc))
-            return matches
-
-        for db_idx in range(self.current_db_index, 0, -1):
-            db_key = f"storage_{db_idx}"
-
-            if absolute_episode is not None and (kitsu_id is not None or imdb_id):
-                tv_show = await _find_doc(self.dbs[db_key]["tv"])
-                if tv_show:
-                    for season in tv_show.get("seasons", []):
-                        for episode in season.get("episodes", []):
-                            if episode.get("absolute_episode") == absolute_episode:
-                                details = convert_objectid_to_str(episode)
-                                details.update({
-                                    "imdb_id": tv_show.get("imdb_id") or imdb_id,
-                                    "kitsu_id": tv_show.get("kitsu_id") or kitsu_id,
-                                    "type": "tv",
-                                    "title": tv_show.get("title"),
-                                    "is_anime": tv_show.get("is_anime"),
-                                    "season_number": season.get("season_number"),
-                                    "episode_number": episode.get("episode_number"),
-                                    "absolute_episode": absolute_episode,
-                                    "backdrop": episode.get("episode_backdrop"),
-                                    "db_index": db_idx
-                                })
-                                return details
-                    if season_number is None and episode_number is None:
-                        for season in tv_show.get("seasons", []):
-                            for episode in season.get("episodes", []):
-                                if episode.get("episode_number") == absolute_episode and season.get("season_number") == 1:
-                                    details = convert_objectid_to_str(episode)
-                                    details.update({
-                                        "imdb_id": tv_show.get("imdb_id") or imdb_id,
-                                        "kitsu_id": tv_show.get("kitsu_id") or kitsu_id,
-                                        "type": "tv",
-                                        "title": tv_show.get("title"),
-                                        "is_anime": tv_show.get("is_anime"),
-                                        "season_number": 1,
-                                        "episode_number": absolute_episode,
-                                        "absolute_episode": absolute_episode,
-                                        "backdrop": episode.get("episode_backdrop"),
-                                        "db_index": db_idx
-                                    })
-                                    return details
-            
-            if episode_number is not None and season_number is not None:
-                tv_show = await _find_doc(self.dbs[db_key]["tv"])
-                if tv_show:
-                    for season in tv_show.get("seasons", []):
-                        if season.get("season_number") == season_number:
-                            for episode in season.get("episodes", []):
-                                if episode.get("episode_number") == episode_number:
-                                    details = convert_objectid_to_str(episode)
-                                    details.update({
-                                        "imdb_id": tv_show.get("imdb_id") or imdb_id,
-                                        "kitsu_id": tv_show.get("kitsu_id") or kitsu_id,
-                                        "type": "tv",
-                                        "title": tv_show.get("title"),
-                                        "is_anime": tv_show.get("is_anime"),
-                                        "season_number": season_number,
-                                        "episode_number": episode_number,
-                                        "absolute_episode": episode.get("absolute_episode"),
-                                        "backdrop": episode.get("episode_backdrop"),
-                                        "db_index": db_idx
-                                    })
-                                    return details
-            
-            elif season_number is not None and absolute_episode is None:
-                tv_show = await _find_doc(self.dbs[db_key]["tv"])
-                if tv_show:
-                    for season in tv_show.get("seasons", []):
-                        if season.get("season_number") == season_number:
-                            details = convert_objectid_to_str(season)
-                            details.update({
-                                "imdb_id": tv_show.get("imdb_id") or imdb_id,
-                                "kitsu_id": tv_show.get("kitsu_id") or kitsu_id,
-                                "type": "tv",
-                                "season_number": season_number,
-                                "db_index": db_idx
-                            })
-                            return details
-            
-            else:
-                # Merge duplicate copies of a title before returning the
-                # series metadata used by Stremio/Nuvio.  This is especially
-                # important for later seasons that were written after a
-                # storage bucket rollover.
-                tv_matches = await _all_matching_docs("tv")
-                if tv_matches:
-                    primary_db, tv_doc = tv_matches[0]
-                    merged = convert_objectid_to_str(tv_doc)
-                    for _, secondary in tv_matches[1:]:
-                        secondary = convert_objectid_to_str(secondary)
-                        merged["seasons"] = self._merge_season_lists(
-                            merged.get("seasons") or [], secondary.get("seasons") or []
-                        )
-                        merged["telegram"] = self._merge_telegram_lists(
-                            merged.get("telegram") or [], secondary.get("telegram") or []
-                        )
-                        # Preserve useful metadata if the newest copy is a
-                        # legacy/minimal record.
-                        for key, value in secondary.items():
-                            if merged.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
-                                merged[key] = value
-                    merged["type"] = "tv"
-                    merged["db_index"] = primary_db
-                    return merged
-
-                movie_matches = await _all_matching_docs("movie")
-                if movie_matches:
-                    primary_db, movie_doc = movie_matches[0]
-                    merged = convert_objectid_to_str(movie_doc)
-                    for _, secondary in movie_matches[1:]:
-                        secondary = convert_objectid_to_str(secondary)
-                        merged["telegram"] = self._merge_telegram_lists(
-                            merged.get("telegram") or [], secondary.get("telegram") or []
-                        )
-                        for key, value in secondary.items():
-                            if merged.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
-                                merged[key] = value
-                    merged["type"] = "movie"
-                    merged["db_index"] = primary_db
-                    return merged
-        
+        collections = [self._collection_for(media_type)] if media_type else ["tv", "movie"]
+        for collection in collections:
+            documents = []
+            for index in range(self.current_db_index, 0, -1):
+                # find(), not find_one(): legacy copies can share a bucket.
+                async for doc in self.dbs[f"storage_{index}"][collection].find(query):
+                    if can_view is not None and not can_view(doc):
+                        continue
+                    doc = convert_objectid_to_str(doc)
+                    doc.update(type=collection, db_index=index)
+                    documents.append(doc)
+            if documents:
+                media = merge_media_documents(documents)
+                return select_media(media, season_number, episode_number, absolute_episode)
         return None
 
     #-----

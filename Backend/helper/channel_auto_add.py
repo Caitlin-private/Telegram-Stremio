@@ -175,7 +175,8 @@ async def capture_message(db, message, session):
         parsed = parse_media_name(filename) or {}
     except Exception:
         parsed = {}
-    detected_quality = quality_from_height(getattr(file, "height", 0) or 0)
+    from Backend.helper.ingestion_rules import resolution_hint
+    detected_quality = resolution_hint(message.caption, filename) or quality_from_height(getattr(file, "height", 0) or 0)
     if detected_quality:
         parsed["quality"] = detected_quality
     meta = capture_metadata(session, filename, parsed, channel, message.id, split_key)

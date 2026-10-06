@@ -28,7 +28,7 @@ from Backend.logger import LOGGER
 
 file_queue = Queue()
 db_lock = Lock()
-from Backend.helper.ingestion_rules import manual_ingestion_lock as manual_session_lock
+from Backend.helper.ingestion_rules import manual_ingestion_lock as manual_session_lock, next_episode, resolution_hint
 
 
 #----- True when the message carries a streamable video or a split-archive part
@@ -124,22 +124,6 @@ def _base_from_doc(doc: dict) -> dict:
     }
 
 
-#----- Highest existing episode number in a season, or 0 if none
-def _max_episode(doc: dict, season_number: int) -> int:
-    for season in doc.get("seasons", []) or []:
-        try:
-            same_season = int(season.get("season_number")) == int(season_number)
-        except (TypeError, ValueError):
-            same_season = season.get("season_number") == season_number
-        if same_season:
-            eps = []
-            for episode in season.get("episodes", []) or []:
-                try:
-                    eps.append(int(episode.get("episode_number") or 0))
-                except (TypeError, ValueError):
-                    continue
-            return max(eps) if eps else 0
-    return 0
 
 
 async def _handle_personal_session(client: Client, message: Message) -> None:
@@ -161,12 +145,14 @@ async def _handle_personal_session(client: Client, message: Message) -> None:
             LOGGER.warning(f"[Manual Session] Target id {tmdb_id} not found; ignoring file.")
             return
         doc = location[0]
+        if media_type == 'tv' and doc.get('imdb_id'):
+            doc = await db.get_media_details(imdb_id=doc['imdb_id'], media_type='tv') or doc
 
         p_channel = int(resolved["chat_id"])
         p_msg = int(resolved["msg_id"])
         encoded = await encode_string({"chat_id": p_channel, "msg_id": p_msg})
         name = resolved["name"]
-        quality = resolved.get("quality") or session.get("quality") or "HD"
+        quality = session.get("quality") or resolved.get("quality") or "HD"
 
         split_key = resolved.get("split_key")
         metadata_info = _base_from_doc(doc)
@@ -191,7 +177,11 @@ async def _handle_personal_session(client: Client, message: Message) -> None:
                     await message.reply_text(str(exc), parse_mode=ParseMode.DISABLED)
                     return
             elif session.get('episode_detection') == 'order' or episode_number is None:
-                episode_number = _max_episode(doc, season_number) + 1
+                # Replayed updates must not consume another episode number.
+                if any(q.get('id') == encoded for s in doc.get('seasons', [])
+                       for e in s.get('episodes', []) for q in e.get('telegram') or []):
+                    return
+                episode_number = next_episode(doc, season_number)
             thumb_url = ""
             if resolved.get("has_thumb"):
                 thumb_url = await resolve_video_thumb_url(client, message, encoded)
@@ -278,7 +268,7 @@ async def file_receive_handler(client: Client, message: Message):
 
         _, title, msg_id, raw_size, size, channel = _extract_fields(message)
 
-        metadata_info = await metadata(clean_filename(title), int(channel), msg_id, override_id=override_id or extract_default_id(message.caption or ""), season_hint=season_hint)
+        metadata_info = await metadata(clean_filename(title), int(channel), msg_id, override_id=override_id or extract_default_id(message.caption or ""), season_hint=season_hint, quality_hint=resolution_hint(message.caption, (message.video or message.document).file_name))
         if metadata_info is None:
             LOGGER.warning(f"Metadata failed for file: {title} (ID: {msg_id})")
             await route_to_skip_channel(client, message)
@@ -332,7 +322,7 @@ async def file_edited_handler(client: Client, message: Message):
         LOGGER.info(f"Detected override ID '{override_id}' in edited message {msg_id}")
         await db.remove_media_part(int(channel), msg_id)
 
-        metadata_info = await metadata(clean_filename(title), int(channel), msg_id, override_id=override_id)
+        metadata_info = await metadata(clean_filename(title), int(channel), msg_id, override_id=override_id, quality_hint=resolution_hint(message.caption, (message.video or message.document).file_name))
         if metadata_info is None:
             LOGGER.warning(f"Metadata failed for edited file: {title} (ID: {msg_id})")
             return
@@ -416,7 +406,7 @@ async def user_upload_handler(client: Client, message: Message):
 
     storage_channel = int(str(target_channel).removeprefix('-100'))
     try:
-        metadata_info = await metadata(clean_filename(title), storage_channel, msg_id, override_id=extract_default_id(message.caption or ""))
+        metadata_info = await metadata(clean_filename(title), storage_channel, msg_id, override_id=extract_default_id(message.caption or ""), quality_hint=resolution_hint(message.caption, (message.video or message.document).file_name))
     except Exception:
         LOGGER.exception('User upload metadata lookup failed')
         await _upload_failure(message, title, settings, 'Metadata lookup failed. Please retry or contact the administrator.')

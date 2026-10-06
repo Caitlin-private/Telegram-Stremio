@@ -462,6 +462,7 @@ class ScanManager:
             return
 
         file = message.video or message.document
+        from Backend.helper.ingestion_rules import resolution_hint
         title = message.caption or file.file_name
         msg_id = message.id
         raw_size = file.file_size
@@ -479,6 +480,7 @@ class ScanManager:
             metadata_info = await metadata(
                 clean_filename(title), channel_int, msg_id,
                 override_id=extract_default_id(message.caption or ""),
+                quality_hint=resolution_hint(message.caption, file.file_name),
             )
         except Exception as e:
             LOGGER.warning(f"[ScanManager] Metadata exception for msg {msg_id}: {e}")

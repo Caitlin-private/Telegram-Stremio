@@ -930,4 +930,4 @@ If Telegram-Stremio is useful to you, you can support its development here:
 
 ## Caitlin fork
 
-See [Caitlin features](docs/CAITLIN.md) and [upstream maintenance](docs/UPSTREAM.md).
+See [Caitlin features](docs/CAITLIN.md).

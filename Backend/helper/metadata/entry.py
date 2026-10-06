@@ -64,6 +64,7 @@ async def metadata(
     msg_id,
     override_id: str = None,
     season_hint: int = None,
+    quality_hint: str = None,
 ) -> dict | None:
     from Backend.helper.multipart_video import video_part
     playable_part = video_part(filename)
@@ -94,7 +95,7 @@ async def metadata(
     season = parsed.get("season")
     episode = parsed.get("episode")
     year = parsed.get("year")
-    quality = parsed.get("quality")
+    quality = quality_hint or parsed.get("quality")
 
     if season_hint is not None and episode and not season and not isinstance(episode, list):
         season = season_hint

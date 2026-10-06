@@ -646,7 +646,7 @@
                         <input id="ma-season" type="number" min="0" class="ma-input" placeholder="1">
                     </div>
                     <div>
-                        <label class="ma-label">Episode *</label>
+                        <label class="ma-label">Episode (fixed mode)</label>
                         <input id="ma-episode" type="number" min="0" class="ma-input" placeholder="1">
                     </div>
                     <div class="col-span-2">
@@ -900,7 +900,7 @@
         const div = document.createElement('div');
         div.className = 'flex flex-col sm:flex-row gap-2';
         div.setAttribute('data-part', '');
-        div.innerHTML = `<input class="ma-input ma-part-url" placeholder="Split part link (in order)">
+        div.innerHTML = `<input class="ma-input ma-part-url" placeholder="Telegram message link (in order)">
             <button type="button" onclick="this.closest('[data-part]').remove()" class="px-4 py-2.5 rounded-xl border border-hairline text-red-300 font-bold text-sm shrink-0">Remove</button>`;
         document.getElementById('ma-parts').appendChild(div);
     }
@@ -962,19 +962,7 @@
             if (!res.ok) throw new Error(data.detail || 'Could not resolve link');
             const d = data.data || {};
             document.getElementById('ma-name').value = d.name || '';
-            if (d.quality) {
-                const sel = document.getElementById('ma-quality');
-                const custom = document.getElementById('ma-quality-custom');
-                const opt = [...sel.options].find(o => o.value.toLowerCase() === String(d.quality).toLowerCase());
-                if (opt) {
-                    sel.value = opt.value;
-                    custom.classList.add('hidden');
-                } else {
-                    sel.value = '__custom';
-                    custom.value = d.quality;
-                    custom.classList.remove('hidden');
-                }
-            }
+            // Resolving a link must not overwrite Auto-detect or an explicit quality.
             if (maType === 'tv') {
                 if (d.season != null && !document.getElementById('ma-season').value) document.getElementById('ma-season').value = d.season;
                 if (d.episode != null && !document.getElementById('ma-episode').value) document.getElementById('ma-episode').value = d.episode;

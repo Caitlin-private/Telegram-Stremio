@@ -1202,7 +1202,7 @@ def _fill_placeholder_metadata(meta: dict) -> None:
 #----- Manual add: create/append a movie, tv show, season, episode or stream by hand
 @serialize_manual_ingestion
 async def manual_add_media_api(payload: dict) -> dict:
-    from Backend.helper.ingestion_rules import episode_mode, leading_episode, next_episode
+    from Backend.helper.ingestion_rules import episode_mode, leading_episode, ordered_episodes, nonnegative_number
     media_type = payload.get("media_type")
     if media_type not in ("movie", "tv"):
         raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'.")
@@ -1233,6 +1233,13 @@ async def manual_add_media_api(payload: dict) -> dict:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Could not read that message: {exc}")
 
+    unique_parts = {}
+    for part in resolved_parts:
+        key = (str(part['chat_id']), int(part['msg_id']))
+        unique_parts.setdefault(key, part)
+    resolved_parts = list(unique_parts.values())
+    for part in resolved_parts:
+        part['encoded_string'] = await encode_string({'chat_id': int(part['chat_id']), 'msg_id': int(part['msg_id'])})
     primary = resolved_parts[0]
     quality = quality or primary.get('quality') or 'Unknown'
     try:
@@ -1251,8 +1258,9 @@ async def manual_add_media_api(payload: dict) -> dict:
     base = None
     if tmdb_id and db_index:
         doc = await db.get_document(media_type, int(tmdb_id), int(db_index))
-        if doc:
-            base = _metadata_base(doc, from_doc=True)
+        if not doc:
+            raise HTTPException(status_code=404, detail="The selected title no longer exists. Select it again.")
+        base = _metadata_base(doc, from_doc=True)
     if base is None and selected_id:
         selection = await (
             fetch_selected_movie_metadata(selected_id) if media_type == "movie"
@@ -1292,10 +1300,12 @@ async def manual_add_media_api(payload: dict) -> dict:
     tv_extra = {}
     if media_type == "tv":
         try:
-            season_number = int(payload.get("season_number"))
-            if season_number < 0:
+            season_number = nonnegative_number(payload.get("season_number"))
+            if season_number is None:
                 raise ValueError('Invalid season')
-            episode_number = int(payload.get("episode_number")) if detection == 'fixed' else 1
+            episode_number = nonnegative_number(payload.get("episode_number")) if detection == 'fixed' else 1
+            if episode_number is None:
+                raise ValueError('Invalid episode')
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="Season and episode numbers are required for TV.")
         if detection == 'filename':
@@ -1304,9 +1314,8 @@ async def manual_add_media_api(payload: dict) -> dict:
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
         elif detection == 'order':
-            existing = await db.find_media_doc('tv', base['tmdb_id'])
-            start_episode = next_episode(existing[0] if existing else {}, season_number)
-            detected_episodes = list(range(start_episode, start_episode + len(resolved_parts)))
+            existing = await db.get_media_details(imdb_id=base['imdb_id'], media_type='tv')
+            detected_episodes = ordered_episodes(existing, season_number, [p['encoded_string'] for p in resolved_parts])
         tv_extra = {
             "season_number": season_number,
             "episode_number": episode_number,
@@ -1321,7 +1330,7 @@ async def manual_add_media_api(payload: dict) -> dict:
     for index, part in enumerate(resolved_parts, start=1):
         p_channel = int(part["chat_id"])
         p_msg = int(part["msg_id"])
-        encoded = await encode_string({"chat_id": p_channel, "msg_id": p_msg})
+        encoded = part['encoded_string']
         metadata_info = dict(base)
         metadata_info.update({
             "media_type": media_type,
