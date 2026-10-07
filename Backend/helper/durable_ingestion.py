@@ -20,6 +20,7 @@ class DurableIngestion:
         self.discovery_lock = asyncio.Lock()
         self.active = None
         self.paused = False
+        self.disabled_channels = set()
         self.refresh_heads = True
         self.error = None
         self.last_head_check = 0
@@ -34,9 +35,44 @@ class DurableIngestion:
         self.bind(db)
         doc = await self.state.find_one({'_id': 'control'}) or {}
         self.paused = bool(doc.get('paused', False))
+        self.disabled_channels = set(doc.get('disabled_channels', []))
 
     def authorized(self, chat_id):
         return str(chat_id) in SettingsManager.current().auth_channels
+
+    def enabled(self, chat_id):
+        return self.authorized(chat_id) and str(chat_id) not in self.disabled_channels
+
+    async def set_channel_enabled(self, chat_id, enabled):
+        chat_id = str(chat_id)
+        if not self.authorized(chat_id):
+            raise ValueError('Select an AUTH channel.')
+        if not isinstance(enabled, bool):
+            raise ValueError('enabled must be true or false.')
+        # Snapshot the current head at every transition.  This switch is a
+        # permanent live-ingestion boundary: messages already in the channel,
+        # including messages posted while disabled, must not be replayed when
+        # the channel is enabled again.
+        async with self.discovery_lock, self.control_lock, self.lock:
+            latest = await self.head(chat_id)
+            await self.channels.update_one(
+                {'_id': chat_id},
+                {'$set': {'discovered_id': latest, 'target_id': latest}},
+                upsert=True,
+            )
+            # Anything waiting from before this boundary is intentionally
+            # discarded.  It is no longer a live event for this channel.
+            await self.jobs.delete_many({'chat_id': chat_id})
+            disabled = self.disabled_channels.copy()
+            if enabled:
+                disabled.discard(chat_id)
+            else:
+                disabled.add(chat_id)
+            await self.state.update_one({'_id': 'control'},
+                {'$set': {'disabled_channels': sorted(disabled)}}, upsert=True)
+            self.disabled_channels = disabled
+            self.refresh_heads = True
+        return await self.status()
 
     async def start(self, client, processor, edited_processor):
         self.client = client
@@ -44,6 +80,7 @@ class DurableIngestion:
         self.edited_processor = edited_processor
         doc = await self.state.find_one({'_id': 'control'}) or {}
         self.paused = bool(doc.get('paused', False))
+        self.disabled_channels = set(doc.get('disabled_channels', []))
         await self.jobs.create_index([('chat_id', 1), ('msg_id', 1)])
         self.task = asyncio.create_task(self.run())
 
@@ -62,6 +99,8 @@ class DurableIngestion:
         if not self.authorized(chat_id):
             return
         async with self.lock:
+            if not self.enabled(chat_id):
+                return
             row = await self.channels.find_one({'_id': chat_id}) or {}
             if not discovered and kind == 'new' and message.id <= row.get('discovered_id', -1):
                 return
@@ -84,6 +123,8 @@ class DurableIngestion:
 
     async def discover(self, chat_id, refresh=False):
         async with self.discovery_lock:
+            if not self.enabled(chat_id):
+                return
             await self._discover(chat_id, refresh)
 
     async def _discover(self, chat_id, refresh=False):
@@ -121,7 +162,7 @@ class DurableIngestion:
         if not job or job.get('retry_at', 0) > time():
             return
         async with self.control_lock:
-            if self.paused:
+            if self.paused or not self.enabled(chat_id):
                 return
             self.active = {'channel': chat_id, 'message_id': job['msg_id']}
         try:
@@ -152,6 +193,8 @@ class DurableIngestion:
                         if self.paused:
                             self.refresh_heads = True
                             break
+                        if not self.enabled(chat_id):
+                            continue
                         try:
                             await self.discover(str(chat_id), refresh)
                             await self.process_one(str(chat_id))
@@ -207,7 +250,7 @@ class DurableIngestion:
                 'pending': await self.jobs.count_documents({'chat_id': {'$in': authorized}}),
                 'retrying': await self.jobs.count_documents({'chat_id': {'$in': authorized}, 'attempts': {'$gt': 0}}),
                 'failures': [{'channel': j['chat_id'], 'message_id': j['msg_id'], 'reason': j.get('error')} for j in failed],
-                'channels': [{'channel': row['_id'], 'discovered_id': row.get('discovered_id'),
+                'channels': [{'channel': row['_id'], 'enabled': self.enabled(row['_id']), 'discovered_id': row.get('discovered_id'),
                               'last_completed_id': row.get('last_completed_id'), 'target_id': row.get('target_id', 0)} for row in rows]}
 
 

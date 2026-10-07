@@ -230,6 +230,28 @@
         </button>
     </div>
 
+    <div class="settings-card">
+        <h2><i class="fa-solid fa-pause"></i> Live Ingestion</h2>
+        <div class="flex flex-wrap items-center gap-3 mt-3">
+            <button id="ingestion-toggle" type="button" disabled onclick="toggleIngestion()" class="px-4 py-2 rounded-xl bg-primary/10 font-bold">Loading ingestion…</button>
+            <span id="ingestion-state" class="text-sm" role="status"></span>
+        </div>
+        <p class="text-xs text-text-secondary mt-2">Pause state and pending AUTH-channel message IDs are saved in MongoDB. The current file may finish after pausing. New bot uploads are declined while paused. Playback continues.</p>
+        <p id="ingestion-error" class="text-sm text-red-400 mt-2" role="alert"></p>
+        <p class="hint mt-3">Disable live ingestion for individual AUTH channels below. This is a permanent live-ingestion boundary: the current channel head is saved and pending jobs are discarded, so enabling the channel later will not index its backlog. Only files posted after re-enabling are processed. Manual scans remain available. A file already running may finish. Changes here save immediately.</p>
+<div id="ingestion-channel-switches" class="space-y-3 my-3"></div>
+<details class="mt-3">
+            <summary class="cursor-pointer font-bold text-sm">Channel checkpoints &amp; earlier backlog</summary>
+            <div id="ingestion-channels" class="text-sm space-y-2 my-3"></div>
+            <p class="text-xs text-text-secondary">On first installation, monitoring begins at the current channel position. To recover an earlier backlog, pause, choose its first message ID below, and resume. Already-indexed source messages are skipped. This reads only from that ID forward.</p>
+            <div class="flex flex-wrap gap-2 mt-3">
+                <select id="ingestion-channel" class="rounded-lg bg-surface p-2" aria-label="AUTH channel"></select>
+                <input id="ingestion-start-id" class="rounded-lg bg-surface p-2" type="number" min="1" placeholder="First message ID" aria-label="Starting message ID">
+                <button type="button" onclick="setIngestionStart()" class="px-3 py-2 rounded-lg bg-primary/10">Set starting ID</button>
+            </div>
+        </details>
+    </div>
+
     <!-- ── General ─────────────────────────────────────────────────────── -->
     <div class="settings-card">
         <h2><i class="fa-solid fa-film"></i> Media Resolution Management</h2>
@@ -1843,15 +1865,79 @@ function rebuildDatabaseList(dbList) {
     });
 }
 
+    let ingestionRefreshBusy = false;
+    let ingestionPaused = false;
+    let ingestionControlBusy = false;
+    function renderIngestionControl(d) {
+        ingestionPaused = !!d.paused;
+        const button = document.getElementById('ingestion-toggle');
+        button.disabled = ingestionControlBusy;
+        button.textContent = d.paused ? '▶ Resume ingestion' : '⏸ Pause ingestion';
+        document.getElementById('ingestion-state').textContent = d.paused ? (d.active ? 'Pausing — current file finishing' : 'Paused') : 'Live ingestion enabled';
+        const failures = (d.failures || []).map(f => `${f.channel}/${f.message_id}: ${f.reason}`).join('\n');
+        document.getElementById('ingestion-error').textContent = [d.error, failures].filter(Boolean).join('\n');
+        document.getElementById('ingestion-channels').innerHTML = (d.channels || []).map(c => `<p>${escapeHtml(String(c.channel))}: last completed ${c.last_completed_id ?? '—'}, discovered through ${c.discovered_id ?? '—'}, latest known ${c.target_id ?? '—'}</p>`).join('');
+        const switches = document.getElementById('ingestion-channel-switches');
+        switches.replaceChildren();
+        for (const channel of d.channels || []) {
+            const label = document.createElement('label');
+            label.className = 'flex items-center gap-3';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.checked = channel.enabled !== false;
+            input.disabled = ingestionControlBusy;
+            input.onchange = () => changeIngestion('channel', {channel:channel.channel, enabled:input.checked});
+            label.append(input, document.createTextNode(`Live ingestion · ${channel.channel}`));
+            switches.append(label);
+        }
+        const select = document.getElementById('ingestion-channel');
+        const current = select.value;
+        select.innerHTML = (d.channels || []).map(c => `<option value="${escapeHtml(String(c.channel))}">${escapeHtml(String(c.channel))}</option>`).join('');
+        if ([...select.options].some(o => o.value === current)) select.value = current;
+    }
+    async function changeIngestion(path, payload) {
+        if (ingestionControlBusy) return;
+        ingestionControlBusy = true;
+        document.getElementById('ingestion-toggle').disabled = true;
+        document.querySelectorAll('#ingestion-channel-switches input').forEach(el => el.disabled = true);
+        try {
+            const res = await fetch(`/api/system/ingestion/${path}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+            const result = await res.json();
+            if (!res.ok) throw new Error(result.detail || 'Could not save ingestion state');
+            renderIngestionControl(result);
+            showToast('Ingestion state saved.', 'success', 'Saved');
+        } catch (e) { showToast(e.message, 'error', 'Ingestion'); }
+        finally { ingestionControlBusy = false; await refreshIngestion(); }
+    }
+    async function toggleIngestion() { await changeIngestion('pause', {paused:!ingestionPaused}); }
+    async function setIngestionStart() {
+        const value = document.getElementById('ingestion-start-id').value.trim();
+        if (!ingestionPaused || !/^\d+$/.test(value) || Number(value) < 1) {
+            showToast('Pause ingestion and enter a positive message ID.', 'error', 'Ingestion'); return;
+        }
+        await changeIngestion('start-from', {channel:document.getElementById('ingestion-channel').value, message_id:Number(value)});
+    }
+    async function refreshIngestion() {
+        if (document.hidden || ingestionRefreshBusy) return;
+        ingestionRefreshBusy = true;
+        try {
+            const res = await fetch('/api/system/ingestion', {cache: 'no-store'});
+            if (!res.ok) throw new Error(`Ingestion API returned HTTP ${res.status}. Check the running build and server logs.`);
+            const stats = await res.json();
+            if (!ingestionControlBusy) renderIngestionControl(stats.durable || {});
+        } catch (error) {
+            document.getElementById('ingestion-error').textContent = error.message || 'Could not load ingestion controls.';
+            document.getElementById('ingestion-toggle').textContent = 'Ingestion controls unavailable';
+            document.getElementById('ingestion-toggle').disabled = true;
+        } finally {
+            ingestionRefreshBusy = false;
+        }
+    }
+
+
 /* ── System & Maintenance ───────────────────────────────────────────────── */
 const STAT_FIELDS = [
     ['ram_display', 'RAM Free / Total'],
-    ['pending_media', 'Pending Media (Known)'],
-    ['durable_pending', 'Persisted Pending Messages'], ['ingestion_paused', 'Ingestion Paused'],
-    ['media_handlers', 'Media Processing / Waiting for Lock'],
-    ['queued_media', 'Queued for Database'], ['writing_media', 'DB Worker Active'],
-    ['telegram_updates_waiting', 'Telegram Updates Waiting (All Types)'],
-    ['ingestion_write_errors', 'Queue Task Errors Since Restart'],
     ['movies', 'Movies'], ['tv_shows', 'TV Shows'], ['episodes', 'Episodes'],
     ['streams', 'Streams'], ['db_size', 'DB Size'],
     ['auth_channels', 'AUTH Channels'], ['version', 'Version'],
@@ -1875,7 +1961,6 @@ async function loadDbStats(btn) {
         grid.innerHTML = STAT_FIELDS.map(([k, label]) =>
             `<div class="stat-box"><div class="v">${escapeHtml(String(k === 'ram_display' ? (s.ram?.display ?? 'Unavailable') : (s[k] ?? '—')))}</div><div class="l">${label}</div></div>`
         ).join('');
-        grid.insertAdjacentHTML('beforeend', '<p class="hint" style="grid-column:1/-1">AUTH-channel pending messages and pause state survive restarts. Use the main dashboard to pause/resume and inspect channel checkpoints. Telegram updates are unclassified; scanner progress is separate.</p>');
     } catch (e) {
         grid.innerHTML = `<div class="hint" style="grid-column:1/-1;color:#ef4444">Failed to load stats.</div>`;
     } finally {
@@ -1963,6 +2048,8 @@ window.addEventListener('DOMContentLoaded', () => {
     toggleMediaflowFields();
     loadDbStats();
     loadLogs();
+    refreshIngestion();
+    setInterval(refreshIngestion, 5000);
 });
 </script>
 

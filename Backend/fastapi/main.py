@@ -387,6 +387,16 @@ async def pause_ingestion(payload: dict, _: bool = Depends(require_auth)):
     return await durable_ingestion.set_paused(payload['paused'])
 
 
+@app.post("/api/system/ingestion/channel")
+async def channel_ingestion(payload: dict, _: bool = Depends(require_auth)):
+    from Backend.helper.durable_ingestion import durable_ingestion
+    try:
+        return await durable_ingestion.set_channel_enabled(
+            str(payload.get('channel', '')), payload.get('enabled'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post("/api/system/ingestion/start-from")
 async def ingestion_start_from(payload: dict, _: bool = Depends(require_auth)):
     from Backend.helper.durable_ingestion import durable_ingestion
