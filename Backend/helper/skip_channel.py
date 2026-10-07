@@ -20,11 +20,16 @@ def is_skip_channel(message: Message) -> bool:
     return bool(username) and ref.lstrip("@").lower() == username
 
 
-async def route_to_skip_channel(client: Client, message: Message) -> None:
+async def route_to_skip_channel(client: Client, message: Message, reason=None, force_delete=False) -> None:
     settings = SettingsManager.current()
     skip = settings.skip_channel
     if not skip:
+        if force_delete:
+            raise RuntimeError('Configure a skip channel before moving resolution-filtered files.')
         return
+
+    if is_skip_channel(message):
+        raise ValueError('The source and skip channel must be different.')
 
     skip_chat = int(skip) if str(skip).lstrip("-").replace("-100", "").isdigit() else skip
 
@@ -36,9 +41,13 @@ async def route_to_skip_channel(client: Client, message: Message) -> None:
             copied = await message.copy(skip_chat)
         except Exception as e2:
             LOGGER.error(f"[SkipChannel] Copy failed for message {message.id}: {e2}")
+            if force_delete:
+                raise
             return
     except Exception as e:
         LOGGER.error(f"[SkipChannel] Could not copy message {message.id} to skip channel: {e}")
+        if force_delete:
+            raise
         return
 
     # Reply to the copy, never the source, and never post a traceback/log dump.
@@ -47,8 +56,10 @@ async def route_to_skip_channel(client: Client, message: Message) -> None:
     media = message.document or message.video
     title = message.caption or getattr(media, "file_name", None) or "Unnamed media"
     try:
-        reason = analyze_metadata_failure(clean_filename(title))
-        text = f"Metadata failed for file: {title[:1000]} (ID: {message.id})\nReason: {reason}"
+        supplied_reason = reason is not None
+        reason = reason or analyze_metadata_failure(clean_filename(title))
+        heading = 'Media skipped' if supplied_reason else 'Metadata failed for file'
+        text = f"{heading}: {title[:1000]} (ID: {message.id})\nReason: {reason}"
         try:
             await client.send_message(skip_chat, text[:4000], reply_to_message_id=copied.id, parse_mode=ParseMode.DISABLED)
         except FloodWait as wait:
@@ -56,6 +67,20 @@ async def route_to_skip_channel(client: Client, message: Message) -> None:
             await client.send_message(skip_chat, text[:4000], reply_to_message_id=copied.id, parse_mode=ParseMode.DISABLED)
     except Exception as exc:
         LOGGER.warning(f"[SkipChannel] Could not send reason for message {message.id}: {exc}")
+        if force_delete:
+            raise
+
+    if force_delete:
+        # Only remove the source after both the copy and its reason succeeded.
+        # Unlike the legacy deletion helper, failures must reach the durable queue.
+        try:
+            deleted = await client.delete_messages(message.chat.id, message.id)
+        except FloodWait as wait:
+            await asleep(wait.value)
+            deleted = await client.delete_messages(message.chat.id, message.id)
+        if deleted is False:
+            raise RuntimeError('Could not delete the original resolution-filtered message.')
+        return
 
     if settings.delete_on_metadata_fail:
         try:

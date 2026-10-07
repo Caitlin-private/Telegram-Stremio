@@ -14,5 +14,5 @@ USE_DEFAULT_ID: str = None
 MANUAL_SESSION: dict = None
 db = Database()
 
-__version__ = "5.1.0"
-BUILD_ID = "caitlin-ingestion-r12"
+__version__ = "6.0.1"
+BUILD_ID = "caitlinstream-6.0.1"

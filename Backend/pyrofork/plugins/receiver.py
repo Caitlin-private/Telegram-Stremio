@@ -232,16 +232,17 @@ async def file_receive_handler(client: Client, message: Message):
 async def process_channel_message(client: Client, message: Message, durable_context=None):
     if is_skip_channel(message):
         return
+    if durable_context is not None:
+        channel = int(str(message.chat.id).removeprefix('-100'))
+        if await db.get_media_ids_by_part(channel, message.id):
+            return
     media = message.video or message.document
     if media and _is_supported_media(message):
         reason = rejection_reason(source_resolution(message.caption, media.file_name))
         if reason:
             LOGGER.info(f'[Ingestion] Skipped {message.chat.id}/{message.id}: {reason}')
-            return
-
-    if durable_context is not None:
-        channel = int(str(message.chat.id).removeprefix('-100'))
-        if await db.get_media_ids_by_part(channel, message.id):
+            if durable_ingestion.authorized(message.chat.id):
+                await route_to_skip_channel(client, message, reason=reason, force_delete=True)
             return
 
     # Capture only new supported media in explicitly authorized channels.
@@ -366,6 +367,7 @@ async def process_edited_message(client: Client, message: Message, durable_conte
         reason = rejection_reason(source_resolution(message.caption, (message.video or message.document).file_name))
         if reason:
             LOGGER.info(f'[Ingestion] Skipped edited message {message.id}: {reason}')
+            await route_to_skip_channel(client, message, reason=reason, force_delete=True)
             return
 
         _, title, msg_id, raw_size, size, channel = _extract_fields(message)

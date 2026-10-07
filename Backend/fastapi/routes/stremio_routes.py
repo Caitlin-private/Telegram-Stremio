@@ -33,7 +33,7 @@ router = APIRouter(prefix="/stremio", tags=["Stremio Addon"])
 templates = Jinja2Templates(directory="Backend/fastapi/templates")
 
 #----- Addon configuration
-ADDON_NAME = "Telegram"
+ADDON_NAME = "CaitlinStream"
 ADDON_VERSION = __version__
 PAGE_SIZE = 15
 
@@ -498,8 +498,6 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
                 f"📅 Access active until {expiry_str}.\n"
                 f"Streams movies and series from your Telegram."
             )
-            epoch_tag = format(int(expiry_obj.timestamp()) & 0xFFFF, "x")
-            addon_version = f"{ADDON_VERSION}-{epoch_tag}"
     except Exception:
         pass
 
@@ -507,7 +505,7 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
         "id": f"telegram.media.{token[:8]}",
         "version": addon_version,
         "name": addon_name,
-        "logo": "https://i.postimg.cc/XqWnmDXr/Picsart-25-10-09-08-09-45-867.png",
+        "logo": f"{SettingsManager.current().base_url.rstrip('/')}/static/caitlinstream-logo.png?v={ADDON_VERSION}",
         "description": addon_desc,
         "types": ["movie", "series"],
         "resources": resources,

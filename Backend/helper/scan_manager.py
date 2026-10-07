@@ -462,24 +462,22 @@ class ScanManager:
             return
 
         file = message.video or message.document
+        channel_int = int(str(chat_id).replace('-100', ''))
+        if await self._stream_id_exists(channel_int, message.id):
+            s['counters']['skipped_dup'] += 1
+            return
         from Backend.helper.resolution_policy import source_resolution, rejection_reason
         reason = rejection_reason(source_resolution(message.caption, file.file_name))
         if reason:
             s['counters']['skipped_resolution'] = s['counters'].get('skipped_resolution', 0) + 1
             LOGGER.info(f'[Scan] Skipped {chat_id}/{message.id}: {reason}')
+            await route_to_skip_channel(client, message, reason=reason, force_delete=True)
             return
         title = message.caption or file.file_name
         msg_id = message.id
         raw_size = file.file_size
         size = get_readable_file_size(file.file_size)
         channel_int = int(str(chat_id).replace("-100", ""))
-
-        try:
-            if await self._stream_id_exists(channel_int, msg_id):
-                s["counters"]["skipped_dup"] += 1
-                return
-        except Exception as e:
-            LOGGER.warning(f"[ScanManager] Dup-check error msg {msg_id}: {e}")
 
         try:
             metadata_info = await metadata(
@@ -505,7 +503,11 @@ class ScanManager:
 
         insert_status: dict = {}
         try:
-            async with self._db_lock:
+            from Backend.pyrofork.plugins.receiver import db_lock
+            async with db_lock, self._db_lock:
+                if await self._stream_id_exists(channel_int, msg_id):
+                    s['counters']['skipped_dup'] += 1
+                    return
                 updated_id = await db.insert_media(
                     metadata_info,
                     channel=channel_int,
@@ -520,6 +522,10 @@ class ScanManager:
                     s["counters"]["skipped_dup"] += 1
                 else:
                     s["counters"]["indexed"] += 1
+                    from Backend.helper.announcer import announce_new_media
+                    from Backend.helper.auto_catalog import start_single_media_catalog_sync
+                    start_single_media_catalog_sync(db, tmdb_id=metadata_info.get('tmdb_id'), media_type=metadata_info.get('media_type'))
+                    announce_new_media(metadata_info)
             else:
                 s["counters"]["skipped_meta"] += 1
         except Exception as e:

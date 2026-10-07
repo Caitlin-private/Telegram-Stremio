@@ -244,7 +244,7 @@
             <span class="toggle-track"></span>
             <span class="toggle-label"><strong>Allow files without a resolution label</strong><span class="hint block">Accept files with no recognised resolution in the filename or caption. They are listed as Unknown when no resolution can be determined. Nuvio does not require a resolution label to play a supported file.</span></span>
         </label>
-        <p class="hint mt-3">Save Settings to apply. Files excluded by these rules remain in Telegram. To reconsider earlier skipped files after changing the rules, pause and set an earlier starting message ID on the dashboard.</p>
+        <p class="hint mt-3">Save Settings to apply. Newly ingested AUTH-channel files excluded by these rules are copied to the skip channel with a reason, then deleted from the source channel. Configure the skip channel and grant the bot copy/post/delete permissions. Bot uploads are rejected with a reason before copying.</p>
     </div>
     <div class="settings-card">
         <h2><i class="fa-solid fa-sliders"></i> General</h2>
