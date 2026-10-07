@@ -25,8 +25,10 @@ from Backend.helper.split_files import parse_split_info
 from Backend.helper.subtitles import ingest_subtitle, is_subtitle_file, remove_subtitle
 from Backend.helper.task_manager import delete_message
 from Backend.logger import LOGGER
+from Backend.helper.ingestion_status import ingestion_status
 
 file_queue = Queue()
+ingestion_status.queue = file_queue
 db_lock = Lock()
 from Backend.helper.ingestion_rules import manual_ingestion_lock as manual_session_lock, next_episode, resolution_hint
 
@@ -72,33 +74,34 @@ def _finalize_title(title: str, metadata_info: dict) -> str:
 async def process_file():
     while True:
         metadata_info, channel, msg_id, size, raw_size, title = await file_queue.get()
-        insert_status: dict = {}
-        async with db_lock:
-            updated_id = await db.insert_media(metadata_info, channel=channel, msg_id=msg_id, size=size, raw_size=raw_size, name=title, status=insert_status)
-            if updated_id:
-                LOGGER.info(f"{metadata_info['media_type']} updated with ID: {updated_id}")
-            else:
-                LOGGER.info("Update failed due to validation errors.")
+        try:
+            with ingestion_status.write():
+                insert_status: dict = {}
+                async with db_lock:
+                    updated_id = await db.insert_media(metadata_info, channel=channel, msg_id=msg_id, size=size, raw_size=raw_size, name=title, status=insert_status)
+                    if not updated_id:
+                        raise RuntimeError("Update failed due to validation errors.")
+                    LOGGER.info(f"{metadata_info['media_type']} updated with ID: {updated_id}")
 
-        if updated_id and insert_status.get("duplicate_skipped"):
-            LOGGER.info(f"Duplicate protection: deleting duplicate message {msg_id} from channel {channel}.")
-            create_task(delete_message(int(f"-100{channel}"), msg_id))
+                if insert_status.get("duplicate_skipped"):
+                    LOGGER.info(f"Duplicate protection: deleting duplicate message {msg_id} from channel {channel}.")
+                    create_task(delete_message(int(f"-100{channel}"), msg_id))
+                    continue
+
+                start_single_media_catalog_sync(
+                    db, tmdb_id=metadata_info.get("tmdb_id"),
+                    media_type=metadata_info.get("media_type"),
+                )
+                announce_new_media(metadata_info)
+                create_task(auto_fulfill(
+                    tmdb_id=metadata_info.get("tmdb_id"),
+                    imdb_id=metadata_info.get("imdb_id"),
+                    media_type=metadata_info.get("media_type"),
+                ))
+        except Exception:
+            LOGGER.exception(f"[Ingestion] Failed queued message {channel}/{msg_id}; use Scan to retry. Continuing with the next file.")
+        finally:
             file_queue.task_done()
-            continue
-
-        if updated_id:
-            start_single_media_catalog_sync(
-                db,
-                tmdb_id=metadata_info.get("tmdb_id"),
-                media_type=metadata_info.get("media_type"),
-            )
-            announce_new_media(metadata_info)
-            create_task(auto_fulfill(
-                tmdb_id=metadata_info.get("tmdb_id"),
-                imdb_id=metadata_info.get("imdb_id"),
-                media_type=metadata_info.get("media_type"),
-            ))
-        file_queue.task_done()
 
 
 create_task(process_file())
@@ -213,6 +216,7 @@ async def _handle_personal_session(client: Client, message: Message) -> None:
 
 #----- Ingest new channel media into the queue after building metadata
 @Client.on_message(filters.channel & (filters.document | filters.video))
+@ingestion_status.track
 async def file_receive_handler(client: Client, message: Message):
     if is_skip_channel(message):
         return
@@ -303,6 +307,7 @@ def _override_matches_indexed(override_id: str, imdb_id, tmdb_id) -> bool:
 
 #----- Re-index an edited channel file only when it carries an override ID
 @Client.on_edited_message(filters.channel & (filters.document | filters.video))
+@ingestion_status.track
 async def file_edited_handler(client: Client, message: Message):
     if str(message.chat.id) not in SettingsManager.current().auth_channels:
         return
@@ -370,6 +375,7 @@ async def _upload_failure(message, title, settings, reason=None):
 
 
 @Client.on_message(filters.private & (filters.document | filters.video))
+@ingestion_status.track
 async def user_upload_handler(client: Client, message: Message):
     settings = SettingsManager.current()
     if not settings.allow_user_uploads:

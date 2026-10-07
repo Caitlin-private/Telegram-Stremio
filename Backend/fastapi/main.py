@@ -372,6 +372,13 @@ async def update_token(token: str, payload: dict, _: bool = Depends(require_auth
 async def revoke_token(token: str, _: bool = Depends(require_auth)):
     return await revoke_token_api(token)
 
+@app.get("/api/system/ingestion")
+async def ingestion_metrics(_: bool = Depends(require_auth)):
+    from Backend.helper.ingestion_status import ingestion_status
+    from Backend.pyrofork.bot import StreamBot
+    return JSONResponse(ingestion_status.snapshot(StreamBot), headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/system/stats")
 async def get_system_stats(_: bool = Depends(require_auth)):
     return await get_system_stats_api()

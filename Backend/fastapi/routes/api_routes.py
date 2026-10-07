@@ -111,6 +111,7 @@ def _require_tmdb_id(value) -> int:
 
 #----- System stats
 async def get_system_stats_api():
+    from Backend.helper.ingestion_status import ingestion_status
     try:
         db_stats = await db.get_database_stats()
         total_movies, total_tv_shows = db.content_totals(db_stats)
@@ -118,6 +119,7 @@ async def get_system_stats_api():
         
         return {
             "server_status": "running",
+            **ingestion_status.snapshot(StreamBot),
             "uptime": get_readable_time(time() - StartTime),
             "telegram_bot": f"@{StreamBot.username}" if StreamBot and StreamBot.username else "@StreamBot",
             "connected_bots": len(multi_clients),
@@ -2371,6 +2373,7 @@ LOG_FILE = "log.txt"
 
 #----- Aggregate content + system metrics across all storage DBs (was /stats)
 async def get_db_stats_api() -> dict:
+    from Backend.helper.ingestion_status import ingestion_status
     from Backend.helper.system_memory import memory_status
     from Backend.helper.stats_display import live_counts
     from Backend.helper.custom_dl import ACTIVE_STREAMS, STALE_STREAM_IDLE
@@ -2403,6 +2406,7 @@ async def get_db_stats_api() -> dict:
             "data": {
                 "version": __version__,
                 "ram": memory_status(),
+                **ingestion_status.snapshot(StreamBot),
                 **live_counts(list(ACTIVE_STREAMS.values()), time(), STALE_STREAM_IDLE),
                 "movies": total_movies,
                 "tv_shows": total_tv,

@@ -22,6 +22,11 @@
     </header>
 
     <div id="setup-card" class="mb-8"></div>
+    <div class="glass-panel p-4 rounded-2xl mb-6">
+        <p class="font-bold">⏳ Pending media (known): <span id="sys-pending-media">{{ system_stats.pending_media|default(0) }}</span></p>
+        <p class="text-sm text-text-secondary mt-1">Telegram updates waiting (all types): <span id="sys-pending-updates">{{ system_stats.telegram_updates_waiting if system_stats.telegram_updates_waiting is defined and system_stats.telegram_updates_waiting is not none else '—' }}</span></p>
+        <p class="text-xs text-text-secondary mt-2">Live ingestion only; includes metadata processing and database queue. Channel history and dashboard scans are excluded. Counts reset on restart.</p>
+    </div>
 
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-8">
         <div class="glass-panel p-3.5 sm:p-5 rounded-2xl sm:rounded-[2rem] flex items-center gap-3 sm:gap-4 min-w-0">
@@ -591,6 +596,8 @@
                 const stats = await response.json();
 
                 const elUptime = document.getElementById('sys-uptime');
+                document.getElementById('sys-pending-media').textContent = stats.pending_media ?? '—';
+                document.getElementById('sys-pending-updates').textContent = stats.telegram_updates_waiting ?? '—';
                 if (elUptime) elUptime.innerText = stats.uptime || 'N/A';
 
                 const elBotCount = document.getElementById('sys-bots-count');
@@ -612,9 +619,29 @@
         }
     }
 
+    let ingestionRefreshBusy = false;
+    async function refreshIngestion() {
+        if (document.hidden || ingestionRefreshBusy) return;
+        ingestionRefreshBusy = true;
+        try {
+            const res = await fetch('/api/system/ingestion', {cache: 'no-store'});
+            if (!res.ok) throw new Error('Stats unavailable');
+            const stats = await res.json();
+            document.getElementById('sys-pending-media').textContent = stats.pending_media ?? '—';
+            document.getElementById('sys-pending-updates').textContent = stats.telegram_updates_waiting ?? '—';
+        } catch (_) {
+            document.getElementById('sys-pending-media').textContent = 'Unavailable';
+            document.getElementById('sys-pending-updates').textContent = 'Unavailable';
+        } finally {
+            ingestionRefreshBusy = false;
+        }
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         loadStreamStats();
         loadSetupStatus();
+        refreshIngestion();
+        setInterval(refreshIngestion, 5000);
         setInterval(loadStreamStats, 30000);
         setInterval(refreshLiveDurations, 1000);
     });

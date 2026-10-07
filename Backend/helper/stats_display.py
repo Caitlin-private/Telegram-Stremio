@@ -32,5 +32,12 @@ def format_stats(s):
         f'🗄️ DB size: {s["db_size"]}\n\n'
         '🟢 Live Activity\n'
         f'▶️ Live streams: {s["live_streams"]:,}\n'
-        f'👥 Active users: {s["active_users"]:,}'
+        f'👥 Active users: {s["active_users"]:,}\n\n'
+        '📥 Live Ingestion\n'
+        f'⏳ Pending media (known): {s.get("pending_media", 0):,}\n'
+        f'⚙️ Processing / waiting for lock: {s.get("media_handlers", 0):,}\n'
+        f'🗂️ Queued for DB: {s.get("queued_media", 0):,}\n'
+        f'💾 DB worker active: {s.get("writing_media", 0):,}\n'
+        f'📨 Telegram updates waiting (all types): {s.get("telegram_updates_waiting") if s.get("telegram_updates_waiting") is not None else "Unavailable"}\n'
+        f'⚠️ Queue task errors since restart: {s.get("ingestion_write_errors", 0):,}'
     )

@@ -1826,6 +1826,11 @@ function rebuildDatabaseList(dbList) {
 /* ── System & Maintenance ───────────────────────────────────────────────── */
 const STAT_FIELDS = [
     ['ram_display', 'RAM Free / Total'],
+    ['pending_media', 'Pending Media (Known)'],
+    ['media_handlers', 'Media Processing / Waiting for Lock'],
+    ['queued_media', 'Queued for Database'], ['writing_media', 'DB Worker Active'],
+    ['telegram_updates_waiting', 'Telegram Updates Waiting (All Types)'],
+    ['ingestion_write_errors', 'Queue Task Errors Since Restart'],
     ['movies', 'Movies'], ['tv_shows', 'TV Shows'], ['episodes', 'Episodes'],
     ['streams', 'Streams'], ['db_size', 'DB Size'],
     ['auth_channels', 'AUTH Channels'], ['version', 'Version'],
@@ -1849,6 +1854,7 @@ async function loadDbStats(btn) {
         grid.innerHTML = STAT_FIELDS.map(([k, label]) =>
             `<div class="stat-box"><div class="v">${escapeHtml(String(k === 'ram_display' ? (s.ram?.display ?? 'Unavailable') : (s[k] ?? '—')))}</div><div class="l">${label}</div></div>`
         ).join('');
+        grid.insertAdjacentHTML('beforeend', '<p class="hint" style="grid-column:1/-1">Live ingestion only. Known media includes processing and queued files; Telegram updates have not yet been classified. Unreceived channel history and dashboard scans are not included. These counters reset on restart.</p>');
     } catch (e) {
         grid.innerHTML = `<div class="hint" style="grid-column:1/-1;color:#ef4444">Failed to load stats.</div>`;
     } finally {
