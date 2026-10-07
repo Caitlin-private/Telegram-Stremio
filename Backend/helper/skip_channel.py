@@ -20,7 +20,11 @@ def is_skip_channel(message: Message) -> bool:
     return bool(username) and ref.lstrip("@").lower() == username
 
 
-async def route_to_skip_channel(client: Client, message: Message, reason=None, force_delete=False) -> None:
+async def route_to_skip_channel(client: Client, message: Message, reason=None, force_delete=False, retry_call=None) -> None:
+    async def call(operation, *args, **kwargs):
+        if retry_call is not None:
+            return await retry_call(operation, *args, **kwargs)
+        return await operation(*args, **kwargs)
     settings = SettingsManager.current()
     skip = settings.skip_channel
     if not skip:
@@ -34,19 +38,19 @@ async def route_to_skip_channel(client: Client, message: Message, reason=None, f
     skip_chat = int(skip) if str(skip).lstrip("-").replace("-100", "").isdigit() else skip
 
     try:
-        copied = await message.copy(skip_chat)
+        copied = await call(message.copy, skip_chat)
     except FloodWait as e:
         await asleep(e.value)
         try:
-            copied = await message.copy(skip_chat)
+            copied = await call(message.copy, skip_chat)
         except Exception as e2:
             LOGGER.error(f"[SkipChannel] Copy failed for message {message.id}: {e2}")
-            if force_delete:
+            if force_delete or isinstance(e2, FloodWait):
                 raise
             return
     except Exception as e:
         LOGGER.error(f"[SkipChannel] Could not copy message {message.id} to skip channel: {e}")
-        if force_delete:
+        if force_delete or retry_call is not None:
             raise
         return
 
@@ -61,28 +65,32 @@ async def route_to_skip_channel(client: Client, message: Message, reason=None, f
         heading = 'Media skipped' if supplied_reason else 'Metadata failed for file'
         text = f"{heading}: {title[:1000]} (ID: {message.id})\nReason: {reason}"
         try:
-            await client.send_message(skip_chat, text[:4000], reply_to_message_id=copied.id, parse_mode=ParseMode.DISABLED)
+            await call(client.send_message, skip_chat, text[:4000], reply_to_message_id=copied.id, parse_mode=ParseMode.DISABLED)
         except FloodWait as wait:
             await asleep(wait.value)
-            await client.send_message(skip_chat, text[:4000], reply_to_message_id=copied.id, parse_mode=ParseMode.DISABLED)
+            await call(client.send_message, skip_chat, text[:4000], reply_to_message_id=copied.id, parse_mode=ParseMode.DISABLED)
     except Exception as exc:
         LOGGER.warning(f"[SkipChannel] Could not send reason for message {message.id}: {exc}")
-        if force_delete:
+        if force_delete or retry_call is not None or isinstance(exc, FloodWait):
             raise
 
     if force_delete:
         # Only remove the source after both the copy and its reason succeeded.
         # Unlike the legacy deletion helper, failures must reach the durable queue.
         try:
-            deleted = await client.delete_messages(message.chat.id, message.id)
+            deleted = await call(client.delete_messages, message.chat.id, message.id)
         except FloodWait as wait:
             await asleep(wait.value)
-            deleted = await client.delete_messages(message.chat.id, message.id)
+            deleted = await call(client.delete_messages, message.chat.id, message.id)
         if deleted is False:
             raise RuntimeError('Could not delete the original resolution-filtered message.')
         return
 
     if settings.delete_on_metadata_fail:
+        if retry_call is not None:
+            if await call(client.delete_messages, message.chat.id, message.id) is False:
+                raise RuntimeError('Could not delete rejected scan message.')
+            return
         try:
             from Backend.helper.task_manager import delete_message
             await delete_message(message.chat.id, message.id)

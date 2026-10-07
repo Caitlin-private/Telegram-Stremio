@@ -30,6 +30,10 @@ _STATE_COLLECTION = "scan_state"
 _SCAN_DOC_ID = "scan"
 
 
+class _ScanStopped(Exception):
+    """Cooperative stop while awaiting Telegram's retry window."""
+
+
 def _now() -> float:
     return time.time()
 
@@ -52,6 +56,7 @@ class ScanManager:
         self._cancel = False
         self._lock = asyncio.Lock()
         self._db_lock = asyncio.Lock()
+        self._stop_event = asyncio.Event()
         self.state: Dict[str, Any] = self._blank_state()
 
     #----- ── State helpers ────────────────────────────────────────────────────────
@@ -60,6 +65,7 @@ class ScanManager:
         return {
             "status": "idle",            
             "mode": "scan",              
+            "flood_wait_until": 0.0,
             "selected_channels": [],     
             "pending": [],               
             "current_channel": None,
@@ -150,8 +156,9 @@ class ScanManager:
         return {
             "status": s["status"],
             "mode": s["mode"],
+            "flood_wait_seconds": max(0, int(s.get('flood_wait_until', 0) - _now() + 0.999)),
             "is_running": s["status"] == "running",
-            "resumable": s["status"] in ("paused", "cancelled") and bool(s["pending"]),
+            "resumable": s["status"] in ("paused", "cancelled", "error") and bool(s["pending"]),
             "selected_channels": list(s["selected_channels"]),
             "pending": list(s["pending"]),
             "current_channel": s["current_channel"],
@@ -195,7 +202,7 @@ class ScanManager:
 
             channels = [str(c).strip() for c in (channels or []) if str(c).strip()]
 
-            if mode == "scan" and not channels and self.state["pending"]:
+            if mode in ("scan", "quick") and not channels and self.state["pending"]:
                 channels = list(self.state["pending"])
 
             if not channels:
@@ -216,7 +223,7 @@ class ScanManager:
                 self.state["pending"] = list(channels)
                 self.state["counters"] = self._blank_counters()
             else:
-                resuming = self.state["status"] in ("paused", "cancelled") and self.state["pending"]
+                resuming = self.state["status"] in ("paused", "cancelled", "error") and self.state["pending"]
                 if resuming:
                     merged_pending = list(self.state["pending"])
                     for ch in channels:
@@ -237,17 +244,37 @@ class ScanManager:
             self.state["finished_at"] = 0.0
             self.state["started_at"] = _now()
             self._cancel = False
+            self._stop_event.clear()
             await self._persist()
 
             self._task = asyncio.create_task(self._run(client))
-            return {"ok": True, "message": f"{'Rescan' if mode == 'rescan' else 'Scan'} started.",
+            return {"ok": True, "message": f"{'Quick scan' if mode == 'quick' else 'Rescan' if mode == 'rescan' else 'Scan'} started.",
                     "status": self.get_status()}
 
     async def cancel(self) -> Dict[str, Any]:
         if self.state["status"] != "running":
             return {"ok": False, "message": "No scan is currently running."}
         self._cancel = True
+        self._stop_event.set()
         return {"ok": True, "message": "Stop requested — the scan will pause after the current batch."}
+
+    async def _telegram_call(self, operation, *args, **kwargs):
+        while True:
+            if self._cancel:
+                raise _ScanStopped()
+            delay = self.state.get('flood_wait_until', 0) - _now()
+            if delay > 0:
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            try:
+                return await operation(*args, **kwargs)
+            except FloodWait as exc:
+                self.state['flood_wait_until'] = max(self.state.get('flood_wait_until', 0), _now() + max(1, exc.value) + 1)
+                LOGGER.warning(f'[ScanManager] Telegram FloodWait: {exc.value}s; retaining current message/batch for retry.')
+                await self._persist()
 
     async def _run(self, client) -> None:
         try:
@@ -280,6 +307,10 @@ class ScanManager:
             self.state["finished_at"] = _now()
             await self._persist()
 
+        except _ScanStopped:
+            self.state['status'] = 'cancelled'
+            self.state['finished_at'] = _now()
+            await self._persist()
         except (ChannelPrivate, ChatAdminRequired) as e:
             self.state["status"] = "error"
             self.state["error"] = f"Access denied to channel — make sure the bot is an admin. ({e})"
@@ -300,9 +331,9 @@ class ScanManager:
         s = self.state
 
         try:
-            chat = await client.get_chat(chat_id)
+            chat = await self._telegram_call(client.get_chat, chat_id)
             s["current_channel_name"] = getattr(chat, "title", str(chat_id))
-        except (ChannelPrivate, ChatAdminRequired):
+        except (ChannelPrivate, ChatAdminRequired, _ScanStopped):
             raise
         except Exception as e:
             s["current_channel_name"] = str(chat_id)
@@ -310,7 +341,7 @@ class ScanManager:
 
         s["current_channel"] = ch_key
 
-        last_id = await self._probe_last_message_id(client, chat_id)
+        last_id = await self._probe_last_message_id(client, chat_id, scan_retry=True)
         use_probe = last_id is not None and last_id >= 1
         s["current_target_id"] = last_id if use_probe else 0
 
@@ -338,29 +369,7 @@ class ScanManager:
             if not batch_ids:
                 break
 
-            try:
-                messages = await client.get_messages(chat_id, batch_ids)
-            except FloodWait as e:
-                LOGGER.info(f"[ScanManager] FloodWait {e.value}s — sleeping…")
-                await asyncio.sleep(e.value)
-                try:
-                    messages = await client.get_messages(chat_id, batch_ids)
-                except Exception as ex:
-                    LOGGER.error(f"[ScanManager] Retry failed at {current}: {ex}")
-                    s["counters"]["errors"] += 1
-                    current = upper
-                    empty_streak += 1
-                    s["cursors"][str(ch_key)] = current
-                    s["current_id"] = current
-                    continue
-            except Exception as e:
-                LOGGER.error(f"[ScanManager] Batch fetch error at {current}: {e}")
-                s["counters"]["errors"] += 1
-                current = upper
-                empty_streak += 1
-                s["cursors"][str(ch_key)] = current
-                s["current_id"] = current
-                continue
+            messages = await self._telegram_call(client.get_messages, chat_id, batch_ids)
 
             if not isinstance(messages, list):
                 messages = [messages]
@@ -376,10 +385,13 @@ class ScanManager:
                     async with sem:
                         if self._cancel:
                             return
-                        await self._process_message(client, msg, chat_id)
+                        await self._telegram_call(self._process_message, client, msg, chat_id)
                         s["counters"]["processed"] += 1
 
-                await asyncio.gather(*(_worker(m) for m in to_process))
+                results = await asyncio.gather(*(_worker(m) for m in to_process), return_exceptions=True)
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
 
             if self._cancel:
                 s["cursors"][str(ch_key)] = current
@@ -402,7 +414,11 @@ class ScanManager:
         LOGGER.info(f"[ScanManager] Finished {s['current_channel_name']} at id {current}")
         return True
 
-    async def _probe_last_message_id(self, client, chat_id: int):
+    async def _probe_last_message_id(self, client, chat_id: int, scan_retry=False):
+        if scan_retry:
+            probe = await self._telegram_call(client.send_message, chat_id, SCAN_PROBE_TEXT)
+            await self._telegram_call(client.delete_messages, chat_id, probe.id)
+            return probe.id
         probe = None
         try:
             probe = await client.send_message(chat_id, SCAN_PROBE_TEXT)
@@ -431,6 +447,7 @@ class ScanManager:
     async def _process_message(self, client, message, chat_id: int) -> None:
         s = self.state
         db = self._db
+        quick = s.get('mode') == 'quick'
 
         if is_skip_channel(message):
             s["counters"]["skipped_meta"] += 1
@@ -469,9 +486,13 @@ class ScanManager:
         from Backend.helper.resolution_policy import source_resolution, rejection_reason
         reason = rejection_reason(source_resolution(message.caption, file.file_name))
         if reason:
-            s['counters']['skipped_resolution'] = s['counters'].get('skipped_resolution', 0) + 1
             LOGGER.info(f'[Scan] Skipped {chat_id}/{message.id}: {reason}')
-            await route_to_skip_channel(client, message, reason=reason, force_delete=True)
+            if quick:
+                if await client.delete_messages(chat_id, message.id) is False:
+                    raise RuntimeError('Quick Scan could not delete the rejected message.')
+            else:
+                await route_to_skip_channel(client, message, reason=reason, force_delete=True, retry_call=self._telegram_call)
+            s['counters']['skipped_resolution'] = s['counters'].get('skipped_resolution', 0) + 1
             return
         title = message.caption or file.file_name
         msg_id = message.id
@@ -484,22 +505,36 @@ class ScanManager:
                 clean_filename(title), channel_int, msg_id,
                 override_id=extract_default_id(message.caption or ""),
                 quality_hint=source_resolution(message.caption, file.file_name),
+                raise_errors=True,
             )
+        except FloodWait:
+            raise
         except Exception as e:
             LOGGER.warning(f"[ScanManager] Metadata exception for msg {msg_id}: {e}")
+            if quick:
+                raise
             metadata_info = None
 
         if metadata_info is None:
-            s["counters"]["skipped_meta"] += 1
+            if quick:
+                if await client.delete_messages(chat_id, message.id) is False:
+                    raise RuntimeError('Quick Scan could not delete the rejected message.')
+                s["counters"]["skipped_meta"] += 1
+                return
             try:
-                await route_to_skip_channel(client, message)
+                await route_to_skip_channel(client, message, retry_call=self._telegram_call)
+            except FloodWait:
+                raise
             except Exception as e:
                 LOGGER.warning(f"[ScanManager] Skip-channel route failed for msg {msg_id}: {e}")
+                raise
+            s["counters"]["skipped_meta"] += 1
             return
 
         title_clean = finalize_media_name(title, bool(metadata_info.get('group_key')))
         encoded = metadata_info.get("encoded_string") or await encode_string({"chat_id": channel_int, "msg_id": msg_id})
-        await apply_video_thumb_to_metadata(metadata_info, message, encoded, client)
+        if not quick:
+            await apply_video_thumb_to_metadata(metadata_info, message, encoded, client)
 
         insert_status: dict = {}
         try:
@@ -525,9 +560,12 @@ class ScanManager:
                     from Backend.helper.announcer import announce_new_media
                     from Backend.helper.auto_catalog import start_single_media_catalog_sync
                     start_single_media_catalog_sync(db, tmdb_id=metadata_info.get('tmdb_id'), media_type=metadata_info.get('media_type'))
-                    announce_new_media(metadata_info)
+                    if not quick:
+                        announce_new_media(metadata_info)
             else:
                 s["counters"]["skipped_meta"] += 1
+        except FloodWait:
+            raise
         except Exception as e:
             LOGGER.error(f"[ScanManager] DB insert error msg {msg_id}: {e}")
             s["counters"]["errors"] += 1

@@ -268,7 +268,7 @@
         </div>
 
         <p class="hint mt-3 mb-4">
-            Index files from your AUTH channels. Scans resume automatically; use Rescan to re-index from scratch.
+            Index files from your AUTH channels. Interrupted scans can be resumed from saved progress. Use Rescan to re-index from scratch.
         </p>
 
         <label class="s-label">Select channels</label>
@@ -303,11 +303,15 @@
             <div class="stat-box"><div class="v" style="color:#3b82f6" id="sc-sub-added">0</div><div class="l">Subtitles added</div></div>
             <div class="stat-box"><div class="v" id="sc-sub-skipped">0</div><div class="l">Subtitles skipped</div></div>
             <div class="stat-box"><div class="v" style="color:#ef4444" id="sc-errors">0</div><div class="l">Errors</div></div>
+            <div class="stat-box"><div class="v" id="sc-resolution">0</div><div class="l">Resolution Skips</div></div>
         </div>
 
         <div class="flex items-center gap-2 flex-wrap">
-            <button class="btn btn-primary" id="scan-start-btn" onclick="startScan('scan')">
+            <button class="btn btn-primary" id="scan-start-btn" onclick="startScan(scanResumeMode)">
                 <i class="fa-solid fa-play"></i> <span id="scan-start-label">Start Scan</span>
+            </button>
+            <button class="btn btn-warning" id="quick-scan-btn" onclick="startScan('quick')">
+                <i class="fa-solid fa-bolt"></i> Quick Scan
             </button>
             <button class="btn btn-warning" id="rescan-btn" onclick="confirmRescan()">
                 <i class="fa-solid fa-arrows-rotate"></i> Rescan (wipe & re-index)
@@ -316,6 +320,7 @@
                 <i class="fa-solid fa-stop"></i> Stop
             </button>
         </div>
+        <p class="hint mt-3">Quick Scan suppresses announcements, thumbnail uploads and skip-channel copies. Files rejected by resolution or metadata checks are deleted directly from the source channel. Pause live ingestion during a bulk scan to avoid overlapping activity.</p>
         <p class="hint mt-3" id="scan-error" style="color:#ef4444;display:none"></p>
     </div>
 
@@ -759,13 +764,15 @@ function getSelectedChannels() {
 }
 
 /* ─────────────── Scan control ─────────────── */
+let scanResumeMode = 'scan';
 async function startScan(mode) {
     const channels = getSelectedChannels();
-    if (mode === 'scan' && !channels.length) {
+    if (!channels.length) {
         // allow plain resume with no selection only if resumable
         showToast('Select at least one channel to scan.', 'error', 'No channels');
         return;
     }
+    if (mode === 'quick' && !confirm('Quick Scan permanently deletes rejected files from the source channel without a skip-channel copy. It sends no announcements. Continue?')) return;
     try {
         const res = await fetch('/api/admin/tools/scan/start', {
             method: 'POST',
@@ -819,6 +826,8 @@ async function pollScan() {
 }
 
 function renderScan(s) {
+    scanResumeMode = s.resumable && s.mode === 'quick' ? 'quick' : 'scan';
+    document.getElementById('quick-scan-btn').disabled = !!s.is_running;
     const pill = document.getElementById('scan-status-pill');
     const status = s.status || 'idle';
     pill.className = 'status-pill status-' + status;
@@ -833,6 +842,7 @@ function renderScan(s) {
     setText('sc-sub-added', c.subtitles_added || 0);
     setText('sc-sub-skipped', c.subtitles_skipped || 0);
     setText('sc-errors', c.errors || 0);
+    setText('sc-resolution', c.skipped_resolution || 0);
     setText('scan-elapsed', s.elapsed || '0s');
 
     const bar = document.getElementById('scan-bar');
@@ -855,13 +865,16 @@ function renderScan(s) {
                 `Scanning ${name}` + (s.current_id ? ` · up to msg #${s.current_id}` : '');
         }
         startBtn.disabled = true; rescanBtn.disabled = true; cancelBtn.disabled = false;
+        if (s.flood_wait_seconds > 0) {
+            document.getElementById('scan-current').textContent = `Telegram rate limit: waiting ${s.flood_wait_seconds}s, then retrying the same work automatically.`;
+        }
         errEl.style.display = 'none';
     } else {
         bar.classList.remove('indeterminate');
         startBtn.disabled = false; rescanBtn.disabled = false; cancelBtn.disabled = true;
 
         if (s.resumable) {
-            startLabel.textContent = 'Resume Scan';
+            startLabel.textContent = scanResumeMode === 'quick' ? 'Resume Quick Scan' : 'Resume Scan';
             bar.style.width = '60%';
             document.getElementById('scan-current').textContent =
                 `Paused — ${ (s.pending||[]).length } channel(s) remaining. Resume to continue.`;

@@ -2285,8 +2285,8 @@ async def start_scan_api(payload: dict) -> dict:
         raise HTTPException(status_code=503, detail="No Telegram client is connected yet.")
 
     mode = str(payload.get("mode", "scan")).lower()
-    if mode not in ("scan", "rescan"):
-        raise HTTPException(status_code=400, detail="mode must be 'scan' or 'rescan'.")
+    if mode not in ("scan", "rescan", "quick"):
+        raise HTTPException(status_code=400, detail="mode must be 'scan', 'quick' or 'rescan'.")
     channels = payload.get("channels") or []
     if not isinstance(channels, list):
         raise HTTPException(status_code=400, detail="'channels' must be a list.")

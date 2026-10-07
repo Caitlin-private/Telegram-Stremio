@@ -33,7 +33,7 @@ router = APIRouter(prefix="/stremio", tags=["Stremio Addon"])
 templates = Jinja2Templates(directory="Backend/fastapi/templates")
 
 #----- Addon configuration
-ADDON_NAME = "CaitlinStream"
+ADDON_NAME = "Caitlin Stream"
 ADDON_VERSION = __version__
 PAGE_SIZE = 15
 
@@ -316,7 +316,7 @@ def format_stream_details(filename: str, quality: str, size: str, is_split: bool
     try:
         parsed = PTN.parse(filename)
     except Exception:
-        return (f"Telegram {quality}", f"📁 {filename}\n{size_emoji} {size}")
+        return (f"{ADDON_NAME} {quality}", f"📁 {filename}\n{size_emoji} {size}")
 
     codec_parts = []
     if parsed.get("codec"):
@@ -332,7 +332,7 @@ def format_stream_details(filename: str, quality: str, size: str, is_split: bool
 
     resolution = parsed.get("resolution", quality)
     quality_type = parsed.get("quality", "")
-    stream_name = f"Telegram {resolution} {quality_type}".strip()
+    stream_name = f"{ADDON_NAME} {resolution} {quality_type}".strip()
 
     stream_title_parts = [
         f"📁 {filename}",
@@ -498,6 +498,8 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
                 f"📅 Access active until {expiry_str}.\n"
                 f"Streams movies and series from your Telegram."
             )
+            epoch_tag = format(int(expiry_obj.timestamp()) & 0xFFFF, "x")
+            addon_version = f"{ADDON_VERSION}-{epoch_tag}"
     except Exception:
         pass
 

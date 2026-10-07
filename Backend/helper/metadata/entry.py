@@ -65,6 +65,7 @@ async def metadata(
     override_id: str = None,
     season_hint: int = None,
     quality_hint: str = None,
+    raise_errors: bool = False,
 ) -> dict | None:
     from Backend.helper.multipart_video import video_part
     playable_part = video_part(filename)
@@ -234,6 +235,8 @@ async def metadata(
         return result
     except Exception as e:
         LOGGER.error(f"Error while fetching metadata for {filename}: {e}\n{traceback.format_exc()}")
+        if raise_errors:
+            raise
         return None
 
 
