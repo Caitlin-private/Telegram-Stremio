@@ -46,3 +46,13 @@ class IngestionStatus:
 
 
 ingestion_status = IngestionStatus()
+
+
+async def ingestion_snapshot(client=None):
+    from Backend.helper.durable_ingestion import durable_ingestion
+    live = ingestion_status.snapshot(client)
+    durable = await durable_ingestion.status()
+    live['pending_media'] = (durable['pending'] + live['queued_media'] + live['writing_media']
+        + max(0, live['media_handlers'] - int(durable['active'] is not None)))
+    return {**live, 'durable': durable, 'ingestion_paused': durable['paused'],
+            'durable_pending': durable['pending']}

@@ -26,6 +26,8 @@ from Backend.helper.subtitles import ingest_subtitle, is_subtitle_file, remove_s
 from Backend.helper.task_manager import delete_message
 from Backend.logger import LOGGER
 from Backend.helper.ingestion_status import ingestion_status
+from Backend.helper.durable_ingestion import durable_ingestion
+from Backend.helper.resolution_policy import source_resolution, rejection_reason
 
 file_queue = Queue()
 ingestion_status.queue = file_queue
@@ -215,31 +217,54 @@ async def _handle_personal_session(client: Client, message: Message) -> None:
 
 
 #----- Ingest new channel media into the queue after building metadata
-@Client.on_message(filters.channel & (filters.document | filters.video))
-@ingestion_status.track
+@Client.on_message(filters.channel)
 async def file_receive_handler(client: Client, message: Message):
     if is_skip_channel(message):
         return
+    if durable_ingestion.authorized(message.chat.id):
+        await durable_ingestion.enqueue(message)
+        return
+    if message.video or message.document:
+        await process_channel_message(client, message)
+
+
+@ingestion_status.track
+async def process_channel_message(client: Client, message: Message, durable_context=None):
+    if is_skip_channel(message):
+        return
+    media = message.video or message.document
+    if media and _is_supported_media(message):
+        reason = rejection_reason(source_resolution(message.caption, media.file_name))
+        if reason:
+            LOGGER.info(f'[Ingestion] Skipped {message.chat.id}/{message.id}: {reason}')
+            return
+
+    if durable_context is not None:
+        channel = int(str(message.chat.id).removeprefix('-100'))
+        if await db.get_media_ids_by_part(channel, message.id):
+            return
 
     # Capture only new supported media in explicitly authorized channels.
     if str(message.chat.id) in SettingsManager.current().auth_channels and _is_supported_media(message):
-        capture = await get_session(db)
+        capture = durable_context.get('capture') if durable_context is not None else await get_session(db)
         uploaded_at = message.date.timestamp()
-        if accepts_message(capture, uploaded_at):
+        if accepts_message(capture, uploaded_at, now=uploaded_at if durable_context is not None else None):
             try:
                 async with manual_session_lock, db_lock:
-                    current = await get_session(db)
+                    current = capture if durable_context is not None else await get_session(db)
                     # Stop/restart cancels waiting captures; an insert already in progress finishes.
-                    if current.get("session_id") != capture.get("session_id") or not accepts_message(current, uploaded_at):
+                    if current.get("session_id") != capture.get("session_id") or not accepts_message(current, uploaded_at, now=uploaded_at if durable_context is not None else None):
                         return
                     await capture_message(db, message, capture)
                 LOGGER.info(f"[Auto Add] Captured auth-channel message {message.id}.")
             except Exception as exc:
                 # Never delete or send capture failures to the metadata-failure channel.
                 LOGGER.exception(f"[Auto Add] Could not capture message {message.id}: {exc}")
+                if durable_context is not None:
+                    raise
             return
 
-    session = Backend.MANUAL_SESSION
+    session = durable_context.get('manual') if durable_context is not None else Backend.MANUAL_SESSION
     is_manual = _is_manual_channel(message.chat.id)
 
     #----- Manual channel + personal session: add straight onto the personal title
@@ -263,7 +288,7 @@ async def file_receive_handler(client: Client, message: Message):
         sub_name = (message.document.file_name if message.document else "") or ""
         if sub_name and is_subtitle_file(sub_name):
             channel = str(message.chat.id).replace("-100", "")
-            create_task(ingest_subtitle(sub_name, int(channel), message.id))
+            await ingest_subtitle(sub_name, int(channel), message.id)
             return
 
         if not _is_supported_media(message):
@@ -272,7 +297,7 @@ async def file_receive_handler(client: Client, message: Message):
 
         _, title, msg_id, raw_size, size, channel = _extract_fields(message)
 
-        metadata_info = await metadata(clean_filename(title), int(channel), msg_id, override_id=override_id or extract_default_id(message.caption or ""), season_hint=season_hint, quality_hint=resolution_hint(message.caption, (message.video or message.document).file_name))
+        metadata_info = await metadata(clean_filename(title), int(channel), msg_id, override_id=override_id or extract_default_id(message.caption or ""), season_hint=season_hint, quality_hint=source_resolution(message.caption, (message.video or message.document).file_name))
         if metadata_info is None:
             LOGGER.warning(f"Metadata failed for file: {title} (ID: {msg_id})")
             await route_to_skip_channel(client, message)
@@ -282,11 +307,30 @@ async def file_receive_handler(client: Client, message: Message):
         encoded = metadata_info.get("encoded_string") or await encode_string({"chat_id": int(channel), "msg_id": msg_id})
         await apply_video_thumb_to_metadata(metadata_info, message, encoded, client)
 
-        await file_queue.put((metadata_info, int(channel), msg_id, size, raw_size, title))
+        if durable_context is None:
+            await file_queue.put((metadata_info, int(channel), msg_id, size, raw_size, title))
+        else:
+            insert_status = {}
+            async with db_lock:
+                # A bot upload may have copied and indexed this source meanwhile.
+                if await db.get_media_ids_by_part(int(channel), msg_id):
+                    return
+                updated = await db.insert_media(metadata_info, channel=int(channel), msg_id=msg_id,
+                    size=size, raw_size=raw_size, name=title, status=insert_status)
+                if not updated:
+                    raise RuntimeError('Could not save queued channel media.')
+            if insert_status.get('duplicate_skipped'):
+                create_task(delete_message(int(message.chat.id), msg_id))
+            else:
+                start_single_media_catalog_sync(db, tmdb_id=metadata_info.get('tmdb_id'), media_type=metadata_info.get('media_type'))
+                announce_new_media(metadata_info)
+                create_task(auto_fulfill(tmdb_id=metadata_info.get('tmdb_id'), imdb_id=metadata_info.get('imdb_id'), media_type=metadata_info.get('media_type')))
 
         if is_real_session:
             create_task(stamp_caption_with_id(message, metadata_info))
     except FloodWait as e:
+        if durable_context is not None:
+            raise
         LOGGER.info(f"Sleeping for {str(e.value)}s")
         await asleep(e.value)
         await message.reply_text(
@@ -307,12 +351,21 @@ def _override_matches_indexed(override_id: str, imdb_id, tmdb_id) -> bool:
 
 #----- Re-index an edited channel file only when it carries an override ID
 @Client.on_edited_message(filters.channel & (filters.document | filters.video))
-@ingestion_status.track
 async def file_edited_handler(client: Client, message: Message):
+    if durable_ingestion.authorized(message.chat.id) and not is_skip_channel(message):
+        await durable_ingestion.enqueue(message, kind='edit')
+
+
+@ingestion_status.track
+async def process_edited_message(client: Client, message: Message, durable_context=None):
     if str(message.chat.id) not in SettingsManager.current().auth_channels:
         return
     try:
         if not _is_supported_media(message):
+            return
+        reason = rejection_reason(source_resolution(message.caption, (message.video or message.document).file_name))
+        if reason:
+            LOGGER.info(f'[Ingestion] Skipped edited message {message.id}: {reason}')
             return
 
         _, title, msg_id, raw_size, size, channel = _extract_fields(message)
@@ -325,19 +378,28 @@ async def file_edited_handler(client: Client, message: Message):
             return
 
         LOGGER.info(f"Detected override ID '{override_id}' in edited message {msg_id}")
-        await db.remove_media_part(int(channel), msg_id)
-
-        metadata_info = await metadata(clean_filename(title), int(channel), msg_id, override_id=override_id, quality_hint=resolution_hint(message.caption, (message.video or message.document).file_name))
+        metadata_info = await metadata(clean_filename(title), int(channel), msg_id, override_id=override_id, quality_hint=source_resolution(message.caption, (message.video or message.document).file_name))
         if metadata_info is None:
             LOGGER.warning(f"Metadata failed for edited file: {title} (ID: {msg_id})")
             return
 
+        await db.remove_media_part(int(channel), msg_id)
+
         title = _finalize_title(title, metadata_info)
         encoded = metadata_info.get("encoded_string") or await encode_string({"chat_id": int(channel), "msg_id": msg_id})
         await apply_video_thumb_to_metadata(metadata_info, message, encoded, client)
-        await file_queue.put((metadata_info, int(channel), msg_id, size, raw_size, title))
+        if durable_context is None:
+            await file_queue.put((metadata_info, int(channel), msg_id, size, raw_size, title))
+        else:
+            async with db_lock:
+                result = await db.insert_media(metadata_info, channel=int(channel), msg_id=msg_id,
+                    size=size, raw_size=raw_size, name=title)
+                if not result:
+                    raise RuntimeError('Could not save edited media.')
     except Exception as e:
         LOGGER.error(f"Error handling edited generic file {message.id}: {e}")
+        if durable_context is not None:
+            raise
 
 
 #----- Purge database entries for messages deleted from auth channels
@@ -396,8 +458,17 @@ async def user_upload_handler(client: Client, message: Message):
     if not is_approved:
         return
 
+    if durable_ingestion.paused:
+        await message.reply_text('⏸️ Media ingestion is paused. Please send this file again after the administrator resumes ingestion.', quote=True)
+        return
+
     if not _is_supported_media(message):
         await message.reply_text("> Not supported", quote=True)
+        return
+
+    reason = rejection_reason(source_resolution(message.caption, (message.video or message.document).file_name))
+    if reason:
+        await message.reply_text(f'Auto adding skipped: <code>{escape(reason)}</code>', parse_mode=ParseMode.HTML, quote=True)
         return
 
     auth_channels = settings.auth_channels
@@ -412,7 +483,7 @@ async def user_upload_handler(client: Client, message: Message):
 
     storage_channel = int(str(target_channel).removeprefix('-100'))
     try:
-        metadata_info = await metadata(clean_filename(title), storage_channel, msg_id, override_id=extract_default_id(message.caption or ""), quality_hint=resolution_hint(message.caption, (message.video or message.document).file_name))
+        metadata_info = await metadata(clean_filename(title), storage_channel, msg_id, override_id=extract_default_id(message.caption or ""), quality_hint=source_resolution(message.caption, (message.video or message.document).file_name))
     except Exception:
         LOGGER.exception('User upload metadata lookup failed')
         await _upload_failure(message, title, settings, 'Metadata lookup failed. Please retry or contact the administrator.')

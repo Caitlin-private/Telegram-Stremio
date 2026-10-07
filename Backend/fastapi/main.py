@@ -374,9 +374,26 @@ async def revoke_token(token: str, _: bool = Depends(require_auth)):
 
 @app.get("/api/system/ingestion")
 async def ingestion_metrics(_: bool = Depends(require_auth)):
-    from Backend.helper.ingestion_status import ingestion_status
+    from Backend.helper.ingestion_status import ingestion_snapshot
     from Backend.pyrofork.bot import StreamBot
-    return JSONResponse(ingestion_status.snapshot(StreamBot), headers={"Cache-Control": "no-store"})
+    return JSONResponse(await ingestion_snapshot(StreamBot), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/system/ingestion/pause")
+async def pause_ingestion(payload: dict, _: bool = Depends(require_auth)):
+    from Backend.helper.durable_ingestion import durable_ingestion
+    if not isinstance(payload.get('paused'), bool):
+        raise HTTPException(status_code=400, detail='paused must be true or false.')
+    return await durable_ingestion.set_paused(payload['paused'])
+
+
+@app.post("/api/system/ingestion/start-from")
+async def ingestion_start_from(payload: dict, _: bool = Depends(require_auth)):
+    from Backend.helper.durable_ingestion import durable_ingestion
+    try:
+        return await durable_ingestion.set_start(str(payload.get('channel', '')), payload.get('message_id'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/system/stats")

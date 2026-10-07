@@ -293,7 +293,7 @@ def analyze_metadata_failure(filename: str) -> str:
             "Upload one season per file. Combined episode packs within a single season are fine "
             "when named like 'Show S02 E01-E05' or 'Show S02 Combined'."
         )
-    if not quality:
+    if not quality and not SettingsManager.current().allow_unknown_resolution:
         return (
             "No video quality/resolution was found. Add one to the caption "
             "(e.g. 480p, 720p, 1080p or 2160p)."

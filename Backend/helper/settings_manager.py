@@ -13,6 +13,8 @@ _DEFAULTS: Dict[str, Any] = {
     "replace_mode": True,
     "duplicate_protection": False,
     "allow_multipart_video": False,
+    "ingestion_resolutions": ["360p", "480p", "720p", "1080p", "1440p", "2160p", "other"],
+    "allow_unknown_resolution": False,
     "hide_catalog": False,
     "allow_user_uploads": False,
     "auth_channels": [],
@@ -109,6 +111,14 @@ class Settings:
     @property
     def allow_multipart_video(self) -> bool:
         return bool(self._d.get("allow_multipart_video", False))
+
+    @property
+    def ingestion_resolutions(self) -> List[str]:
+        return list(self._d.get('ingestion_resolutions', _DEFAULTS['ingestion_resolutions']))
+
+    @property
+    def allow_unknown_resolution(self) -> bool:
+        return bool(self._d.get('allow_unknown_resolution', False))
 
     @property
     def hide_catalog(self) -> bool:

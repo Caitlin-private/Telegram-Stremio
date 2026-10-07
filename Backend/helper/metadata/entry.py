@@ -145,9 +145,12 @@ async def metadata(
             absolute = True
             parsed["episode"] = abs_ep
 
-    if not quality:
-        LOGGER.warning(f"Skipping {filename}: No resolution (parsed={parsed})")
+    from Backend.helper.resolution_policy import rejection_reason
+    reason = rejection_reason(quality)
+    if reason:
+        LOGGER.warning(f"Skipping {filename}: {reason}")
         return None
+    quality = quality or 'Unknown'
     if not title:
         LOGGER.info(f"No title parsed from: {filename} (parsed={parsed})")
         return None

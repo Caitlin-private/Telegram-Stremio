@@ -160,6 +160,7 @@
 <div class="flex items-center justify-between mb-8">
     <div>
         <h1 class="text-3xl font-extrabold">Settings</h1>
+        <p class="hint">Build: {{ build_id }}</p>
         <p class="mt-1 text-sm" style="color:var(--text-sec)">
             Runtime configuration — stored in the database, no restart needed.
         </p>
@@ -230,6 +231,21 @@
     </div>
 
     <!-- ── General ─────────────────────────────────────────────────────── -->
+    <div class="settings-card">
+        <h2><i class="fa-solid fa-film"></i> Media Resolution Management</h2>
+        <p class="hint">Choose resolutions to ingest from AUTH channels and user bot uploads. This filters new ingestion; it does not remove existing media or change video quality.</p>
+        <div class="flex flex-wrap gap-4 my-4">
+            {% for resolution in ['360p', '480p', '720p', '1080p', '1440p', '2160p', 'other'] %}
+            <label><input type="checkbox" class="ingest-resolution" value="{{ resolution }}" {% if resolution in settings.ingestion_resolutions %}checked{% endif %}> {{ 'Rest (including 540p, 576p and 4320p)' if resolution == 'other' else resolution }}</label>
+            {% endfor %}
+        </div>
+        <label class="toggle-wrap">
+            <input type="checkbox" class="toggle-input" id="allow_unknown_resolution" {% if settings.allow_unknown_resolution %}checked{% endif %}>
+            <span class="toggle-track"></span>
+            <span class="toggle-label"><strong>Allow files without a resolution label</strong><span class="hint block">Accept files with no recognised resolution in the filename or caption. They are listed as Unknown when no resolution can be determined. Nuvio does not require a resolution label to play a supported file.</span></span>
+        </label>
+        <p class="hint mt-3">Save Settings to apply. Files excluded by these rules remain in Telegram. To reconsider earlier skipped files after changing the rules, pause and set an earlier starting message ID on the dashboard.</p>
+    </div>
     <div class="settings-card">
         <h2><i class="fa-solid fa-sliders"></i> General</h2>
         <div class="space-y-4">
@@ -1540,6 +1556,8 @@ async function saveSettings() {
         replace_mode:                  document.getElementById('replace_mode').checked,
         duplicate_protection:          document.getElementById('duplicate_protection').checked,
         allow_multipart_video:         document.getElementById('allow_multipart_video').checked,
+        ingestion_resolutions:         [...document.querySelectorAll('.ingest-resolution:checked')].map(el => el.value),
+        allow_unknown_resolution:      document.getElementById('allow_unknown_resolution').checked,
         hide_catalog:                  document.getElementById('hide_catalog').checked,
         allow_user_uploads:            document.getElementById('allow_user_uploads').checked,
         admin_username:                document.getElementById('admin_username').value.trim(),
@@ -1684,6 +1702,8 @@ function renderSettings(s) {
     document.getElementById('replace_mode').checked = !!s.replace_mode;
     document.getElementById('duplicate_protection').checked = !!s.duplicate_protection;
     document.getElementById('allow_multipart_video').checked = !!s.allow_multipart_video;
+    document.querySelectorAll('.ingest-resolution').forEach(el => { el.checked = (s.ingestion_resolutions ?? ['360p','480p','720p','1080p','1440p','2160p','other']).includes(el.value); });
+    document.getElementById('allow_unknown_resolution').checked = !!s.allow_unknown_resolution;
     toggleDuplicateProtection();
     document.getElementById('hide_catalog').checked = !!s.hide_catalog;
     document.getElementById('allow_user_uploads').checked = !!s.allow_user_uploads;
@@ -1827,6 +1847,7 @@ function rebuildDatabaseList(dbList) {
 const STAT_FIELDS = [
     ['ram_display', 'RAM Free / Total'],
     ['pending_media', 'Pending Media (Known)'],
+    ['durable_pending', 'Persisted Pending Messages'], ['ingestion_paused', 'Ingestion Paused'],
     ['media_handlers', 'Media Processing / Waiting for Lock'],
     ['queued_media', 'Queued for Database'], ['writing_media', 'DB Worker Active'],
     ['telegram_updates_waiting', 'Telegram Updates Waiting (All Types)'],
@@ -1854,7 +1875,7 @@ async function loadDbStats(btn) {
         grid.innerHTML = STAT_FIELDS.map(([k, label]) =>
             `<div class="stat-box"><div class="v">${escapeHtml(String(k === 'ram_display' ? (s.ram?.display ?? 'Unavailable') : (s[k] ?? '—')))}</div><div class="l">${label}</div></div>`
         ).join('');
-        grid.insertAdjacentHTML('beforeend', '<p class="hint" style="grid-column:1/-1">Live ingestion only. Known media includes processing and queued files; Telegram updates have not yet been classified. Unreceived channel history and dashboard scans are not included. These counters reset on restart.</p>');
+        grid.insertAdjacentHTML('beforeend', '<p class="hint" style="grid-column:1/-1">AUTH-channel pending messages and pause state survive restarts. Use the main dashboard to pause/resume and inspect channel checkpoints. Telegram updates are unclassified; scanner progress is separate.</p>');
     } catch (e) {
         grid.innerHTML = `<div class="hint" style="grid-column:1/-1;color:#ef4444">Failed to load stats.</div>`;
     } finally {

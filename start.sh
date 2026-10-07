@@ -1,1 +1,3 @@
-uv run update.py && uv run -m Backend
+set -e
+uv run update.py
+exec uv run -m Backend

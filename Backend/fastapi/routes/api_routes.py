@@ -111,7 +111,7 @@ def _require_tmdb_id(value) -> int:
 
 #----- System stats
 async def get_system_stats_api():
-    from Backend.helper.ingestion_status import ingestion_status
+    from Backend.helper.ingestion_status import ingestion_snapshot
     try:
         db_stats = await db.get_database_stats()
         total_movies, total_tv_shows = db.content_totals(db_stats)
@@ -119,7 +119,7 @@ async def get_system_stats_api():
         
         return {
             "server_status": "running",
-            **ingestion_status.snapshot(StreamBot),
+            **await ingestion_snapshot(StreamBot),
             "uptime": get_readable_time(time() - StartTime),
             "telegram_bot": f"@{StreamBot.username}" if StreamBot and StreamBot.username else "@StreamBot",
             "connected_bots": len(multi_clients),
@@ -1802,6 +1802,15 @@ async def get_settings_api() -> dict:
 
 async def update_settings_api(payload: dict) -> dict:
 
+    if 'ingestion_resolutions' in payload:
+        from Backend.helper.resolution_policy import RESOLUTIONS
+        values = payload['ingestion_resolutions']
+        if not isinstance(values, list) or any(not isinstance(v, str) or v not in RESOLUTIONS for v in values):
+            raise HTTPException(status_code=400, detail='Select valid ingestion resolutions.')
+        payload['ingestion_resolutions'] = list(dict.fromkeys(values))
+    if 'allow_unknown_resolution' in payload and not isinstance(payload['allow_unknown_resolution'], bool):
+        raise HTTPException(status_code=400, detail='Unknown-resolution permission must be true or false.')
+
     #----- Empty password string means leave it unchanged
     if "admin_password" in payload and not str(payload["admin_password"]).strip():
         del payload["admin_password"]
@@ -2373,7 +2382,7 @@ LOG_FILE = "log.txt"
 
 #----- Aggregate content + system metrics across all storage DBs (was /stats)
 async def get_db_stats_api() -> dict:
-    from Backend.helper.ingestion_status import ingestion_status
+    from Backend.helper.ingestion_status import ingestion_snapshot
     from Backend.helper.system_memory import memory_status
     from Backend.helper.stats_display import live_counts
     from Backend.helper.custom_dl import ACTIVE_STREAMS, STALE_STREAM_IDLE
@@ -2406,7 +2415,7 @@ async def get_db_stats_api() -> dict:
             "data": {
                 "version": __version__,
                 "ram": memory_status(),
-                **ingestion_status.snapshot(StreamBot),
+                **await ingestion_snapshot(StreamBot),
                 **live_counts(list(ACTIVE_STREAMS.values()), time(), STALE_STREAM_IDLE),
                 "movies": total_movies,
                 "tv_shows": total_tv,
@@ -2463,7 +2472,7 @@ async def import_config_api(payload: dict) -> dict:
 
 #----- Lightweight liveness probe; start_time changes on every boot (restart detection)
 async def health_api() -> dict:
-    return {"status": "ok", "start_time": StartTime, "version": __version__}
+    return {"status": "ok", "start_time": StartTime, "version": __version__, "build": Backend.BUILD_ID}
 
 
 async def version_status_api(force: bool = False) -> dict:

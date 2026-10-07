@@ -43,6 +43,8 @@ async def start_services():
         await asyncio.sleep(0.3)
 
         await db.reload_extra_databases(SettingsManager.current().extra_databases)
+        from Backend.helper.durable_ingestion import durable_ingestion
+        await durable_ingestion.load(db)
         await asyncio.sleep(0.5)
 
         await StreamBot.start()
@@ -66,6 +68,8 @@ async def start_services():
 
         LOGGER.info("Initializing Multi Clients...")
         await initialize_clients()
+        from Backend.pyrofork.plugins.receiver import process_channel_message, process_edited_message
+        await durable_ingestion.start(StreamBot, process_channel_message, process_edited_message)
         await asyncio.sleep(2)
 
         await setup_bot_commands(StreamBot)

@@ -22,10 +22,12 @@ templates.env.globals["cover_url"] = resolve_cover_url
 
 #----- Shared template context (request, theme metadata) for every page
 def _base_context(request: Request) -> dict:
+    from Backend import BUILD_ID
     theme_name = request.session.get("theme", DEFAULT_THEME)
     style_name = request.session.get("style", DEFAULT_STYLE)
     return {
         "request": request,
+        "build_id": BUILD_ID,
         "theme": get_theme(theme_name, style_name),
         "themes": get_all_themes(),
         "styles": get_all_styles(),
