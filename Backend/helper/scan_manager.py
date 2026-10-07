@@ -57,6 +57,7 @@ class ScanManager:
         self._lock = asyncio.Lock()
         self._db_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
+        self._notice_task = None
         self.state: Dict[str, Any] = self._blank_state()
 
     #----- ── State helpers ────────────────────────────────────────────────────────
@@ -122,6 +123,11 @@ class ScanManager:
             merged["cursors"] = {str(k): int(v) for k, v in (merged.get("cursors") or {}).items()}
             if merged["status"] == "running":
                 merged["status"] = "paused"
+                report = merged.get('import_report') or {}
+                if report.get('run_started'):
+                    report['elapsed'] = report.get('elapsed', 0) + max(
+                        0, merged.get('updated_at', report['run_started']) - report['run_started'])
+                    report['run_started'] = 0
             self.state = merged
             if self.state["status"] == "paused":
                 LOGGER.info("[ScanManager] Found an interrupted scan — marked as paused (resumable).")
@@ -197,7 +203,7 @@ class ScanManager:
 
     async def start(self, client, channels: List[str], mode: str = "scan") -> Dict[str, Any]:
         async with self._lock:
-            if self.state["status"] == "running":
+            if self.state["status"] == "running" or (self._task and not self._task.done()):
                 return {"ok": False, "message": "A scan is already running."}
 
             channels = [str(c).strip() for c in (channels or []) if str(c).strip()]
@@ -207,6 +213,9 @@ class ScanManager:
 
             if not channels:
                 return {"ok": False, "message": "No channels selected."}
+
+            if mode == 'rescan' or self.state['status'] not in ('paused', 'cancelled', 'error'):
+                self.state.pop('import_report', None)
 
             if mode == "rescan":
                 for ch in channels:
@@ -288,6 +297,12 @@ class ScanManager:
                     await self._persist()
                     continue
 
+                report = self.state.get('import_report') or {}
+                if report.get('channel') != ch or report.get('finished'):
+                    report = {'baseline': dict(self.state['counters']), 'elapsed': 0}
+                report.update(channel=ch, name=ch, mode=report.get('mode', self.state['mode']),
+                              cursor=self.state['cursors'].get(ch, 1), target=0, run_started=_now())
+                self.state['import_report'] = report
                 completed = await self._scan_channel(client, ch_id, ch)
                 if self._cancel:
                     break
@@ -327,6 +342,47 @@ class ScanManager:
             LOGGER.error(f"[ScanManager] Unexpected error: {e}")
             await self._persist()
 
+        finally:
+            event = 'stop' if self.state['status'] == 'cancelled' else 'error'
+            if self.state['status'] in ('cancelled', 'error'):
+                await self._announce_import(client, event)
+
+    async def _announce_import(self, client, event):
+        from Backend.helper.scan_announcements import format_notice, send_notice
+        from Backend.helper.settings_manager import SettingsManager
+        report = self.state.get('import_report')
+        if not report or (event != 'start' and not report.get('run_started')):
+            return
+        now = _now()
+        elapsed = report.get('elapsed', 0) + max(0, now - report.get('run_started', now))
+        if event != 'start':
+            report['elapsed'] = elapsed
+            report['run_started'] = 0
+            await self._persist()
+        destination = SettingsManager.current().announcement_channel
+        if not destination:
+            return
+        totals = None
+        if event == 'finish':
+            try:
+                movies = series = 0
+                for i in range(1, self._db.current_db_index + 1):
+                    storage = self._db.dbs.get(f'storage_{i}')
+                    if storage is not None:
+                        movies += await storage['movie'].count_documents({})
+                        series += await storage['tv'].count_documents({})
+                totals = (movies, series)
+            except Exception as exc:
+                LOGGER.warning(f'[Scan announcement] Cannot count library: {exc}')
+        counts = {k: max(0, v - report['baseline'].get(k, 0))
+                  for k, v in self.state['counters'].items()}
+        try:
+            destination = int(destination)
+        except ValueError:
+            pass
+        text = format_notice(event, report, counts, _fmt_elapsed(elapsed), totals)
+        self._notice_task = asyncio.create_task(send_notice(client, destination, text, self._notice_task))
+
     async def _scan_channel(self, client, chat_id: int, ch_key: str) -> bool:
         s = self.state
 
@@ -346,6 +402,14 @@ class ScanManager:
         s["current_target_id"] = last_id if use_probe else 0
 
         current = int(s["cursors"].get(str(ch_key), 1) or 1)
+        report = s.get('import_report') or {}
+        if report.get('channel') != ch_key or report.get('finished'):
+            report = {'baseline': dict(s['counters']), 'elapsed': 0}
+        report.update(channel=ch_key, name=s['current_channel_name'], mode=report.get('mode', s['mode']),
+                      target=max(0, (last_id or 1) - 1), cursor=current, run_started=_now())
+        s['import_report'] = report
+        await self._persist()
+        await self._announce_import(client, 'start')
         LOGGER.info(
             f"[ScanManager] Scanning {s['current_channel_name']} ({chat_id}) from id {current}"
             + (f" up to {last_id} (probe)" if use_probe else " (heuristic mode — probe unavailable)")
@@ -387,6 +451,8 @@ class ScanManager:
                             return
                         await self._telegram_call(self._process_message, client, msg, chat_id)
                         s["counters"]["processed"] += 1
+                        if msg.video or msg.document:
+                            s['counters']['media_processed'] = s['counters'].get('media_processed', 0) + 1
 
                 results = await asyncio.gather(*(_worker(m) for m in to_process), return_exceptions=True)
                 for result in results:
@@ -412,6 +478,10 @@ class ScanManager:
 
         await self._persist()
         LOGGER.info(f"[ScanManager] Finished {s['current_channel_name']} at id {current}")
+        if not self._cancel:
+            await self._announce_import(client, 'finish')
+            report['finished'] = True
+            await self._persist()
         return True
 
     async def _probe_last_message_id(self, client, chat_id: int, scan_retry=False):
