@@ -348,7 +348,7 @@ class ScanManager:
                 await self._announce_import(client, event)
 
     async def _announce_import(self, client, event):
-        from Backend.helper.scan_announcements import format_notice, send_notice
+        from Backend.helper.scan_announcements import format_notice, send_notice, library_totals
         from Backend.helper.settings_manager import SettingsManager
         report = self.state.get('import_report')
         if not report or (event != 'start' and not report.get('run_started')):
@@ -365,13 +365,7 @@ class ScanManager:
         totals = None
         if event == 'finish':
             try:
-                movies = series = 0
-                for i in range(1, self._db.current_db_index + 1):
-                    storage = self._db.dbs.get(f'storage_{i}')
-                    if storage is not None:
-                        movies += await storage['movie'].count_documents({})
-                        series += await storage['tv'].count_documents({})
-                totals = (movies, series)
+                totals = await library_totals(self._db)
             except Exception as exc:
                 LOGGER.warning(f'[Scan announcement] Cannot count library: {exc}')
         counts = {k: max(0, v - report['baseline'].get(k, 0))
@@ -442,6 +436,12 @@ class ScanManager:
             batch_had_content = bool(to_process)
 
             if to_process:
+                # A resumed partial batch may be fetched again. Count each
+                # detected source message once within this channel import.
+                seen_through = report.get('detected_through', 0)
+                detected = sum(1 for m in to_process if m.id > seen_through and (m.video or m.document))
+                s['counters']['media_detected'] = s['counters'].get('media_detected', 0) + detected
+                report['detected_through'] = max(seen_through, max(m.id for m in to_process))
                 s["counters"]["total_found"] += len(to_process)
                 sem = asyncio.Semaphore(SCAN_PROCESS_CONCURRENCY)
 

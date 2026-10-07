@@ -19,6 +19,7 @@ def format_notice(event, report, counts, elapsed, totals=None):
     owner_id = int(Telegram.OWNER_ID or 0)
     owner = f'<a href="tg://user?id={owner_id}">Owner</a>' if owner_id > 0 else 'Owner'
     lines = [f'<b>{title}</b>', '', '━━━━━━━━━━━━━━━━━━', '']
+    lines += [f'📨 <b>Total Media Detected:</b> {counts.get("media_detected", 0):,}', '']
     if event != 'start':
         lines += [f'⏱️ <b>Elapsed time:</b> {escape(elapsed)}',
                   f'📂 <b>Processed files:</b> {counts.get("media_processed", 0):,}',
@@ -28,10 +29,6 @@ def format_notice(event, report, counts, elapsed, totals=None):
               f'📢 <b>Channel:</b> {escape(str(report["name"]))}',
               f'🆔 <b>Channel ID:</b> <code>{escape(str(report["channel"]))}</code>']
     if event == 'start':
-        target = report.get('target', 0)
-        lines += [f'📨 <b>Total messages (ID-range estimate):</b> {target:,}' if target else
-                  '📨 <b>Total messages:</b> Unknown',
-                  '<i>Message-ID ranges may include deleted messages and gaps.</i>']
         if report.get('cursor', 1) > 1:
             lines += [f'🔄 <b>Continuing from message ID:</b> <code>{report["cursor"]}</code>']
         excluded = [r for r in ('360p', '480p', '720p', '1080p', '1440p', '2160p', 'other')
@@ -44,15 +41,43 @@ def format_notice(event, report, counts, elapsed, totals=None):
                   f'👤 <b>Started by</b> {owner}', '', '━━━━━━━━━━━━━━━━━━', '',
                   '<b><i>⚠️ Streaming performance might be degraded while the media import is processing.</i></b>']
     elif event == 'finish':
-        movies, series = totals if totals is not None else ('Unavailable', 'Unavailable')
-        lines += ['', f'🎬 <b>Movies now:</b> {movies:,}' if isinstance(movies, int) else f'🎬 <b>Movies now:</b> {movies}',
-                  f'📺 <b>TV series now:</b> {series:,}' if isinstance(series, int) else f'📺 <b>TV series now:</b> {series}',
-                  f'👤 <b>Started by</b> {owner}']
+        totals = totals or {}
+        lines.append('')
+        for key, label in (('movies', '🎬 Total movies now'),
+                           ('series', '📺 Total TV series now'),
+                           ('files', '📂 Total Files in the Database'),
+                           ('size', '🗄️ Database size')):
+            value = totals.get(key, 'Unavailable')
+            value = f'{value:,}' if isinstance(value, int) else escape(str(value))
+            lines.append(f'<b>{label}:</b> {value}')
+        lines.append(f'👤 <b>Started by</b> {owner}')
     elif event == 'stop':
         lines += ['', f'👤 <b>Stopped by</b> {owner}', '🔄 Resume from Channel Scanner to continue.']
     else:
         lines += ['', '⚠️ The scan stopped because of an error. Check the dashboard for details.']
     return '\n'.join(lines)
+
+
+async def library_totals(db):
+    movies = series = episodes = size = 0
+    size_available = True
+    for i in range(1, db.current_db_index + 1):
+        storage = db.dbs.get(f'storage_{i}')
+        if storage is None:
+            continue
+        movies += await storage['movie'].count_documents({})
+        series += await storage['tv'].count_documents({})
+        result = await storage['tv'].aggregate([
+            {'$unwind': '$seasons'}, {'$unwind': '$seasons.episodes'},
+            {'$count': 'episodes'},
+        ]).to_list(length=1)
+        episodes += result[0]['episodes'] if result else 0
+        try:
+            size += (await storage.command('dbStats'))['dataSize']
+        except Exception:
+            size_available = False
+    return {'movies': movies, 'series': series, 'files': movies + episodes,
+            'size': f'{size / 1024**2:.2f} MiB' if size_available else 'Unavailable'}
 
 
 async def send_notice(client, channel, text, previous=None):
