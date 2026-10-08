@@ -331,7 +331,11 @@
             <button class="btn btn-danger" id="scan-cancel-btn" onclick="cancelScan()" disabled>
                 <i class="fa-solid fa-stop"></i> Stop
             </button>
+            <button class="btn btn-danger" id="scan-discard-btn" onclick="discardScan()" disabled>
+                <i class="fa-solid fa-xmark"></i> Cancel Scan
+            </button>
         </div>
+        <p class="hint mt-3">Stop saves progress for Resume. Cancel Scan clears the current job so you can start any mode; already indexed media is kept.</p>
         <p class="hint mt-3">Quick Scan suppresses individual media announcements, thumbnail uploads and skip-channel copies. Import start, stop and finish notices still go to the announcement channel. Files rejected by resolution or metadata checks are deleted directly from the source channel. Pause live ingestion during a bulk scan to avoid overlapping activity.</p>
         <p class="hint mt-3" id="scan-error" style="color:#ef4444;display:none"></p>
     </div>
@@ -832,6 +836,17 @@ function startScanPolling() {
     scanTimer = setInterval(pollScan, 1500);
 }
 
+async function discardScan() {
+    if (!confirm('Cancel this scan and clear its resume progress? Already indexed media stays in the library.')) return;
+    try {
+        const res = await fetch('/api/admin/tools/scan/discard', {method:'POST'});
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.detail || data.message || 'Could not cancel scan.');
+        showToast(data.message, 'info', 'Scanner');
+        startScanPolling();
+    } catch (error) { showToast(error.message, 'error', 'Scanner'); }
+}
+
 async function pollScan() {
     try {
         const res = await fetch('/api/admin/tools/scan/status');
@@ -859,6 +874,7 @@ function renderScan(s) {
     setText('sc-errors', c.errors || 0);
     setText('sc-resolution', c.skipped_resolution || 0);
     setText('scan-elapsed', s.elapsed || '0s');
+    document.getElementById('scan-discard-btn').disabled = !!s.cancelling || !(s.is_running || s.resumable);
     document.getElementById('scan-worker-limit').disabled = !!s.is_running;
     document.getElementById('scan-pause-playback').disabled = !!s.is_running;
     if (!scanOptionsLoaded || s.is_running) {
@@ -894,6 +910,10 @@ function renderScan(s) {
         }
         if (s.flood_wait_seconds > 0 && !s.playback_paused) {
             document.getElementById('scan-current').textContent = `Telegram rate limit: waiting ${s.flood_wait_seconds}s, then retrying the same work automatically.`;
+        }
+        if (s.cancelling) {
+            document.getElementById('scan-current').textContent = 'Cancelling — waiting for in-flight work to finish safely…';
+            cancelBtn.disabled = true;
         }
         errEl.style.display = 'none';
     } else {

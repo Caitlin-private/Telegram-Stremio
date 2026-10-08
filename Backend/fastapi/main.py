@@ -888,6 +888,11 @@ async def tools_scan_start(payload: dict, _: bool = Depends(require_auth)):
 async def tools_scan_cancel(_: bool = Depends(require_auth)):
     return await cancel_scan_api()
 
+@app.post("/api/admin/tools/scan/discard")
+async def discard_scan_job(_: bool = Depends(require_auth)):
+    return await cancel_scan_api(discard=True)
+
+
 @app.get("/api/admin/tools/scan/status")
 async def tools_scan_status(_: bool = Depends(require_auth)):
     return await scan_status_api()

@@ -14,12 +14,14 @@ from Backend.logger import LOGGER
 def format_notice(event, report, counts, elapsed, totals=None):
     settings = SettingsManager.current()
     title = {'start': '🚀 Starting Media Import', 'stop': '🛑 Media Import Stopped',
-             'finish': '✅ Media Import Finished', 'error': '⚠️ Media Import Stopped'}[event]
+             'finish': '✅ Media Import Finished', 'cancel': '❌ Media Import Cancelled', 'error': '⚠️ Media Import Stopped'}[event]
     mode = {'scan': 'Scan', 'quick': 'Quick Scan', 'rescan': 'Rescan (Wipe & Re-index)'}.get(report['mode'], 'Scan')
     owner_id = int(Telegram.OWNER_ID or 0)
     owner = f'<a href="tg://user?id={owner_id}">Owner</a>' if owner_id > 0 else 'Owner'
     lines = [f'<b>{title}</b>', '', '━━━━━━━━━━━━━━━━━━', '']
-    lines += [f'📨 <b>Total Media Detected:</b> {counts.get("media_detected", 0):,}', '']
+    target = report.get('target')
+    lines += [f'📨 <b>Total Media Detected:</b> {target:,}' if target is not None else
+              '📨 <b>Total Media Detected:</b> Unknown', '']
     if event != 'start':
         lines += [f'⏱️ <b>Elapsed time:</b> {escape(elapsed)}',
                   f'📂 <b>Processed files:</b> {counts.get("media_processed", 0):,}',
@@ -38,8 +40,7 @@ def format_notice(event, report, counts, elapsed, totals=None):
             excluded.append('Unknown / unlabelled')
         lines += ['', f'🚫 <b>Skipped resolutions:</b> {escape(", ".join(excluded) or "None")}',
                   f'🧠 <b>Available RAM:</b> {escape(memory_status()["display"])}',
-                  f'👤 <b>Started by</b> {owner}', '', '━━━━━━━━━━━━━━━━━━', '',
-                  '<b><i>⚠️ Streaming performance might be degraded while the media import is processing.</i></b>']
+                  f'👤 <b>Started by</b> {owner}', '', '━━━━━━━━━━━━━━━━━━']
     elif event == 'finish':
         totals = totals or {}
         lines.append('')
@@ -53,6 +54,8 @@ def format_notice(event, report, counts, elapsed, totals=None):
         lines.append(f'👤 <b>Started by</b> {owner}')
     elif event == 'stop':
         lines += ['', f'👤 <b>Stopped by</b> {owner}', '🔄 Resume from Channel Scanner to continue.']
+    elif event == 'cancel':
+        lines += ['', f'👤 <b>Cancelled by</b> {owner}', 'Scan job cleared. Already indexed media remains in the library.']
     else:
         lines += ['', '⚠️ The scan stopped because of an error. Check the dashboard for details.']
     return '\n'.join(lines)

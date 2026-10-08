@@ -2304,8 +2304,8 @@ async def start_scan_api(payload: dict) -> dict:
     return {"status": "success", **result}
 
 
-async def cancel_scan_api() -> dict:
-    result = await scan_manager.cancel()
+async def cancel_scan_api(discard=False) -> dict:
+    result = await scan_manager.cancel(discard=discard)
     return {"status": "success" if result.get("ok") else "error", **result}
 
 

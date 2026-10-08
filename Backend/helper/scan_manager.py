@@ -119,6 +119,10 @@ class ScanManager:
 
         if doc:
             doc.pop("_id", None)
+            if doc.get('discard_requested'):
+                self.state = doc
+                await self._discard_job()
+                return
             merged = self._blank_state()
             merged.update(doc)
             merged["cursors"] = {str(k): int(v) for k, v in (merged.get("cursors") or {}).items()}
@@ -163,6 +167,7 @@ class ScanManager:
         return {
             "status": s["status"],
             "mode": s["mode"],
+            "cancelling": bool(s.get('discard_requested')),
             "worker_limit": s.get('worker_limit', 2),
             "pause_for_playback": s.get('pause_for_playback', True),
             "playback_paused": bool(self._priority and self._priority.paused),
@@ -263,12 +268,28 @@ class ScanManager:
             return {"ok": True, "message": f"{'Quick scan' if mode == 'quick' else 'Rescan' if mode == 'rescan' else 'Scan'} started.",
                     "status": self.get_status()}
 
-    async def cancel(self) -> Dict[str, Any]:
+    async def cancel(self, discard=False) -> Dict[str, Any]:
+        if discard:
+            async with self._lock:
+                self.state['discard_requested'] = True
+                self._cancel = True
+                self._stop_event.set()
+                await self._persist()
+                if not self._task or self._task.done():
+                    await self._discard_job()
+            return {'ok': True, 'message': 'Scan cancelled. Any in-flight work will finish safely; you can then start any scan mode.'}
         if self.state["status"] != "running":
             return {"ok": False, "message": "No scan is currently running."}
         self._cancel = True
         self._stop_event.set()
         return {"ok": True, "message": "Stop requested — the scan will pause after the current batch."}
+
+    async def _discard_job(self):
+        keep = {key: self.state[key] for key in ('worker_limit', 'pause_for_playback', 'worker_waits') if key in self.state}
+        self.state = self._blank_state()
+        self.state.update(keep)
+        self._priority = None
+        await self._persist()
 
     async def _wait_for_playback(self):
         if self._priority:
@@ -367,9 +388,11 @@ class ScanManager:
             await self._persist()
 
         finally:
-            event = 'stop' if self.state['status'] == 'cancelled' else 'error'
+            event = 'cancel' if self.state.get('discard_requested') else 'stop' if self.state['status'] == 'cancelled' else 'error'
             if self.state['status'] in ('cancelled', 'error'):
                 await self._announce_import(client, event)
+            if self.state.get('discard_requested'):
+                await self._discard_job()
 
     async def _announce_import(self, client, event):
         from Backend.helper.scan_announcements import format_notice, send_notice
@@ -429,15 +452,18 @@ class ScanManager:
         s["current_channel"] = ch_key
 
         last_id = await self._probe_last_message_id(client, chat_id, scan_retry=True)
-        use_probe = last_id is not None and last_id >= 1
+        last_id = max(0, last_id - 1) if last_id is not None else None
+        use_probe = last_id is not None
         s["current_target_id"] = last_id if use_probe else 0
 
         current = int(s["cursors"].get(str(ch_key), 1) or 1)
         report = s.get('import_report') or {}
         if report.get('channel') != ch_key or report.get('finished'):
             report = {'baseline': dict(s['counters']), 'elapsed': 0}
+        report.setdefault('first_id', current)
         report.update(channel=ch_key, name=s['current_channel_name'], mode=report.get('mode', s['mode']),
-                      target=max(0, (last_id or 1) - 1), cursor=current, run_started=_now())
+                      target=max(0, min(last_id, SCAN_MAX_ID_CAP - 1) - report['first_id'] + 1) if use_probe else None,
+                      cursor=current, run_started=_now())
         s['import_report'] = report
         await self._persist()
         await self._announce_import(client, 'start')
