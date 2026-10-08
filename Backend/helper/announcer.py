@@ -1,4 +1,4 @@
-from asyncio import create_task
+from asyncio import create_task, Lock, sleep
 from datetime import datetime
 from html import escape
 
@@ -11,6 +11,9 @@ from Backend.helper.bot_media import media_payload
 from Backend.helper.settings_manager import SettingsManager
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import StreamBot, get_streambot_url
+from Backend.helper.pyro import artwork_available, defer_artwork
+
+_announcement_lock = Lock()
 
 
 #----- Accept either a numeric channel id (-100...) or an @username
@@ -94,6 +97,12 @@ def _build_markup(info: dict):
 
 
 async def _announce(info: dict) -> None:
+    # Prevent concurrent photo attempts from racing past the same cooldown.
+    async with _announcement_lock:
+        await _announce_serial(info)
+
+
+async def _announce_serial(info: dict) -> None:
     settings = SettingsManager.current()
     chat = _resolve_chat(settings.announcement_channel)
     if not settings.announce_new_content or chat is None:
@@ -107,22 +116,34 @@ async def _announce(info: dict) -> None:
 
     try:
         sent = None
-        if poster:
+        if poster and artwork_available(StreamBot):
             try:
                 sent = await StreamBot.send_photo(chat, poster, caption=caption,
                                            parse_mode=ParseMode.HTML, reply_markup=markup)
-            except FloodWait:
-                raise
+            except FloodWait as e:
+                defer_artwork(StreamBot, e.value)
             except Exception:
                 sent = None
         if sent is None:
-            sent = await StreamBot.send_message(chat, caption, parse_mode=ParseMode.HTML,
-                                     reply_markup=markup, disable_web_page_preview=True)
+            while True:
+                try:
+                    sent = await StreamBot.send_message(chat, caption, parse_mode=ParseMode.HTML,
+                                             reply_markup=markup, disable_web_page_preview=True)
+                    break
+                except FloodWait as e:
+                    defer_artwork(StreamBot, e.value)
+                    await sleep(max(1, e.value) + 1)
         if sent is not None:
             await _store_announcement_msg(info.get("media_type"), info.get("tmdb_id"), chat, sent.id)
-    except FloodWait as e:
-        LOGGER.warning(f"Announcement FloodWait for {e.value}s")
     except Exception as e:
+        # A failed delivery must not permanently consume the deduplication claim.
+        try:
+            await db.dbs['tracking']['announced'].delete_one({
+                '_id': f'{info.get("media_type")}:{info.get("tmdb_id")}',
+                'message_id': {'$exists': False},
+            })
+        except Exception as cleanup_error:
+            LOGGER.warning(f'Could not release announcement claim: {cleanup_error}')
         LOGGER.error(f"Announcement failed for '{info.get('title')}': {e}")
 
 

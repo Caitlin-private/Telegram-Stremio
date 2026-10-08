@@ -2291,7 +2291,14 @@ async def start_scan_api(payload: dict) -> dict:
     if not isinstance(channels, list):
         raise HTTPException(status_code=400, detail="'channels' must be a list.")
 
-    result = await scan_manager.start(client, channels, mode=mode)
+    worker_limit = payload.get('worker_limit')
+    pause_for_playback = payload.get('pause_for_playback')
+    if worker_limit is not None and (type(worker_limit) is not int or not 0 <= worker_limit <= 8):
+        raise HTTPException(status_code=400, detail='Scan workers must be 0 (Auto) or 1–8.')
+    if pause_for_playback is not None and not isinstance(pause_for_playback, bool):
+        raise HTTPException(status_code=400, detail='Playback pause must be true or false.')
+    result = await scan_manager.start(client, channels, mode=mode,
+                                     worker_limit=worker_limit, pause_for_playback=pause_for_playback)
     if not result.get("ok"):
         raise HTTPException(status_code=409, detail=result.get("message", "Could not start scan."))
     return {"status": "success", **result}
@@ -2387,28 +2394,8 @@ async def get_db_stats_api() -> dict:
     from Backend.helper.stats_display import live_counts
     from Backend.helper.custom_dl import ACTIVE_STREAMS, STALE_STREAM_IDLE
     try:
-        total_movies = total_tv = total_episodes = total_streams = total_db_size = 0
-
-        for i in range(1, db.current_db_index + 1):
-            storage = db.dbs.get(f"storage_{i}")
-            if storage is None:
-                continue
-
-            total_movies += await storage["movie"].count_documents({})
-            async for movie in storage["movie"].find({}, {"telegram": 1}):
-                total_streams += len(movie.get("telegram", []))
-
-            total_tv += await storage["tv"].count_documents({})
-            async for show in storage["tv"].find({}, {"seasons": 1}):
-                for season in show.get("seasons", []):
-                    for episode in season.get("episodes", []):
-                        total_episodes += 1
-                        total_streams += len(episode.get("telegram", []))
-
-            try:
-                total_db_size += (await storage.command("dbStats")).get("dataSize", 0)
-            except Exception:
-                pass
+        from Backend.helper.stats_display import library_totals
+        totals = await library_totals(db)
 
         return {
             "status": "success",
@@ -2417,12 +2404,12 @@ async def get_db_stats_api() -> dict:
                 "ram": memory_status(),
                 **await ingestion_snapshot(StreamBot),
                 **live_counts(list(ACTIVE_STREAMS.values()), time(), STALE_STREAM_IDLE),
-                "movies": total_movies,
-                "tv_shows": total_tv,
-                "episodes": total_episodes,
-                "streams": total_streams,
+                "movies": totals['movies'],
+                "tv_shows": totals['series'],
+                "episodes": totals['episodes'],
+                "streams": totals['streams'],
                 "uptime": get_readable_time(int(time() - StartTime)),
-                "db_size": get_readable_file_size(total_db_size),
+                "db_size": get_readable_file_size(totals['size_bytes']) if totals['size_bytes'] is not None else 'Unavailable',
                 "storage_dbs": db.current_db_index,
                 "auth_channels": len(SettingsManager.current().auth_channels),
             },

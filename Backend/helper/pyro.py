@@ -13,6 +13,24 @@ import re
 from pyrogram.types import BotCommand
 from pyrogram import enums
 import httpx
+import asyncio
+from time import monotonic
+from pyrogram.errors import FloodWait
+
+
+# Optional artwork shares a cooldown across live ingestion and channel scans.
+_artwork_until = {}
+_thumb_lock = asyncio.Lock()
+
+
+def artwork_available(client):
+    return monotonic() >= _artwork_until.get(id(client), 0)
+
+
+def defer_artwork(client, seconds):
+    key = id(client)
+    _artwork_until[key] = max(_artwork_until.get(key, 0), monotonic() + max(1, seconds) + 1)
+    LOGGER.warning(f'[Artwork] Skipping optional Telegram artwork for {seconds}s after FloodWait.')
 
 
 _EMOJI_PATTERN = re.compile(
@@ -129,20 +147,26 @@ async def upload_bytes_to_host(data: bytes, filename: str = "thumb.jpg") -> Opti
 
 async def upload_message_thumb_to_host(client, message) -> Optional[str]:
     target = get_thumb_download_target(message)
-    if not target or not client:
+    if not target or not client or not artwork_available(client):
         return None
     try:
-        file_id = getattr(target, "file_id", None) or target
-        buf = await client.download_media(file_id, in_memory=True)
-        data = buf.getvalue() if hasattr(buf, "getvalue") else bytes(buf)
-        return await upload_bytes_to_host(data)
+        async with _thumb_lock:
+            if not artwork_available(client):
+                return None
+            file_id = getattr(target, "file_id", None) or target
+            buf = await client.download_media(file_id, in_memory=True)
+            data = buf.getvalue() if hasattr(buf, "getvalue") else bytes(buf)
+            return await upload_bytes_to_host(data)
+    except FloodWait as e:
+        defer_artwork(client, e.value)
+        return None
     except Exception as e:
         LOGGER.warning(f"[THUMB] host upload failed: {e}")
         return None
 
 
 async def resolve_video_thumb_url(client, message, encoded: str) -> str:
-    if not message_has_thumb(message):
+    if not message_has_thumb(message) or (client and not artwork_available(client)):
         return ""
     fallback = f"/thumb/{encoded}"
     if client:
@@ -152,7 +176,7 @@ async def resolve_video_thumb_url(client, message, encoded: str) -> str:
                 return url
         except Exception as e:
             LOGGER.warning(f"[THUMB] hybrid resolve failed: {e}")
-    return fallback
+    return '' if client and not artwork_available(client) else fallback
 
 
 async def apply_video_thumb_to_metadata(metadata_info: dict, message, encoded: str, client=None) -> None:

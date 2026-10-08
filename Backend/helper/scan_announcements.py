@@ -58,28 +58,6 @@ def format_notice(event, report, counts, elapsed, totals=None):
     return '\n'.join(lines)
 
 
-async def library_totals(db):
-    movies = series = episodes = size = 0
-    size_available = True
-    for i in range(1, db.current_db_index + 1):
-        storage = db.dbs.get(f'storage_{i}')
-        if storage is None:
-            continue
-        movies += await storage['movie'].count_documents({})
-        series += await storage['tv'].count_documents({})
-        result = await storage['tv'].aggregate([
-            {'$unwind': '$seasons'}, {'$unwind': '$seasons.episodes'},
-            {'$count': 'episodes'},
-        ]).to_list(length=1)
-        episodes += result[0]['episodes'] if result else 0
-        try:
-            size += (await storage.command('dbStats'))['dataSize']
-        except Exception:
-            size_available = False
-    return {'movies': movies, 'series': series, 'files': movies + episodes,
-            'size': f'{size / 1024**2:.2f} MiB' if size_available else 'Unavailable'}
-
-
 async def send_notice(client, channel, text, previous=None):
     # Keep notices ordered without blocking ingestion or the Stop button.
     if previous is not None:

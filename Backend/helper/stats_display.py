@@ -1,4 +1,35 @@
 """Shared live counts and owner-friendly stats formatting."""
+async def library_totals(db):
+    """Count on MongoDB; do not transfer entire episode/stream arrays to Python."""
+    movies = series = episodes = streams = size = 0
+    size_available = True
+    for i in range(1, db.current_db_index + 1):
+        storage = db.dbs.get(f'storage_{i}')
+        if storage is None:
+            continue
+        movies += await storage['movie'].count_documents({})
+        series += await storage['tv'].count_documents({})
+        movie_rows = await storage['movie'].aggregate([
+            {'$group': {'_id': None, 'streams': {'$sum': {'$size': {'$ifNull': ['$telegram', []]}}}}},
+        ]).to_list(length=1)
+        episode_rows = await storage['tv'].aggregate([
+            {'$unwind': '$seasons'}, {'$unwind': '$seasons.episodes'},
+            {'$group': {'_id': None, 'episodes': {'$sum': 1},
+                        'streams': {'$sum': {'$size': {'$ifNull': ['$seasons.episodes.telegram', []]}}}}},
+        ]).to_list(length=1)
+        streams += movie_rows[0]['streams'] if movie_rows else 0
+        if episode_rows:
+            episodes += episode_rows[0]['episodes']
+            streams += episode_rows[0]['streams']
+        try:
+            size += (await storage.command('dbStats'))['dataSize']
+        except Exception:
+            size_available = False
+    return {'movies': movies, 'series': series, 'episodes': episodes, 'streams': streams,
+            'files': movies + episodes, 'size_bytes': size if size_available else None,
+            'size': f'{size / 1024**2:.2f} MiB' if size_available else 'Unavailable'}
+
+
 def live_counts(entries, now, stale_seconds=180):
     active = []
     for entry in entries:

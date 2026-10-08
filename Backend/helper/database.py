@@ -120,6 +120,11 @@ class Database:
                 await db[collection_name].create_index([("updated_on", DESCENDING), ("_id", DESCENDING)])
                 await db[collection_name].create_index([("imdb_id", ASCENDING)])
                 await db[collection_name].create_index([("kitsu_id", ASCENDING)])
+                # Source existence checks must not scan whole media collections.
+                source = 'telegram' if collection_name == 'movie' else 'seasons.episodes.telegram'
+                await db[collection_name].create_index([(f'{source}.id', ASCENDING)])
+                await db[collection_name].create_index([(f'{source}.parts.chat_id', ASCENDING),
+                                                       (f'{source}.parts.msg_id', ASCENDING)])
             except Exception as e:
                 LOGGER.error(f"Failed creating index on {db_key}/{collection_name}: {e}")
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
 from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired
@@ -58,6 +59,10 @@ class ScanManager:
         self._db_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._notice_task = None
+        self._worker_context = ContextVar('scan_worker', default=None)
+        self._worker_waits = {}
+        self._priority = None
+        self._metrics = {'telegram_seconds': 0.0, 'metadata_seconds': 0.0, 'db_seconds': 0.0, 'db_lock_seconds': 0.0}
         self.state: Dict[str, Any] = self._blank_state()
 
     #----- ── State helpers ────────────────────────────────────────────────────────
@@ -67,6 +72,12 @@ class ScanManager:
             "status": "idle",            
             "mode": "scan",              
             "flood_wait_until": 0.0,
+            "worker_limit": 2,
+            "pause_for_playback": True,
+            "active_workers": 0,
+            "worker_waits": {},
+            "catalog_pending": {},
+            "purge_pending": [],
             "selected_channels": [],     
             "pending": [],               
             "current_channel": None,
@@ -74,17 +85,7 @@ class ScanManager:
             "current_id": 0,             
             "current_target_id": 0,      
             "cursors": {},               
-            "counters": {
-                "total_found": 0,
-                "processed": 0,
-                "indexed": 0,
-                "skipped_dup": 0,
-                "skipped_meta": 0,
-                "skipped_nonvid": 0,
-                "subtitles_added": 0,
-                "subtitles_skipped": 0,
-                "errors": 0,
-            },
+            "counters": ScanManager._blank_counters(),
             "started_at": 0.0,
             "updated_at": 0.0,
             "finished_at": 0.0,
@@ -162,6 +163,11 @@ class ScanManager:
         return {
             "status": s["status"],
             "mode": s["mode"],
+            "worker_limit": s.get('worker_limit', 2),
+            "pause_for_playback": s.get('pause_for_playback', True),
+            "playback_paused": bool(self._priority and self._priority.paused),
+            "active_workers": s.get('active_workers', 0),
+            "timings": {k: round(v, 2) for k, v in self._metrics.items()},
             "flood_wait_seconds": max(0, int(s.get('flood_wait_until', 0) - _now() + 0.999)),
             "is_running": s["status"] == "running",
             "resumable": s["status"] in ("paused", "cancelled", "error") and bool(s["pending"]),
@@ -190,18 +196,15 @@ class ScanManager:
             storage = db.dbs.get(f"storage_{i}")
             if storage is None:
                 continue
-            if stream_hash:
-                if await storage["movie"].find_one({"telegram.id": stream_hash}):
+            for collection, prefix in (('movie', 'telegram'), ('tv', 'seasons.episodes.telegram')):
+                checks = [{f'{prefix}.parts': part_match}]
+                if stream_hash:
+                    checks.append({f'{prefix}.id': stream_hash})
+                if await storage[collection].find_one({'$or': checks}, {'_id': 1}):
                     return True
-                if await storage["tv"].find_one({"seasons.episodes.telegram.id": stream_hash}):
-                    return True
-            if await storage["movie"].find_one({"telegram.parts": part_match}):
-                return True
-            if await storage["tv"].find_one({"seasons.episodes.telegram.parts": part_match}):
-                return True
         return False
 
-    async def start(self, client, channels: List[str], mode: str = "scan") -> Dict[str, Any]:
+    async def start(self, client, channels: List[str], mode: str = "scan", worker_limit=None, pause_for_playback=None) -> Dict[str, Any]:
         async with self._lock:
             if self.state["status"] == "running" or (self._task and not self._task.done()):
                 return {"ok": False, "message": "A scan is already running."}
@@ -219,15 +222,8 @@ class ScanManager:
 
             if mode == "rescan":
                 for ch in channels:
-                    try:
-                        ch_int = int(str(ch).replace("-100", ""))
-                    except ValueError:
-                        continue
-                    try:
-                        await self._purge_channel_entries(ch_int)
-                    except Exception as e:
-                        LOGGER.error(f"[ScanManager] purge failed for {ch}: {e}")
                     self.state["cursors"].pop(str(ch), None)
+                self.state['purge_pending'] = list(channels)
                 self.state["selected_channels"] = list(channels)
                 self.state["pending"] = list(channels)
                 self.state["counters"] = self._blank_counters()
@@ -254,6 +250,13 @@ class ScanManager:
             self.state["started_at"] = _now()
             self._cancel = False
             self._stop_event.clear()
+            from Backend.helper.scan_resources import PlaybackPriority
+            self.state['worker_limit'] = worker_limit if worker_limit is not None else self.state.get('worker_limit', 2)
+            self.state['pause_for_playback'] = pause_for_playback if pause_for_playback is not None else self.state.get('pause_for_playback', True)
+            self._priority = PlaybackPriority(self._stop_event, self.state['pause_for_playback'])
+            self._worker_waits = {k: v for k, v in self.state.get('worker_waits', {}).items() if v > _now()}
+            self.state['worker_waits'] = self._worker_waits
+            self._metrics = dict.fromkeys(self._metrics, 0.0)
             await self._persist()
 
             self._task = asyncio.create_task(self._run(client))
@@ -267,11 +270,20 @@ class ScanManager:
         self._stop_event.set()
         return {"ok": True, "message": "Stop requested — the scan will pause after the current batch."}
 
-    async def _telegram_call(self, operation, *args, **kwargs):
+    async def _wait_for_playback(self):
+        if self._priority:
+            await self._priority.wait()
+        if self._cancel:
+            raise _ScanStopped()
+
+    async def _telegram_call(self, operation, *args, scan_client=None, **kwargs):
+        client = scan_client or self._worker_context.get() or getattr(operation, '__self__', None)
+        key = str(getattr(getattr(client, 'me', None), 'id', None) or getattr(client, 'name', None) or id(client))
         while True:
+            await self._wait_for_playback()
             if self._cancel:
                 raise _ScanStopped()
-            delay = self.state.get('flood_wait_until', 0) - _now()
+            delay = self._worker_waits.get(key, 0) - _now()
             if delay > 0:
                 try:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
@@ -279,9 +291,15 @@ class ScanManager:
                     pass
                 continue
             try:
-                return await operation(*args, **kwargs)
+                started = time.monotonic()
+                try:
+                    return await operation(*args, **kwargs)
+                finally:
+                    if getattr(operation, '__name__', '') != '_process_message':
+                        self._metrics['telegram_seconds'] += time.monotonic() - started
             except FloodWait as exc:
-                self.state['flood_wait_until'] = max(self.state.get('flood_wait_until', 0), _now() + max(1, exc.value) + 1)
+                self._worker_waits[key] = _now() + max(1, exc.value) + 1
+                self.state['flood_wait_until'] = max(self._worker_waits.values())
                 LOGGER.warning(f'[ScanManager] Telegram FloodWait: {exc.value}s; retaining current message/batch for retry.')
                 await self._persist()
 
@@ -297,6 +315,12 @@ class ScanManager:
                     await self._persist()
                     continue
 
+                await self._wait_for_playback()
+                if ch in self.state.get('purge_pending', []):
+                    await self._purge_channel_entries(int(str(ch).removeprefix('-100')))
+                    self.state['purge_pending'].remove(ch)
+                    await self._persist()
+                await self._flush_scan_catalogs()
                 report = self.state.get('import_report') or {}
                 if report.get('channel') != ch or report.get('finished'):
                     report = {'baseline': dict(self.state['counters']), 'elapsed': 0}
@@ -348,7 +372,8 @@ class ScanManager:
                 await self._announce_import(client, event)
 
     async def _announce_import(self, client, event):
-        from Backend.helper.scan_announcements import format_notice, send_notice, library_totals
+        from Backend.helper.scan_announcements import format_notice, send_notice
+        from Backend.helper.stats_display import library_totals
         from Backend.helper.settings_manager import SettingsManager
         report = self.state.get('import_report')
         if not report or (event != 'start' and not report.get('run_started')):
@@ -377,6 +402,18 @@ class ScanManager:
         text = format_notice(event, report, counts, _fmt_elapsed(elapsed), totals)
         self._notice_task = asyncio.create_task(send_notice(client, destination, text, self._notice_task))
 
+    async def _flush_scan_catalogs(self):
+        from Backend.helper.auto_catalog import sync_single_media
+        pending = self.state.setdefault('catalog_pending', {})
+        for key, item in list(pending.items()):
+            await self._wait_for_playback()
+            try:
+                await sync_single_media(self._db, **item)
+            except Exception as exc:
+                LOGGER.warning(f'[Scan] Catalog update failed for {key}: {exc}')
+            pending.pop(key, None)
+        await self._persist()
+
     async def _scan_channel(self, client, chat_id: int, ch_key: str) -> bool:
         s = self.state
 
@@ -404,6 +441,11 @@ class ScanManager:
         s['import_report'] = report
         await self._persist()
         await self._announce_import(client, 'start')
+        from Backend.helper.scan_resources import select_scan_clients
+        workers = await select_scan_clients(client, chat_id, s.get('worker_limit', 2),
+                                            s.get('mode') == 'quick', self._telegram_call)
+        s['active_workers'] = len(workers)
+        worker_slots = {id(c): asyncio.Semaphore(max(1, SCAN_PROCESS_CONCURRENCY // len(workers))) for c in workers}
         LOGGER.info(
             f"[ScanManager] Scanning {s['current_channel_name']} ({chat_id}) from id {current}"
             + (f" up to {last_id} (probe)" if use_probe else " (heuristic mode — probe unavailable)")
@@ -427,12 +469,19 @@ class ScanManager:
             if not batch_ids:
                 break
 
-            messages = await self._telegram_call(client.get_messages, chat_id, batch_ids)
-
-            if not isinstance(messages, list):
-                messages = [messages]
-
-            to_process = [m for m in messages if m is not None and not m.empty]
+            async def fetch_lane(worker, ids):
+                if not ids:
+                    return []
+                result = await self._telegram_call(worker.get_messages, chat_id, ids, scan_client=worker)
+                return [(worker, m) for m in (result if isinstance(result, list) else [result])
+                        if m is not None and not m.empty]
+            lanes = await asyncio.gather(*(fetch_lane(worker, batch_ids[n::len(workers)])
+                                          for n, worker in enumerate(workers)), return_exceptions=True)
+            for lane in lanes:
+                if isinstance(lane, BaseException):
+                    raise lane  # Never advance past an unread lane.
+            assigned = [pair for lane in lanes for pair in lane]
+            to_process = [m for _, m in assigned]
             batch_had_content = bool(to_process)
 
             if to_process:
@@ -445,16 +494,20 @@ class ScanManager:
                 s["counters"]["total_found"] += len(to_process)
                 sem = asyncio.Semaphore(SCAN_PROCESS_CONCURRENCY)
 
-                async def _worker(msg):
-                    async with sem:
+                async def _worker(worker, msg):
+                    async with worker_slots[id(worker)], sem:
                         if self._cancel:
                             return
-                        await self._telegram_call(self._process_message, client, msg, chat_id)
+                        token = self._worker_context.set(worker)
+                        try:
+                            await self._telegram_call(self._process_message, worker, msg, chat_id)
+                        finally:
+                            self._worker_context.reset(token)
                         s["counters"]["processed"] += 1
                         if msg.video or msg.document:
                             s['counters']['media_processed'] = s['counters'].get('media_processed', 0) + 1
 
-                results = await asyncio.gather(*(_worker(m) for m in to_process), return_exceptions=True)
+                results = await asyncio.gather(*(_worker(worker, m) for worker, m in assigned), return_exceptions=True)
                 for result in results:
                     if isinstance(result, BaseException):
                         raise result
@@ -473,6 +526,8 @@ class ScanManager:
             batch_count += 1
             if batch_count % SCAN_PERSIST_EVERY == 0:
                 await self._persist()
+
+            await self._flush_scan_catalogs()
 
             await asyncio.sleep(SCAN_BATCH_DELAY)
 
@@ -571,6 +626,7 @@ class ScanManager:
         channel_int = int(str(chat_id).replace("-100", ""))
 
         try:
+            metadata_started = time.monotonic()
             metadata_info = await metadata(
                 clean_filename(title), channel_int, msg_id,
                 override_id=extract_default_id(message.caption or ""),
@@ -584,6 +640,8 @@ class ScanManager:
             if quick:
                 raise
             metadata_info = None
+        finally:
+            self._metrics['metadata_seconds'] += time.monotonic() - metadata_started
 
         if metadata_info is None:
             if quick:
@@ -609,7 +667,13 @@ class ScanManager:
         insert_status: dict = {}
         try:
             from Backend.pyrofork.plugins.receiver import db_lock
+            await self._wait_for_playback()
+            lock_started = time.monotonic()
             async with db_lock, self._db_lock:
+                self._metrics['db_lock_seconds'] += time.monotonic() - lock_started
+                if self._cancel:
+                    raise _ScanStopped()
+                db_started = time.monotonic()
                 if await self._stream_id_exists(channel_int, msg_id):
                     s['counters']['skipped_dup'] += 1
                     return
@@ -622,19 +686,22 @@ class ScanManager:
                     raw_size=raw_size,
                     status=insert_status,
                 )
+                self._metrics['db_seconds'] += time.monotonic() - db_started
             if updated_id:
                 if insert_status.get("duplicate_skipped"):
                     s["counters"]["skipped_dup"] += 1
                 else:
                     s["counters"]["indexed"] += 1
                     from Backend.helper.announcer import announce_new_media
-                    from Backend.helper.auto_catalog import start_single_media_catalog_sync
-                    start_single_media_catalog_sync(db, tmdb_id=metadata_info.get('tmdb_id'), media_type=metadata_info.get('media_type'))
+                    # One shared catalog update per title per batch, awaited
+                    # through the playback gate instead of unbounded tasks.
+                    item = {'tmdb_id': metadata_info.get('tmdb_id'), 'media_type': metadata_info.get('media_type')}
+                    self.state.setdefault('catalog_pending', {})[f'{item["media_type"]}:{item["tmdb_id"]}'] = item
                     if not quick:
                         announce_new_media(metadata_info)
             else:
                 s["counters"]["skipped_meta"] += 1
-        except FloodWait:
+        except (FloodWait, _ScanStopped):
             raise
         except Exception as e:
             LOGGER.error(f"[ScanManager] DB insert error msg {msg_id}: {e}")

@@ -283,6 +283,18 @@
 
         <hr class="divider">
 
+        <div class="flex flex-wrap items-center gap-4 mb-4">
+            <label>Scan workers
+                <select id="scan-worker-limit" class="s-input">
+                    <option value="1">1</option><option value="2" selected>2 (recommended)</option>
+                    <option value="3">3</option><option value="4">4</option>
+                    <option value="8">8</option><option value="0">Auto — up to 8 eligible workers</option>
+                </select>
+            </label>
+            <label><input type="checkbox" id="scan-pause-playback" checked> Automatically pause scans during playback</label>
+        </div>
+        <p class="hint mb-3">Applies only to channel scans. Resumes after 60 seconds without active playback; manual Stop stays stopped. Workers need source-channel delete permission and skip-channel post permission. The main bot is used only if no worker qualifies. Processing is capped at eight files in total; live ingestion is unchanged.</p>
+        <p id="scan-resources" class="hint mb-3"></p>
         <!-- live progress -->
         <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
             <div class="text-sm font-bold" id="scan-current">No scan running</div>
@@ -765,6 +777,7 @@ function getSelectedChannels() {
 
 /* ─────────────── Scan control ─────────────── */
 let scanResumeMode = 'scan';
+let scanOptionsLoaded = false;
 async function startScan(mode) {
     const channels = getSelectedChannels();
     if (!channels.length) {
@@ -772,12 +785,14 @@ async function startScan(mode) {
         showToast('Select at least one channel to scan.', 'error', 'No channels');
         return;
     }
-    if (mode === 'quick' && !confirm('Quick Scan permanently deletes rejected files from the source channel without a skip-channel copy. It sends no announcements. Continue?')) return;
+    if (mode === 'quick' && !confirm('Quick Scan permanently deletes rejected files from the source channel without a skip-channel copy. Individual media announcements are skipped; import status notices remain. Continue?')) return;
     try {
         const res = await fetch('/api/admin/tools/scan/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode, channels })
+            body: JSON.stringify({ mode, channels,
+                worker_limit: Number(document.getElementById('scan-worker-limit').value),
+                pause_for_playback: document.getElementById('scan-pause-playback').checked })
         });
         const data = await res.json();
         if (res.ok) {
@@ -844,6 +859,15 @@ function renderScan(s) {
     setText('sc-errors', c.errors || 0);
     setText('sc-resolution', c.skipped_resolution || 0);
     setText('scan-elapsed', s.elapsed || '0s');
+    document.getElementById('scan-worker-limit').disabled = !!s.is_running;
+    document.getElementById('scan-pause-playback').disabled = !!s.is_running;
+    if (!scanOptionsLoaded || s.is_running) {
+        document.getElementById('scan-worker-limit').value = String(s.worker_limit ?? 2);
+        document.getElementById('scan-pause-playback').checked = s.pause_for_playback !== false;
+        scanOptionsLoaded = true;
+    }
+    const timing = s.timings || {};
+    setText('scan-resources', `${s.active_workers || 0} eligible worker(s) · accumulated work time: Telegram ${timing.telegram_seconds || 0}s · metadata ${timing.metadata_seconds || 0}s · DB ${timing.db_seconds || 0}s · DB lock ${timing.db_lock_seconds || 0}s`);
 
     const bar = document.getElementById('scan-bar');
     const startBtn = document.getElementById('scan-start-btn');
@@ -865,7 +889,10 @@ function renderScan(s) {
                 `Scanning ${name}` + (s.current_id ? ` · up to msg #${s.current_id}` : '');
         }
         startBtn.disabled = true; rescanBtn.disabled = true; cancelBtn.disabled = false;
-        if (s.flood_wait_seconds > 0) {
+        if (s.playback_paused) {
+            document.getElementById('scan-current').textContent = 'Scan paused for playback — resumes automatically after 60 idle seconds.';
+        }
+        if (s.flood_wait_seconds > 0 && !s.playback_paused) {
             document.getElementById('scan-current').textContent = `Telegram rate limit: waiting ${s.flood_wait_seconds}s, then retrying the same work automatically.`;
         }
         errEl.style.display = 'none';
