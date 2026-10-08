@@ -5,7 +5,7 @@ import time
 from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
-from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired
+from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired, MessageDeleteForbidden
 
 from Backend.logger import LOGGER
 from Backend.helper.encrypt import encode_string, decode_string
@@ -95,6 +95,7 @@ class ScanManager:
     @staticmethod
     def _blank_counters() -> Dict[str, int]:
         return {
+            "skipped_delete_forbidden": 0,
             "total_found": 0,
             "processed": 0,
             "indexed": 0,
@@ -527,6 +528,9 @@ class ScanManager:
                         token = self._worker_context.set(worker)
                         try:
                             await self._telegram_call(self._process_message, worker, msg, chat_id)
+                        except MessageDeleteForbidden:
+                            s['counters']['skipped_delete_forbidden'] = s['counters'].get('skipped_delete_forbidden', 0) + 1
+                            LOGGER.warning(f'[Scan] Cannot delete {chat_id}/{msg.id}; leaving the original and skipping this file.')
                         finally:
                             self._worker_context.reset(token)
                         s["counters"]["processed"] += 1
@@ -568,7 +572,10 @@ class ScanManager:
     async def _probe_last_message_id(self, client, chat_id: int, scan_retry=False):
         if scan_retry:
             probe = await self._telegram_call(client.send_message, chat_id, SCAN_PROBE_TEXT)
-            await self._telegram_call(client.delete_messages, chat_id, probe.id)
+            try:
+                await self._telegram_call(client.delete_messages, chat_id, probe.id)
+            except MessageDeleteForbidden:
+                LOGGER.warning(f'[Scan] Cannot remove probe {chat_id}/{probe.id}; continuing with its message boundary.')
             return probe.id
         probe = None
         try:
@@ -659,7 +666,7 @@ class ScanManager:
                 quality_hint=source_resolution(message.caption, file.file_name),
                 raise_errors=True,
             )
-        except FloodWait:
+        except (FloodWait, MessageDeleteForbidden):
             raise
         except Exception as e:
             LOGGER.warning(f"[ScanManager] Metadata exception for msg {msg_id}: {e}")
@@ -727,7 +734,7 @@ class ScanManager:
                         announce_new_media(metadata_info)
             else:
                 s["counters"]["skipped_meta"] += 1
-        except (FloodWait, _ScanStopped):
+        except (FloodWait, _ScanStopped, MessageDeleteForbidden):
             raise
         except Exception as e:
             LOGGER.error(f"[ScanManager] DB insert error msg {msg_id}: {e}")

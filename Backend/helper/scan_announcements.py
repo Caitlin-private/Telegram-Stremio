@@ -27,6 +27,8 @@ def format_notice(event, report, counts, elapsed, totals=None):
                   f'📂 <b>Processed files:</b> {counts.get("media_processed", 0):,}',
                   f'✅ <b>Indexed files:</b> {counts.get("indexed", 0):,}',
                   f'🚫 <b>Resolution skips:</b> {counts.get("skipped_resolution", 0):,}', '']
+        if counts.get('skipped_delete_forbidden'):
+            lines += [f'🔒 <b>Skipped (deletion forbidden):</b> {counts["skipped_delete_forbidden"]:,}', '']
     lines += [f'🔍 <b>Scan type:</b> {escape(mode)}',
               f'📢 <b>Channel:</b> {escape(str(report["name"]))}',
               f'🆔 <b>Channel ID:</b> <code>{escape(str(report["channel"]))}</code>']

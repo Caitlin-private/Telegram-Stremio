@@ -316,6 +316,7 @@
             <div class="stat-box"><div class="v" id="sc-sub-skipped">0</div><div class="l">Subtitles skipped</div></div>
             <div class="stat-box"><div class="v" style="color:#ef4444" id="sc-errors">0</div><div class="l">Errors</div></div>
             <div class="stat-box"><div class="v" id="sc-resolution">0</div><div class="l">Resolution Skips</div></div>
+            <div class="stat-box"><div class="v" id="sc-delete-forbidden">0</div><div class="l">Deletion Forbidden</div></div>
         </div>
 
         <div class="flex items-center gap-2 flex-wrap">
@@ -873,6 +874,7 @@ function renderScan(s) {
     setText('sc-sub-skipped', c.subtitles_skipped || 0);
     setText('sc-errors', c.errors || 0);
     setText('sc-resolution', c.skipped_resolution || 0);
+    setText('sc-delete-forbidden', c.skipped_delete_forbidden || 0);
     setText('scan-elapsed', s.elapsed || '0s');
     document.getElementById('scan-discard-btn').disabled = !!s.cancelling || !(s.is_running || s.resumable);
     document.getElementById('scan-worker-limit').disabled = !!s.is_running;
