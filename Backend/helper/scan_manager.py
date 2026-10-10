@@ -496,6 +496,7 @@ class ScanManager:
         LOGGER.info(
             f"[ScanManager] Scanning {s['current_channel_name']} ({chat_id}) from id {current}"
             + (f" up to {last_id} (probe)" if use_probe else " (heuristic mode — probe unavailable)")
+            + f" using {len(workers)} bot(s), configured limit {s.get('worker_limit', 2) or 'Auto'}"
         )
 
         empty_streak = 0

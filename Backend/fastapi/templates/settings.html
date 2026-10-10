@@ -454,15 +454,15 @@
     <div class="settings-card">
         <h2><i class="fa-solid fa-image"></i> Poster Provider</h2>
         <label class="toggle-wrap" style="margin-bottom:0.75rem">
-            <input type="checkbox" class="toggle-input" id="spatial_poster_enabled"
-                {% if settings.spatial_poster_enabled %}checked{% endif %} onchange="togglePosterProvider('spatial')">
-            <span class="toggle-track"></span><span class="toggle-label"><strong>SpatialPosters</strong></span>
+            <input type="checkbox" class="toggle-input" id="pictorium_poster_enabled"
+                {% if settings.pictorium_poster_enabled %}checked{% endif %} onchange="togglePosterProvider('pictorium')">
+            <span class="toggle-track"></span><span class="toggle-label"><strong>Pictorium</strong></span>
         </label>
-        <div id="spatial-poster-wrap" style="margin-bottom:1.25rem;{% if not settings.spatial_poster_enabled %}display:none{% endif %}">
-            <label class="s-label" for="spatial_poster_url">SpatialPosters instance URL</label>
-            <input type="url" id="spatial_poster_url" class="s-input" value="{{ settings.spatial_poster_url }}"
-                placeholder="https://your-spatialposters.example" autocomplete="off" spellcheck="false">
-            <p class="hint">Enter the base URL of your configured SpatialPosters instance, without /manifest.json or /api/poster. Uses its default styling for movie/TV posters via TMDB IDs. Titles without a positive TMDB ID keep their stored poster. <a href="https://github.com/TheAceOfficials/SpatialPosters" target="_blank" rel="noopener">Setup instructions</a></p>
+        <div id="pictorium-poster-wrap" style="margin-bottom:1.25rem;{% if not settings.pictorium_poster_enabled %}display:none{% endif %}">
+            <label class="s-label" for="pictorium_poster_url">Pictorium poster template or instance URL</label>
+            <input type="text" id="pictorium_poster_url" class="s-input" value="{{ settings.pictorium_poster_url }}"
+                placeholder="https://your-pictorium.example" autocomplete="off" spellcheck="false">
+            <p class="hint">Paste the “Follow my space” poster template exported by Pictorium to use your saved artwork and styling, or enter your configured instance base URL. Keep the template placeholders and query parameters intact. Do not paste a configure or manifest link. Titles without the required ID keep their stored poster. Pictorium replaces SpatialPosters; configure this new provider before enabling it. <a href="https://github.com/Eful97/Pictorium" target="_blank" rel="noopener">Setup instructions</a></p>
         </div>
         <p style="font-size:0.83rem;color:var(--text-sec);margin-bottom:1rem">
             Replace catalog posters with textless artwork. Only one provider can be active at a time.
@@ -1371,7 +1371,7 @@ function toggleSkipDeleteField() {
 
 function togglePosterProvider(which) {
     const els = {
-        spatial: document.getElementById('spatial_poster_enabled'),
+        pictorium: document.getElementById('pictorium_poster_enabled'),
         better: document.getElementById('better_poster_enabled'),
         rpdb: document.getElementById('rpdb_enabled'),
         fanart: document.getElementById('fanart_enabled'),
@@ -1380,7 +1380,7 @@ function togglePosterProvider(which) {
         for (const k in els) if (k !== which) els[k].checked = false;
     }
     document.getElementById('better-poster-wrap').style.display = els.better.checked ? '' : 'none';
-    document.getElementById('spatial-poster-wrap').style.display = els.spatial.checked ? '' : 'none';
+    document.getElementById('pictorium-poster-wrap').style.display = els.pictorium.checked ? '' : 'none';
     document.getElementById('rpdb-wrap').style.display = els.rpdb.checked ? '' : 'none';
     document.getElementById('fanart-wrap').style.display = els.fanart.checked ? '' : 'none';
 }
@@ -1602,8 +1602,8 @@ async function saveSettings() {
         tvdb_api:                      (document.getElementById('tvdb_api') || {}).value?.trim() || '',
         base_url:                      document.getElementById('base_url').value.trim(),
         better_poster_enabled:         document.getElementById('better_poster_enabled').checked,
-        spatial_poster_enabled:        document.getElementById('spatial_poster_enabled').checked,
-        spatial_poster_url:            document.getElementById('spatial_poster_url').value.trim(),
+        pictorium_poster_enabled:        document.getElementById('pictorium_poster_enabled').checked,
+        pictorium_poster_url:            document.getElementById('pictorium_poster_url').value.trim(),
         better_poster:                 document.getElementById('better_poster').value.trim(),
         rpdb_enabled:                  document.getElementById('rpdb_enabled').checked,
         rpdb_api_key:                  document.getElementById('rpdb_api_key').value.trim(),
@@ -1760,8 +1760,8 @@ function renderSettings(s) {
     if (document.getElementById('tvdb_api')) document.getElementById('tvdb_api').value = s.tvdb_api || '';
     document.getElementById('base_url').value = s.base_url || '';
     document.getElementById('better_poster_enabled').checked = !!s.better_poster_enabled;
-    document.getElementById('spatial_poster_enabled').checked = !!s.spatial_poster_enabled;
-    document.getElementById('spatial_poster_url').value = s.spatial_poster_url || '';
+    document.getElementById('pictorium_poster_enabled').checked = !!s.pictorium_poster_enabled;
+    document.getElementById('pictorium_poster_url').value = s.pictorium_poster_url || '';
     document.getElementById('better_poster').value = s.better_poster || '';
     document.getElementById('rpdb_enabled').checked = !!s.rpdb_enabled;
     document.getElementById('rpdb_api_key').value = s.rpdb_api_key || '';

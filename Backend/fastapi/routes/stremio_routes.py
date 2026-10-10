@@ -203,15 +203,9 @@ RPDB_FREE = "https://api.ratingposterdb.com/t0-free-rpdb/imdb/poster-default/{im
 
 def _poster_url(imdb_id: str, fallback: str, tmdb_id=None, media_type='movie') -> str:
     settings = SettingsManager.current()
-    if settings.spatial_poster_enabled:
-        try:
-            numeric_id = int(tmdb_id)
-        except (TypeError, ValueError):
-            numeric_id = 0
-        if numeric_id > 0 and settings.spatial_poster_url:
-            kind = 'tv' if media_type in ('tv', 'series') else 'movie'
-            return f'{settings.spatial_poster_url}/api/poster/{kind}/{numeric_id}'
-        return _abs_media_url(fallback)
+    if settings.pictorium_poster_enabled:
+        from Backend.helper.pictorium import poster_url
+        return poster_url(settings.pictorium_poster_url, tmdb_id, imdb_id, media_type) or _abs_media_url(fallback)
     if imdb_id:
         if settings.better_poster_enabled:
             template = settings.better_poster or BETTERPOSTER_DEFAULT
@@ -1161,15 +1155,6 @@ async def get_streams(
     for stream in streams:
         stream.pop('video_part', None)
         stream.pop('video_group', None)
-    name_count: dict = {}
-    for s in streams:
-        name_count[s["name"]] = name_count.get(s["name"], 0) + 1
-
-    seen: dict = {}
-    for s in streams:
-        if name_count[s["name"]] > 1:
-            seen[s["name"]] = seen.get(s["name"], 0) + 1
-            s["name"] = f"{s['name']} ({seen[s['name']]})"
     return {"streams": streams}
 
 #----- Configure/install landing page rendered as HTML for a token

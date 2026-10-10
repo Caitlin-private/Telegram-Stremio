@@ -1802,22 +1802,16 @@ async def get_settings_api() -> dict:
 
 async def update_settings_api(payload: dict) -> dict:
 
-    if 'spatial_poster_enabled' in payload and not isinstance(payload['spatial_poster_enabled'], bool):
-        raise HTTPException(status_code=400, detail='SpatialPosters enabled must be true or false.')
-    if 'spatial_poster_url' in payload:
-        from urllib.parse import urlsplit
-        value = str(payload['spatial_poster_url'] or '').strip().rstrip('/')
+    if 'pictorium_poster_enabled' in payload and not isinstance(payload['pictorium_poster_enabled'], bool):
+        raise HTTPException(status_code=400, detail='Pictorium enabled must be true or false.')
+    if 'pictorium_poster_url' in payload:
+        from Backend.helper.pictorium import validate_poster_url
         try:
-            parsed_url = urlsplit(value)
-            valid = parsed_url.scheme in ('http', 'https') and parsed_url.hostname and not (
-                parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment)
-        except ValueError:
-            valid = False
-        if value and not valid:
-            raise HTTPException(status_code=400, detail='Enter a valid SpatialPosters instance base URL without credentials, query or fragment.')
-        payload['spatial_poster_url'] = value
-    if payload.get('spatial_poster_enabled') and not payload.get('spatial_poster_url', SettingsManager.current().spatial_poster_url):
-        raise HTTPException(status_code=400, detail='SpatialPosters instance URL is required.')
+            payload['pictorium_poster_url'] = validate_poster_url(payload['pictorium_poster_url'])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if payload.get('pictorium_poster_enabled', SettingsManager.current().pictorium_poster_enabled) and not payload.get('pictorium_poster_url', SettingsManager.current().pictorium_poster_url):
+        raise HTTPException(status_code=400, detail='Pictorium URL is required.')
 
     if 'ingestion_resolutions' in payload:
         from Backend.helper.resolution_policy import RESOLUTIONS
@@ -1864,7 +1858,7 @@ async def update_settings_api(payload: dict) -> dict:
         except (ValueError, TypeError):
             payload["fanart_shuffle_interval"] = 5
 
-    if len([k for k in ("better_poster_enabled", "rpdb_enabled", "fanart_enabled", "spatial_poster_enabled") if payload.get(k)]) > 1:
+    if len([k for k in ("better_poster_enabled", "rpdb_enabled", "fanart_enabled", "pictorium_poster_enabled") if payload.get(k)]) > 1:
         raise HTTPException(status_code=400, detail="Enable only one poster provider at a time")
 
     if payload.get("fanart_enabled") and not str(payload.get("fanart_api_key") or "").strip():

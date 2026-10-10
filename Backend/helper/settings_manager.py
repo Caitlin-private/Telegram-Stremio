@@ -52,8 +52,8 @@ _DEFAULTS: Dict[str, Any] = {
     "skip_channel": "",
     "delete_on_metadata_fail": False,
     "better_poster_enabled": False,
-    "spatial_poster_enabled": False,
-    "spatial_poster_url": "",
+    "pictorium_poster_enabled": False,
+    "pictorium_poster_url": "",
     "better_poster": "",
     "rpdb_enabled": False,
     "rpdb_api_key": "",
@@ -257,12 +257,12 @@ class Settings:
         return bool(self._d.get("better_poster_enabled", False))
 
     @property
-    def spatial_poster_enabled(self) -> bool:
-        return bool(self._d.get('spatial_poster_enabled', False))
+    def pictorium_poster_enabled(self) -> bool:
+        return bool(self._d.get('pictorium_poster_enabled', False))
 
     @property
-    def spatial_poster_url(self) -> str:
-        return str(self._d.get('spatial_poster_url') or '').strip().rstrip('/')
+    def pictorium_poster_url(self) -> str:
+        return str(self._d.get('pictorium_poster_url') or '').strip()
 
     @property
     def better_poster(self) -> str:
