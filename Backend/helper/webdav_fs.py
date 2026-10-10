@@ -68,8 +68,10 @@ def quality_ext(name: str) -> str:
 
 
 def pick_best_quality(qualities: Optional[List[dict]]) -> Optional[dict]:
+    from Backend.helper.multipart_video import with_video_part
     if not qualities:
         return None
+    qualities = [with_video_part(q) for q in qualities]
     order = {"2160p": 0, "4k": 0, "1440p": 1, "1080p": 2, "720p": 3, "480p": 4, "360p": 5}
     def key(q):
         ql = str(q.get("quality") or "").lower()
@@ -362,6 +364,8 @@ class WebDAVFilesystem:
         return root
 
     def _movie_video_node(self, folder_path: str, folder: str, doc: dict, qual: dict) -> Optional[VNode]:
+        from Backend.helper.multipart_video import with_video_part
+        qual = with_video_part(qual)
         from Backend.helper.settings_manager import SettingsManager
         if qual.get('video_part') and not SettingsManager.current().allow_multipart_video:
             return None
@@ -400,6 +404,8 @@ class WebDAVFilesystem:
         ep: dict,
         qual: dict,
     ) -> Optional[VNode]:
+        from Backend.helper.multipart_video import with_video_part
+        qual = with_video_part(qual)
         from Backend.helper.settings_manager import SettingsManager
         if qual.get('video_part') and not SettingsManager.current().allow_multipart_video:
             return None

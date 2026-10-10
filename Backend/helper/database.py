@@ -1258,6 +1258,8 @@ class Database:
         status: Optional[dict] = None
     ) -> Optional[ObjectId]:
 
+        from Backend.helper.multipart_video import with_video_part
+        metadata_info = with_video_part({**metadata_info, 'name': name})
         group_key = metadata_info.get("group_key")
         part_number = metadata_info.get("part_number")
 
@@ -1444,6 +1446,8 @@ class Database:
     #----- Identity of a non-split stream for duplicate protection (quality + name + size)
     @staticmethod
     def _dup_key(quality: dict) -> tuple:
+        from Backend.helper.multipart_video import with_video_part
+        quality = with_video_part(quality)
         name = re.sub(r"\s+", " ", str(quality.get("name") or "").strip().lower())
         size = str(quality.get("size") or "").strip().lower()
         return (quality.get("quality"), name, size, quality.get('video_part'), quality.get('video_group'))
@@ -1473,6 +1477,9 @@ class Database:
         self, existing_qualities: List[dict], quality_to_update: dict,
         is_personal: bool = False, status: Optional[dict] = None
     ) -> List[dict]:
+        from Backend.helper.multipart_video import with_video_part
+        existing_qualities = [with_video_part(q) for q in existing_qualities]
+        quality_to_update = with_video_part(quality_to_update)
         target_quality = quality_to_update.get("quality")
         incoming_group_key = quality_to_update.get("group_key")
         replace_mode = SettingsManager.current().replace_mode

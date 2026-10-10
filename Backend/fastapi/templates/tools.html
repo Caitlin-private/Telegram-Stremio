@@ -295,6 +295,11 @@
         </div>
         <p class="hint mb-3">Applies only to channel scans. Resumes after 60 seconds without active playback; manual Stop stays stopped. Workers need source-channel delete permission and skip-channel post permission. The main bot is used only if no worker qualifies. Processing is capped at eight files in total; live ingestion is unchanged.</p>
         <p id="scan-resources" class="hint mb-3"></p>
+        <div class="flex flex-wrap gap-4 mb-3">
+            <label>Start message ID <input id="scan-start-id" type="number" min="1" max="2147483647" step="1" class="s-input" placeholder="Beginning"></label>
+            <label>End message ID <input id="scan-end-id" type="number" min="1" max="2147483647" step="1" class="s-input" placeholder="Latest message"></label>
+        </div>
+        <p class="hint mb-3">Optional, inclusive range applied to each selected channel. Leave blank for the full channel. Rescan removes only indexed references inside the chosen range. Cancel the current job to change a saved range.</p>
         <!-- live progress -->
         <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
             <div class="text-sm font-bold" id="scan-current">No scan running</div>
@@ -784,6 +789,12 @@ function getSelectedChannels() {
 let scanResumeMode = 'scan';
 let scanOptionsLoaded = false;
 async function startScan(mode) {
+    const parseRange = id => document.getElementById(id).value.trim() === '' ? null : Number(document.getElementById(id).value);
+    const start_id = parseRange('scan-start-id'), end_id = parseRange('scan-end-id');
+    if ([start_id, end_id].some(n => n !== null && (!Number.isInteger(n) || n < 1 || n > 2147483647)) ||
+        (start_id !== null && end_id !== null && start_id > end_id)) {
+        showToast('Enter valid message IDs with start no greater than end.', 'error', 'Invalid range'); return;
+    }
     const channels = getSelectedChannels();
     if (!channels.length) {
         // allow plain resume with no selection only if resumable
@@ -795,7 +806,7 @@ async function startScan(mode) {
         const res = await fetch('/api/admin/tools/scan/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode, channels,
+            body: JSON.stringify({ mode, channels, start_id, end_id,
                 worker_limit: Number(document.getElementById('scan-worker-limit').value),
                 pause_for_playback: document.getElementById('scan-pause-playback').checked })
         });
@@ -817,7 +828,8 @@ function confirmRescan() {
         showToast('Select the channels you want to rescan.', 'error', 'No channels');
         return;
     }
-    if (!confirm(`Rescan will DELETE all existing DB entries for ${channels.length} selected channel(s) and re-index from scratch.\n\nProceed?`)) return;
+    const range = `${document.getElementById('scan-start-id').value || 'beginning'} to ${document.getElementById('scan-end-id').value || 'latest'}`;
+    if (!confirm(`Rescan will remove indexed file references in message range ${range} for ${channels.length} selected channel(s), then re-index that range.\n\nProceed?`)) return;
     startScan('rescan');
 }
 
@@ -880,10 +892,14 @@ function renderScan(s) {
     document.getElementById('scan-worker-limit').disabled = !!s.is_running;
     document.getElementById('scan-pause-playback').disabled = !!s.is_running;
     if (!scanOptionsLoaded || s.is_running) {
+        document.getElementById('scan-start-id').value = s.start_id ?? '';
+        document.getElementById('scan-end-id').value = s.end_id ?? '';
         document.getElementById('scan-worker-limit').value = String(s.worker_limit ?? 2);
         document.getElementById('scan-pause-playback').checked = s.pause_for_playback !== false;
         scanOptionsLoaded = true;
     }
+    document.getElementById('scan-start-id').disabled = !!s.is_running || !!s.resumable;
+    document.getElementById('scan-end-id').disabled = !!s.is_running || !!s.resumable;
     const timing = s.timings || {};
     setText('scan-resources', `${s.active_workers || 0} eligible worker(s) · accumulated work time: Telegram ${timing.telegram_seconds || 0}s · metadata ${timing.metadata_seconds || 0}s · DB ${timing.db_seconds || 0}s · DB lock ${timing.db_lock_seconds || 0}s`);
 

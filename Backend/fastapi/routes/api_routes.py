@@ -1802,6 +1802,23 @@ async def get_settings_api() -> dict:
 
 async def update_settings_api(payload: dict) -> dict:
 
+    if 'spatial_poster_enabled' in payload and not isinstance(payload['spatial_poster_enabled'], bool):
+        raise HTTPException(status_code=400, detail='SpatialPosters enabled must be true or false.')
+    if 'spatial_poster_url' in payload:
+        from urllib.parse import urlsplit
+        value = str(payload['spatial_poster_url'] or '').strip().rstrip('/')
+        try:
+            parsed_url = urlsplit(value)
+            valid = parsed_url.scheme in ('http', 'https') and parsed_url.hostname and not (
+                parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment)
+        except ValueError:
+            valid = False
+        if value and not valid:
+            raise HTTPException(status_code=400, detail='Enter a valid SpatialPosters instance base URL without credentials, query or fragment.')
+        payload['spatial_poster_url'] = value
+    if payload.get('spatial_poster_enabled') and not payload.get('spatial_poster_url', SettingsManager.current().spatial_poster_url):
+        raise HTTPException(status_code=400, detail='SpatialPosters instance URL is required.')
+
     if 'ingestion_resolutions' in payload:
         from Backend.helper.resolution_policy import RESOLUTIONS
         values = payload['ingestion_resolutions']
@@ -1847,7 +1864,7 @@ async def update_settings_api(payload: dict) -> dict:
         except (ValueError, TypeError):
             payload["fanart_shuffle_interval"] = 5
 
-    if len([k for k in ("better_poster_enabled", "rpdb_enabled", "fanart_enabled") if payload.get(k)]) > 1:
+    if len([k for k in ("better_poster_enabled", "rpdb_enabled", "fanart_enabled", "spatial_poster_enabled") if payload.get(k)]) > 1:
         raise HTTPException(status_code=400, detail="Enable only one poster provider at a time")
 
     if payload.get("fanart_enabled") and not str(payload.get("fanart_api_key") or "").strip():
@@ -2297,8 +2314,15 @@ async def start_scan_api(payload: dict) -> dict:
         raise HTTPException(status_code=400, detail='Scan workers must be 0 (Auto) or 1–8.')
     if pause_for_playback is not None and not isinstance(pause_for_playback, bool):
         raise HTTPException(status_code=400, detail='Playback pause must be true or false.')
+    start_id, end_id = payload.get('start_id'), payload.get('end_id')
+    for value in (start_id, end_id):
+        if value is not None and (type(value) is not int or not 1 <= value <= 2147483647):
+            raise HTTPException(status_code=400, detail='Message IDs must be positive integers up to 2147483647.')
+    if start_id is not None and end_id is not None and start_id > end_id:
+        raise HTTPException(status_code=400, detail='Start message ID must not exceed end message ID.')
     result = await scan_manager.start(client, channels, mode=mode,
-                                     worker_limit=worker_limit, pause_for_playback=pause_for_playback)
+                                     worker_limit=worker_limit, pause_for_playback=pause_for_playback,
+                                     start_id=start_id, end_id=end_id)
     if not result.get("ok"):
         raise HTTPException(status_code=409, detail=result.get("message", "Could not start scan."))
     return {"status": "success", **result}

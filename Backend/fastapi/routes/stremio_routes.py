@@ -201,8 +201,17 @@ BETTERPOSTER_DEFAULT = "https://btttr.cc/poster/imdb/poster-default/{imdb_id}.jp
 RPDB_FREE = "https://api.ratingposterdb.com/t0-free-rpdb/imdb/poster-default/{imdb_id}.jpg"
 
 
-def _poster_url(imdb_id: str, fallback: str) -> str:
+def _poster_url(imdb_id: str, fallback: str, tmdb_id=None, media_type='movie') -> str:
     settings = SettingsManager.current()
+    if settings.spatial_poster_enabled:
+        try:
+            numeric_id = int(tmdb_id)
+        except (TypeError, ValueError):
+            numeric_id = 0
+        if numeric_id > 0 and settings.spatial_poster_url:
+            kind = 'tv' if media_type in ('tv', 'series') else 'movie'
+            return f'{settings.spatial_poster_url}/api/poster/{kind}/{numeric_id}'
+        return _abs_media_url(fallback)
     if imdb_id:
         if settings.better_poster_enabled:
             template = settings.better_poster or BETTERPOSTER_DEFAULT
@@ -282,7 +291,7 @@ def convert_to_stremio_meta(item: dict) -> dict:
         "id": series_id(imdb) if media_type == 'series' else imdb,
         "type": media_type,
         "name": _display_title(item),
-        "poster": _poster_url(imdb, item.get("poster")),
+        "poster": _poster_url(imdb, item.get("poster"), item.get('tmdb_id'), media_type),
         "logo": item.get("logo") or "",
         "year": _year_label(item) or item.get("release_year") or "",
         "releaseInfo": _year_label(item) or "",
@@ -640,7 +649,7 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
         "year": _year_label(media) or (str(media.get("release_year")) if media.get("release_year") else ""),
         "imdbRating": str(media.get("rating") or "") if media.get("rating") not in (None, "") else "",
         "genres": media.get("genres") or [],
-        "poster": _poster_url(media.get("imdb_id") or imdb_id, media.get("poster")),
+        "poster": _poster_url(media.get("imdb_id") or imdb_id, media.get("poster"), media.get('tmdb_id'), media.get('media_type')),
         "logo": media.get("logo") or "",
         "background": _abs_media_url(media.get("backdrop")),
         "imdb_id": media.get("imdb_id") or (id if not parsed["is_kitsu"] else ""),
@@ -1058,7 +1067,9 @@ async def get_streams(
     is_combined = season_num == COMBINED_SEASON and episode_num is not None and episode_num >= COMBINED_EPISODE_BASE
 
     if media_details and "telegram" in media_details:
+        from Backend.helper.multipart_video import with_video_part
         for quality in media_details.get("telegram", []):
+            quality = with_video_part(quality)
             if quality.get('video_part') and not SettingsManager.current().allow_multipart_video:
                 continue
             if quality.get("id"):

@@ -73,6 +73,8 @@ class ScanManager:
             "mode": "scan",              
             "flood_wait_until": 0.0,
             "worker_limit": 2,
+            "start_id": None,
+            "end_id": None,
             "pause_for_playback": True,
             "active_workers": 0,
             "worker_waits": {},
@@ -170,6 +172,8 @@ class ScanManager:
             "mode": s["mode"],
             "cancelling": bool(s.get('discard_requested')),
             "worker_limit": s.get('worker_limit', 2),
+            "start_id": s.get('start_id'),
+            "end_id": s.get('end_id'),
             "pause_for_playback": s.get('pause_for_playback', True),
             "playback_paused": bool(self._priority and self._priority.paused),
             "active_workers": s.get('active_workers', 0),
@@ -210,7 +214,7 @@ class ScanManager:
                     return True
         return False
 
-    async def start(self, client, channels: List[str], mode: str = "scan", worker_limit=None, pause_for_playback=None) -> Dict[str, Any]:
+    async def start(self, client, channels: List[str], mode: str = "scan", worker_limit=None, pause_for_playback=None, start_id=None, end_id=None) -> Dict[str, Any]:
         async with self._lock:
             if self.state["status"] == "running" or (self._task and not self._task.done()):
                 return {"ok": False, "message": "A scan is already running."}
@@ -222,6 +226,16 @@ class ScanManager:
 
             if not channels:
                 return {"ok": False, "message": "No channels selected."}
+
+            resuming_job = mode != 'rescan' and self.state['status'] in ('paused', 'cancelled', 'error') and bool(self.state['pending'])
+            if resuming_job:
+                if ((start_id is not None and start_id != self.state.get('start_id')) or
+                        (end_id is not None and end_id != self.state.get('end_id'))):
+                    return {'ok': False, 'message': 'Cancel the current scan before changing its message range.'}
+            else:
+                self.state['start_id'], self.state['end_id'] = start_id, end_id
+                for ch in channels:
+                    self.state['cursors'].pop(ch, None)
 
             if mode == 'rescan' or self.state['status'] not in ('paused', 'cancelled', 'error'):
                 self.state.pop('import_report', None)
@@ -457,13 +471,19 @@ class ScanManager:
         use_probe = last_id is not None
         s["current_target_id"] = last_id if use_probe else 0
 
-        current = int(s["cursors"].get(str(ch_key), 1) or 1)
+        first_id = s.get('start_id') or 1
+        if s.get('end_id') is not None:
+            last_id = min(last_id, s['end_id']) if last_id is not None else s['end_id']
+            use_probe = True
+        s['current_target_id'] = last_id if use_probe else 0
+        current = max(first_id, int(s['cursors'].get(str(ch_key), first_id) or first_id))
+        scan_limit = last_id + 1 if use_probe and (s.get('start_id') or s.get('end_id')) else SCAN_MAX_ID_CAP
         report = s.get('import_report') or {}
         if report.get('channel') != ch_key or report.get('finished'):
             report = {'baseline': dict(s['counters']), 'elapsed': 0}
         report.setdefault('first_id', current)
         report.update(channel=ch_key, name=s['current_channel_name'], mode=report.get('mode', s['mode']),
-                      target=max(0, min(last_id, SCAN_MAX_ID_CAP - 1) - report['first_id'] + 1) if use_probe else None,
+                      target=max(0, min(last_id, scan_limit - 1) - report['first_id'] + 1) if use_probe else None,
                       cursor=current, run_started=_now())
         s['import_report'] = report
         await self._persist()
@@ -481,7 +501,7 @@ class ScanManager:
         empty_streak = 0
         batch_count = 0
 
-        while not self._cancel and current < SCAN_MAX_ID_CAP:
+        while not self._cancel and current < scan_limit:
             #----- ── Stop condition ───────────────────────────────────────────────
             if use_probe:
                 if current > last_id:
@@ -489,7 +509,7 @@ class ScanManager:
             elif empty_streak >= SCAN_MAX_EMPTY_BATCHES:
                 break
 
-            upper = min(current + SCAN_BATCH_SIZE, SCAN_MAX_ID_CAP)
+            upper = min(current + SCAN_BATCH_SIZE, scan_limit)
             if use_probe:
                 upper = min(upper, last_id + 1)
             batch_ids = list(range(current, upper))
@@ -744,8 +764,38 @@ class ScanManager:
     async def _purge_channel_entries(self, channel_int: int) -> int:
         db = self._db
         purged = 0
+        low, high = self.state.get('start_id') or 1, self.state.get('end_id') or 2147483647
+        def targeted(part):
+            try:
+                return int(part['chat_id']) == channel_int and low <= int(part['msg_id']) <= high
+            except (KeyError, TypeError, ValueError):
+                return False
+
+        async def retained(quality):
+            nonlocal purged
+            parts = quality.get('parts') or []
+            if parts:
+                remaining = [p for p in parts if not targeted(p)]
+                if len(remaining) == len(parts):
+                    return quality, False
+                purged += len(parts) - len(remaining)
+                if not remaining:
+                    return None, True
+                updated = dict(quality)
+                archive = 'zip' if str(quality.get('group_key', '')).endswith('.zip') else None
+                updated['id'], updated['size'] = await db._build_part_id_and_size(remaining, archive)
+                updated['parts'] = remaining
+                return updated, True
+            try:
+                decoded = await decode_string(quality['id'])
+            except Exception:
+                return quality, False
+            if targeted(decoded):
+                purged += 1
+                return None, True
+            return quality, False
         try:
-            await db.dbs["tracking"]["subtitles"].delete_many({"chat_id": channel_int})
+            await db.dbs["tracking"]["subtitles"].delete_many({"chat_id": channel_int, 'msg_id': {'$gte': low, '$lte': high}})
         except Exception as e:
             LOGGER.warning(f"[ScanManager] subtitle purge failed for {channel_int}: {e}")
         for i in range(1, db.current_db_index + 1):
@@ -757,15 +807,10 @@ class ScanManager:
                 remaining = []
                 changed = False
                 for q in movie.get("telegram", []):
-                    try:
-                        decoded = await decode_string(q["id"])
-                        if int(decoded["chat_id"]) == channel_int:
-                            purged += 1
-                            changed = True
-                            continue
-                    except Exception:
-                        pass
-                    remaining.append(q)
+                    kept, removed = await retained(q)
+                    changed = changed or removed
+                    if kept is not None:
+                        remaining.append(kept)
                 if changed:
                     if remaining:
                         movie["telegram"] = remaining
@@ -779,15 +824,10 @@ class ScanManager:
                     for episode in season.get("episodes", []):
                         remaining = []
                         for q in episode.get("telegram", []):
-                            try:
-                                decoded = await decode_string(q["id"])
-                                if int(decoded["chat_id"]) == channel_int:
-                                    purged += 1
-                                    tv_changed = True
-                                    continue
-                            except Exception:
-                                pass
-                            remaining.append(q)
+                            kept, removed = await retained(q)
+                            tv_changed = tv_changed or removed
+                            if kept is not None:
+                                remaining.append(kept)
                         episode["telegram"] = remaining
                     season["episodes"] = [ep for ep in season["episodes"] if ep.get("telegram")]
                 tv["seasons"] = [se for se in tv["seasons"] if se.get("episodes")]
