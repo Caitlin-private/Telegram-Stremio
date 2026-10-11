@@ -12,6 +12,7 @@ from Backend.helper.settings_manager import SettingsManager
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import StreamBot, get_streambot_url
 from Backend.helper.pyro import artwork_available, defer_artwork
+from Backend.helper.poster_provider import _poster_url, _apply_fanart
 
 _announcement_lock = Lock()
 
@@ -53,27 +54,37 @@ async def _store_announcement_msg(media_type: str, tmdb_id, chat_id, message_id:
 
 
 def _build_caption(info: dict) -> str:
-    is_tv = info.get("media_type") == "tv"
-    title = escape(str(info.get("title") or "Unknown"))
-    header = f"{'📺' if is_tv else '🎬'} <b>{title}</b>"
-    if info.get("year"):
-        header += f" ({escape(str(info['year']))})"
+    # Limit decoded UTF-16 length before escaping for Telegram's photo caption.
+    def text(value, limit):
+        value = ' '.join(str(value or '').split())
+        if len(value.encode('utf-16-le')) // 2 > limit:
+            value = value.encode('utf-16-le')[:(limit - 1) * 2].decode('utf-16-le', errors='ignore').rstrip() + '…'
+        return escape(value)
 
-    lines = [header, "", f"🗂 <b>Type:</b> {'Series' if is_tv else 'Movie'}"]
+    is_tv = info.get("media_type") in ("tv", "series")
+    title = text(info.get('title_english') or info.get('title') or 'Unknown', 180)
+    lines = ["✨ <b>New on Caitlin Stream</b>", "", f"{'📺' if is_tv else '🎬'} <b>{title}</b>"]
+    details = ['TV Series' if is_tv else 'Movie']
+    year = info.get('year') or info.get('release_year')
+    if year:
+        details.append(text(year, 20))
     if info.get("rate"):
         try:
-            lines.append(f"⭐ <b>Rating:</b> {round(float(info['rate']), 1)}")
+            rating = float(info['rate'])
+            if 0 < rating <= 10:
+                details.append(f'⭐ {rating:.1f}/10')
         except (TypeError, ValueError):
             pass
+    lines.append(' · '.join(details))
     genres = info.get("genres") or []
+    if isinstance(genres, str):
+        genres = [genres]
     if genres:
-        lines.append(f"🎭 <b>Genres:</b> {escape(', '.join(str(g) for g in genres[:4]))}")
-
-    desc = (info.get("description") or "").strip()
+        lines.append(f"🎭 {text(', '.join(str(g) for g in genres[:4]), 100)}")
+    desc = text(info.get('description'), 420)
     if desc:
-        if len(desc) > 320:
-            desc = desc[:317].rstrip() + "..."
-        lines += ["", f"<i>{escape(desc)}</i>"]
+        lines += ["", desc]
+    lines += ['', '<i>Choose a player below, or open View media for files.</i>']
     return "\n".join(lines)
 
 
@@ -89,10 +100,11 @@ def _build_markup(info: dict):
         ])
     bot_url = get_streambot_url()
     if bot_url and bot_url != "https://t.me/":
-        rows.append([InlineKeyboardButton("🤖 Get Addon", url=bot_url)])
+        bot_buttons = [InlineKeyboardButton("🤖 Get Addon", url=bot_url)]
         payload = media_payload(info.get("media_type"), info.get("tmdb_id"))
         if payload:
-            rows.append([InlineKeyboardButton("🎬 View media", url=f"{bot_url}?start={payload}")])
+            bot_buttons.append(InlineKeyboardButton("📂 View media", url=f"{bot_url}?start={payload}"))
+        rows.append(bot_buttons)
     return InlineKeyboardMarkup(rows) if rows else None
 
 
@@ -111,14 +123,17 @@ async def _announce_serial(info: dict) -> None:
         return
 
     caption = _build_caption(info)
-    poster = info.get("backdrop") or info.get("poster")
     markup = _build_markup(info)
 
     try:
         sent = None
-        if poster and artwork_available(StreamBot):
+        if artwork_available(StreamBot):
             try:
-                sent = await StreamBot.send_photo(chat, poster, caption=caption,
+                artwork = {'poster': _poster_url(info.get('imdb_id'), info.get('poster') or info.get('backdrop'),
+                                                 info.get('tmdb_id'), info.get('media_type'))}
+                await _apply_fanart(artwork, info)
+                if artwork.get('poster'):
+                    sent = await StreamBot.send_photo(chat, artwork['poster'], caption=caption,
                                            parse_mode=ParseMode.HTML, reply_markup=markup)
             except FloodWait as e:
                 defer_artwork(StreamBot, e.value)
