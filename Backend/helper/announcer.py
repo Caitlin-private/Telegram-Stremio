@@ -1,4 +1,10 @@
+import asyncio
 from asyncio import create_task, Lock, sleep
+from io import BytesIO
+import re
+
+import httpx
+from PIL import Image, ImageOps
 from datetime import datetime
 from html import escape
 
@@ -13,9 +19,49 @@ from Backend.logger import LOGGER
 from Backend.pyrofork.bot import StreamBot, get_streambot_url
 from Backend.helper.pyro import artwork_available, defer_artwork
 from Backend.helper.poster_provider import _poster_url, _apply_fanart
-from Backend.helper.announcement_image import announcement_photo
 
 _announcement_lock = Lock()
+
+MAX_BYTES = 8 * 1024 * 1024
+MAX_PIXELS = 12_000_000
+FRAME_SIZE = 960
+PADDING = 12
+
+
+def frame_poster(data: bytes) -> BytesIO:
+    with Image.open(BytesIO(data)) as source:
+        if source.width * source.height > MAX_PIXELS:
+            raise ValueError('Announcement poster dimensions exceed the limit')
+        # Contain, never fit/crop: all provider badges and title text survive.
+        image = ImageOps.exif_transpose(source)
+        image.thumbnail((FRAME_SIZE - PADDING * 2, FRAME_SIZE - PADDING * 2), Image.Resampling.LANCZOS)
+        frame_size = max(image.size) + PADDING * 2
+        image = image.convert('RGBA')
+        with Image.new('RGB', (frame_size, frame_size), (24, 24, 32)) as canvas:
+            canvas.paste(image, ((frame_size-image.width)//2, (frame_size-image.height)//2), image)
+            output = BytesIO()
+            canvas.save(output, format='JPEG', quality=85)
+        image.close()
+    output.name = 'caitlin-poster.jpg'
+    output.seek(0)
+    return output
+
+
+async def announcement_photo(url: str) -> BytesIO:
+    async def download():
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+            async with client.stream('GET', url) as response:
+                response.raise_for_status()
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(data) + len(chunk) > MAX_BYTES:
+                        raise ValueError('Announcement poster download exceeds the limit')
+                    data.extend(chunk)
+                return bytes(data)
+    data = await asyncio.wait_for(download(), timeout=25)
+    # Image processing must not block ingestion/playback on the event loop.
+    return await asyncio.to_thread(frame_poster, data)
+
 
 
 #----- Accept either a numeric channel id (-100...) or an @username
@@ -58,8 +104,10 @@ def _build_caption(info: dict) -> str:
     is_tv = info.get("media_type") == "tv"
     title = escape(str(info.get("title") or "Unknown"))
     header = f"{'📺' if is_tv else '🎬'} <b>{title}</b>"
-    if info.get("year"):
-        header += f" ({escape(str(info['year']))})"
+    year = str(info.get("year") or "").strip()
+    # Metadata titles sometimes already contain the release year.
+    if year and not re.search(r"(?<!\d)" + re.escape(year) + r"(?!\d)", str(info.get("title") or "")):
+        header += f" ({escape(year)})"
 
     lines = [header, "", f"🗂 <b>Type:</b> {'Series' if is_tv else 'Movie'}"]
     if info.get("rate"):
