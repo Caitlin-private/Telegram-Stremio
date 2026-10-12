@@ -26,6 +26,12 @@ from Backend.helper.global_search import global_search, is_global_search_enabled
 from Backend.helper.metadata.providers.cinemeta import get_detail, get_season
 from Backend.helper.metadata import COMBINED_SEASON, COMBINED_EPISODE_BASE, tmdb_api_key
 from Backend.helper.database import convert_objectid_to_str
+from Backend.helper.local_collections import (
+    ensure_library_collection_index,
+    get_cached_movie_collection_index,
+    get_tmdb_ids_for_collection,
+    tmdb_image_url,
+)
 from Backend.helper.split_files import parse_combined_episodes, combined_name_key
 from Backend.helper.settings_manager import SettingsManager
 from Backend.helper.stream_formatter import format_stream
@@ -128,6 +134,131 @@ def _merge_filters(*filters) -> dict:
     if not parts:
         return {}
     return parts[0] if len(parts) == 1 else {"$and": parts}
+
+
+def _display_library_collection_name(name: Optional[str]) -> str:
+    """Keep tile names compact by removing TMDB's generic trailing 'Collection'."""
+    original = str(name or "Movie Collection").strip()
+    display = re.sub(r"\s+collection$", "", original, flags=re.IGNORECASE).strip()
+    if not display or display.casefold() in {"the", "a", "an"}:
+        return original
+    return display
+
+
+async def _build_library_collection_groups(token_data: Optional[dict] = None) -> list[dict]:
+    """Return franchise groups represented by visible, locally stored movies only."""
+    token_data = token_data or {}
+    # The first request kicks off a persisted background backfill. Wait briefly for a
+    # small initial batch, never for a full-library TMDB scan.
+    await ensure_library_collection_index(wait_seconds=2.0)
+    collection_index = await get_cached_movie_collection_index()
+    if not collection_index:
+        return []
+
+    eligible_ids = list(collection_index.keys())
+    query = _merge_filters(
+        {"tmdb_id": {"$in": eligible_ids}},
+        _visibility_query(token_data),
+        _not_exclusive_clause(),
+    )
+    by_tmdb_id: dict[int, dict] = {}
+    storage_keys = [key for key in db.dbs if str(key).startswith("storage_")]
+    storage_keys.sort(
+        key=lambda key: int(str(key).split("_", 1)[1]) if str(key).split("_", 1)[1].isdigit() else 0,
+        reverse=True,
+    )
+
+    for db_key in storage_keys:
+        try:
+            cursor = db.dbs[db_key]["movie"].find(query)
+            async for item in cursor:
+                try:
+                    tmdb_id = int(item.get("tmdb_id"))
+                except (TypeError, ValueError):
+                    continue
+                if tmdb_id not in collection_index or tmdb_id in by_tmdb_id:
+                    continue
+                if not _token_can_view(
+                    item.get("visibility") or "public",
+                    item.get("allowed_tokens") or [],
+                    token_data,
+                ):
+                    continue
+                by_tmdb_id[tmdb_id] = convert_objectid_to_str(item)
+        except Exception as exc:
+            LOGGER.warning(f"[Library Collections] Could not query {db_key}: {exc}")
+
+    grouped: dict[int, dict] = {}
+    for tmdb_id, item in by_tmdb_id.items():
+        metadata = collection_index.get(tmdb_id) or {}
+        try:
+            collection_id = int(metadata.get("collection_id"))
+        except (TypeError, ValueError):
+            continue
+        if collection_id <= 0:
+            continue
+        group = grouped.setdefault(collection_id, {
+            "collection_id": collection_id,
+            "title": _display_library_collection_name(metadata.get("collection_name")),
+            "poster_path": metadata.get("poster_path"),
+            "backdrop_path": metadata.get("backdrop_path"),
+            "items": [],
+        })
+        group["items"].append(item)
+        if not group.get("poster_path") and metadata.get("poster_path"):
+            group["poster_path"] = metadata.get("poster_path")
+        if not group.get("backdrop_path") and metadata.get("backdrop_path"):
+            group["backdrop_path"] = metadata.get("backdrop_path")
+
+    def _year_key(item: dict):
+        try:
+            year = int(item.get("release_year"))
+        except (TypeError, ValueError):
+            year = 9999
+        return (year, (item.get("title") or "").casefold())
+
+    groups = []
+    for collection_id, group in grouped.items():
+        # Only expose franchises where at least 2 titles exist in the library
+        # to avoid cluttering Nuvio with single-movie "collections".
+        if len(group["items"]) < 2:
+            continue
+
+        group["items"].sort(key=_year_key)
+        local_poster = next((it.get("poster") for it in group["items"] if it.get("poster")), None)
+        local_backdrop = next((it.get("backdrop") for it in group["items"] if it.get("backdrop")), None)
+        group["poster"] = tmdb_image_url(group.get("poster_path")) or (
+            tmdb_image_url(local_poster) if isinstance(local_poster, str) and local_poster.startswith("/") else local_poster
+        )
+        group["backdrop"] = tmdb_image_url(group.get("backdrop_path"), "w1280") or (
+            tmdb_image_url(local_backdrop, "w1280") if isinstance(local_backdrop, str) and local_backdrop.startswith("/") else local_backdrop
+        )
+        group["catalog_id"] = f"library_collection_{collection_id}"
+        group["folder_id"] = f"library-collection-{collection_id}"
+        groups.append(group)
+
+    groups.sort(key=lambda group: (str(group.get("title") or "").casefold(), group["collection_id"]))
+    return groups
+
+
+def _library_collection_folder(group: dict, addon_id: str) -> dict:
+    """Nuvio folder representation for one dynamic, DB-backed movie franchise."""
+    catalog_id = group["catalog_id"]
+    source = {"type": "movie", "addonId": addon_id, "provider": "addon", "catalogId": catalog_id}
+    folder = {
+        "id": group["folder_id"],
+        "title": group["title"],
+        "sources": [dict(source)],
+        "hideTitle": False,
+        "tileShape": "landscape",
+        "catalogSources": [{"type": "movie", "addonId": addon_id, "catalogId": catalog_id}],
+        "focusGifEnabled": False,
+    }
+    if group.get("poster"):
+        folder["coverImageUrl"] = group["poster"]
+    if group.get("backdrop"):
+        folder["heroBackdropUrl"] = group["backdrop"]
+    return folder
 
 
 _TMDB_TRENDING_CACHE: dict = {}
@@ -537,6 +668,19 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
                     })
         except Exception:
             pass
+
+        # Dynamic TMDB-franchise catalogs backed strictly by media available in this DB.
+        try:
+            for group in await _build_library_collection_groups(token_data):
+                catalogs.append({
+                    "type": "movie",
+                    "id": group["catalog_id"],
+                    "name": group["title"],
+                    "extra": [{"name": "skip"}, {"name": "search", "isRequired": False}],
+                    "extraSupported": ["skip", "search"],
+                })
+        except Exception as exc:
+            LOGGER.warning(f"[Library Collections] Could not add dynamic catalogs to manifest: {exc}")
 
         try:
             order = await db.get_catalog_order()
@@ -1246,7 +1390,26 @@ async def build_nuvio_collection_data(token: str, collection_type: str = "full",
         return [ott_collection]
     elif collection_type == "explore":
         return [explore_collection]
-    return [ott_collection, explore_collection]
+
+    library_groups = await _build_library_collection_groups(token_data)
+    library_folders = [_library_collection_folder(group, addon_id) for group in library_groups]
+    library_collection = {
+        "id": "local-library-collections",
+        "title": "Library Collections",
+        "folders": library_folders,
+        "pinToTop": True,
+        "viewMode": "TABBED_GRID",
+        "showAllTab": True,
+        "focusGlowEnabled": True,
+    }
+
+    if collection_type in {"library", "local"}:
+        return [library_collection] if library_folders else []
+    
+    collections = [ott_collection, explore_collection]
+    if library_folders:
+        collections.append(library_collection)
+    return collections
 
 
 #----- Dynamic Nuvio Collection JSON for this token
@@ -1263,6 +1426,12 @@ async def get_nuvio_ott_collection(token: str, token_data: dict = Depends(verify
 @router.get("/{token}/nuvio-explore-collection.json")
 async def get_nuvio_explore_collection(token: str, token_data: dict = Depends(verify_token)):
     return await build_nuvio_collection_data(token, "explore", token_data)
+
+
+@router.get("/{token}/nuvio-library-collection.json")
+@router.get("/{token}/nuvio-library-collections.json")
+async def get_nuvio_library_collections(token: str, token_data: dict = Depends(verify_token)):
+    return await build_nuvio_collection_data(token, "library", token_data)
 
 
 #----- Catalog listing (latest/popular/custom, with genre/search/skip)
@@ -1295,7 +1464,73 @@ async def get_catalog(token: str, media_type: str, id: str, extra: Optional[str]
     page = (stremio_skip // PAGE_SIZE) + 1
 
     try:
-        if id.startswith("custom_") or id.startswith("auto_"):
+        if id.startswith("library_collection_"):
+            if media_type != "movie":
+                return {"metas": []}
+            try:
+                collection_id = int(id.removeprefix("library_collection_"))
+            except (TypeError, ValueError):
+                return {"metas": []}
+
+            collection_tmdb_ids = await get_tmdb_ids_for_collection(collection_id)
+            if not collection_tmdb_ids:
+                return {"metas": []}
+
+            collection_query_parts = [
+                {"tmdb_id": {"$in": collection_tmdb_ids}},
+                _visibility_query(token_data),
+                _not_exclusive_clause(),
+            ]
+            if genre_filter:
+                collection_query_parts.append({"genres": {"$in": [genre_filter]}})
+            collection_query = _merge_filters(*collection_query_parts)
+            by_tmdb_id = {}
+            storage_keys = [key for key in db.dbs if str(key).startswith("storage_")]
+            storage_keys.sort(
+                key=lambda key: int(str(key).split("_", 1)[1]) if str(key).split("_", 1)[1].isdigit() else 0,
+                reverse=True,
+            )
+            for db_key in storage_keys:
+                try:
+                    cursor = db.dbs[db_key]["movie"].find(collection_query)
+                    async for item in cursor:
+                        try:
+                            tmdb_id = int(item.get("tmdb_id"))
+                        except (TypeError, ValueError):
+                            continue
+                        if tmdb_id in by_tmdb_id:
+                            continue
+                        if not _token_can_view(
+                            item.get("visibility") or "public",
+                            item.get("allowed_tokens") or [],
+                            token_data,
+                        ):
+                            continue
+                        if search_query:
+                            q = search_query.casefold()
+                            candidates = (
+                                item.get("title") or "",
+                                item.get("title_english") or "",
+                                item.get("original_title") or "",
+                            )
+                            if not any(q in str(candidate).casefold() for candidate in candidates):
+                                continue
+                        item = convert_objectid_to_str(item)
+                        by_tmdb_id[tmdb_id] = item
+                except Exception as exc:
+                    LOGGER.warning(f"[Library Collections] Catalog query failed for {db_key}: {exc}")
+
+            def _collection_sort_key(item):
+                try:
+                    year = int(item.get("release_year"))
+                except (TypeError, ValueError):
+                    year = 9999
+                return year, (item.get("title") or "").casefold()
+
+            local_items = sorted(by_tmdb_id.values(), key=_collection_sort_key)
+            start = max(stremio_skip, 0)
+            items = local_items[start:start + PAGE_SIZE]
+        elif id.startswith("custom_") or id.startswith("auto_"):
             catalog_id = id.removeprefix("custom_")
             catalog = await db.get_custom_catalog(catalog_id)
             if not catalog:

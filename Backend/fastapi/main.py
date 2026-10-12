@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from Backend import __version__
+from Backend.logger import LOGGER
 from Backend.fastapi.themes import DEFAULT_THEME, DEFAULT_STYLE, get_theme
 from Backend.fastapi.routes.api_routes import (
     add_custom_catalog_item_api,
@@ -176,6 +177,13 @@ async def _startup():
     asyncio.create_task(decay_client_failures())
     from Backend.helper.version_check import version_check_loop
     asyncio.create_task(version_check_loop())
+    # Warm the persistent franchise metadata cache in the background so Library
+    # Collections can be ready before the first Nuvio profile request.
+    try:
+        from Backend.helper.local_collections import ensure_library_collection_index
+        await ensure_library_collection_index()
+    except Exception as exc:
+        LOGGER.warning(f"[Library Collections] Startup index warm-up skipped: {exc}")
 
 
 #----- Streaming and Stremio routers
