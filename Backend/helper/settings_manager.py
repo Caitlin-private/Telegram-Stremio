@@ -10,6 +10,7 @@ from Backend.logger import LOGGER
 
 #----- Default values (used when nothing exists in the DB yet)
 _DEFAULTS: Dict[str, Any] = {
+    "stream_notice": {},
     "replace_mode": True,
     "duplicate_protection": False,
     "allow_multipart_video": False,
@@ -322,6 +323,10 @@ class Settings:
         return list(self._d.get("extra_databases") or [])
 
     #----- Serialisation
+    @property
+    def stream_notice(self) -> dict:
+        return self._d.get('stream_notice') or {}
+
     def to_dict(self) -> Dict[str, Any]:
         return dict(self._d)
 

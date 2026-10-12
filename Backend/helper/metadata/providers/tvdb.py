@@ -409,15 +409,12 @@ def _english_translation(doc: dict) -> tuple[Optional[str], Optional[str]]:
 
     eng_name = None
     for item in tr.get("nameTranslations") or []:
-        if not isinstance(item, dict) or item.get("isAlias"):
+        if not isinstance(item, dict):
             continue
 
         language = str(item.get("language") or "").lower()
-        if language in ("eng", "en") and item.get("name"):
-            if item.get("isPrimary"):
-                eng_name = item["name"]
-                break
-            eng_name = eng_name or item["name"]
+        if language in ("eng", "en"):
+            eng_name = item.get("name") or eng_name
 
     eng_overview = None
     for item in tr.get("overviewTranslations") or []:

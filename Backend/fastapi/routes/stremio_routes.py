@@ -1107,6 +1107,13 @@ async def get_streams(
     for stream in streams:
         stream.pop('video_part', None)
         stream.pop('video_group', None)
+    # User override wins; an explicit disabled override hides the global notice.
+    notice = token_data.get('stream_notice', SettingsManager.current().stream_notice)
+    if isinstance(notice, dict) and notice.get('enabled') and notice.get('url'):
+        streams.insert(0, {'name': notice.get('name') or '📢 Message',
+                           'title': notice.get('message') or '',
+                           'description': notice.get('message') or '',
+                           'externalUrl': notice['url']})
     return {"streams": streams}
 
 #----- Configure/install landing page rendered as HTML for a token
