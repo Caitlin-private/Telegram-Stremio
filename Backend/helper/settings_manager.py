@@ -11,6 +11,7 @@ from Backend.logger import LOGGER
 #----- Default values (used when nothing exists in the DB yet)
 _DEFAULTS: Dict[str, Any] = {
     "stream_notice": {},
+    "forward_subscriber_messages": True,
     "replace_mode": True,
     "duplicate_protection": False,
     "allow_multipart_video": False,
@@ -326,6 +327,10 @@ class Settings:
     @property
     def stream_notice(self) -> dict:
         return self._d.get('stream_notice') or {}
+
+    @property
+    def forward_subscriber_messages(self) -> bool:
+        return bool(self._d.get('forward_subscriber_messages', True))
 
     def to_dict(self) -> Dict[str, Any]:
         return dict(self._d)
