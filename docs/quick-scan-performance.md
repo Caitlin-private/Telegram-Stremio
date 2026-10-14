@@ -23,8 +23,8 @@ bot remains reserved for live ingestion unless no worker qualifies.
   sync. Unfinished enrichment is shown as pending and retried on the next flush
   or scan; completion does not imply all deferred API work succeeded.
 - One scan-local HTTP pool serves TMDb, TVDB, Cinemeta, Kitsu, ani.zip and catalog
-  requests. Each host has at most four active requests, starts spaced by 0.1s,
-  and its own HTTP 429 cooldown. Retry-After supports seconds and HTTP dates.
+  requests. The pool allows twelve concurrent connections in total. Healthy hosts have
+  no artificial request spacing; each host retains its own HTTP 429 cooldown. Retry-After supports seconds and HTTP dates.
   These are conservative local ceilings, not guarantees about provider quotas.
   Repeated 429s keep the request pending until recovery or Stop. Catalog calls
   also retain their existing timeouts, leaving interrupted work pending.
@@ -76,3 +76,13 @@ For deployment measurements, compare the same message range and worker count.
 Record wall-clock time, indexed files/minute, API requests/429s, FloodWait time,
 metadata time, DB-lock wait and catalog time. Distinguish cold and warm caches.
 No production speedup has been measured by these offline tests.
+
+## Speed-regression correction
+
+The earlier ZIP added a four-request per-host ceiling and 100 ms spacing even
+for healthy metadata providers. Those restrictions have been removed. The shared
+HTTP connection pool still caps total active connections at twelve, and actual
+HTTP 429 responses still trigger Retry-After backoff. The non-deletion policy,
+parked Telegram cooldowns, database logic, and twelve processing slots remain.
+A regression test checks that twelve healthy requests can start concurrently
+without artificial wait. This is not a live deployment throughput benchmark.

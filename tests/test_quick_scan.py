@@ -321,6 +321,26 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics['api_throttles'], 1)
         self.assertEqual(metrics['api_requests'], 2)
 
+    async def test_healthy_provider_has_twelve_slots_and_no_artificial_wait(self):
+        active = maximum = 0
+        all_started = asyncio.Event()
+        async def request(client, method, url, **kwargs):
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            if active == 12:
+                all_started.set()
+            await asyncio.wait_for(all_started.wait(), 1)
+            active -= 1
+            return httpx.Response(200, json={}, request=httpx.Request(method, url))
+        metrics = self.metrics()
+        async with ScanHTTPClient(asyncio.Event(), metrics) as client:
+            with patch.object(httpx.AsyncClient, 'request', request):
+                await asyncio.gather(*(client.get(f'https://healthy.example/{i}') for i in range(12)))
+        self.assertEqual(maximum, 12)
+        self.assertEqual(metrics['api_wait_seconds'], 0)
+        self.assertEqual(metrics['api_throttles'], 0)
+
     async def test_429_retries_same_request_until_success(self):
         attempts = []
         async def request(client, method, url, **kwargs):

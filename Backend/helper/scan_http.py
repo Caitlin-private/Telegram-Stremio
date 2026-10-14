@@ -27,16 +27,16 @@ def retry_after_seconds(value, default=2.0):
 
 class _HostGate:
     def __init__(self):
-        self.slots = asyncio.Semaphore(4)
+        self.slots = asyncio.Semaphore(12)
         self.lock = asyncio.Lock()
-        self.next_request = 0.0
         self.cooldown = 0.0
 
 
 class ScanHTTPClient(httpx.AsyncClient):
-    """Pool connections; pace each host independently and honor HTTP 429.
+    """Pool connections; back off per host only when it returns HTTP 429.
 
-    These are conservative local ceilings, not advertised provider quotas.
+    The connection pool bounds total HTTP concurrency at twelve.
+    Healthy providers have no artificial inter-request delay.
     A throttled request stays pending until retry or Stop, rather than becoming
     a metadata miss (which Quick Scan could interpret as a rejected file).
     """
@@ -69,10 +69,9 @@ class ScanHTTPClient(httpx.AsyncClient):
             async with gate.slots:
                 async with gate.lock:
                     while True:
-                        await self.wait(max(gate.next_request, gate.cooldown) - time.monotonic())
+                        await self.wait(gate.cooldown - time.monotonic())
                         if time.monotonic() >= gate.cooldown:
                             break
-                    gate.next_request = time.monotonic() + 0.1
                 self.metrics['api_requests'] += 1
                 response = await super().request(method, url, **kwargs)
                 if response.status_code != 429:
