@@ -413,7 +413,7 @@
     const dbIndex = buttonElement.getAttribute('data-db-index');
     const title = buttonElement.getAttribute('data-title');
 
-    if (!confirm(`Delete "${title}" and all its streams?\n\nIts backing Telegram messages will also be deleted. This cannot be undone.`)) return;
+    if (!confirm(`Delete "${title}" and all its files?\n\nIts backing Telegram messages will also be deleted. This cannot be undone.`)) return;
 
     bulkBusy = true;
     syncMediaSelection();

@@ -26,7 +26,7 @@ async def library_totals(db):
         except Exception:
             size_available = False
     return {'movies': movies, 'series': series, 'episodes': episodes, 'streams': streams,
-            'files': movies + episodes, 'size_bytes': size if size_available else None,
+            'files': streams, 'titles': movies + series, 'size_bytes': size if size_available else None,
             'size': f'{size / 1024**2:.2f} MiB' if size_available else 'Unavailable'}
 
 
@@ -59,7 +59,8 @@ def format_stats(s):
         f'🎬 Movies: {s["movies"]:,}\n'
         f'📺 TV shows: {s["tv_shows"]:,}\n'
         f'🎞️ Episodes: {s["episodes"]:,}\n'
-        f'🔗 Streams: {s["streams"]:,}\n'
+        f'📂 Files: {s["files"]:,}\n'
+        f'📚 Total titles: {s["titles"]:,}\n'
         f'🗄️ DB size: {s["db_size"]}\n\n'
         '🟢 Live Activity\n'
         f'▶️ Live streams: {s["live_streams"]:,}\n'

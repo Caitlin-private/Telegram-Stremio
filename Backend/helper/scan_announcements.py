@@ -49,6 +49,7 @@ def format_notice(event, report, counts, elapsed, totals=None):
         for key, label in (('movies', '🎬 Total movies now'),
                            ('series', '📺 Total TV series now'),
                            ('files', '📂 Total Files in the Database'),
+                           ('titles', '📚 Total titles'),
                            ('size', '🗄️ Database size')):
             value = totals.get(key, 'Unavailable')
             value = f'{value:,}' if isinstance(value, int) else escape(str(value))

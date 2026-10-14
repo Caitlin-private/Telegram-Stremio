@@ -565,7 +565,7 @@
             <span style="font-weight:400;text-transform:none;letter-spacing:0">
                 — files sent here are <strong>not</strong> auto-indexed with TMDb/IMDb.
                 Add them by hand from Media Management by pasting a message link.
-                Listing a channel here also cleans up its streams when a file is deleted.</span>
+                Listing a channel here also cleans up its file entries when a file is deleted.</span>
         </label>
         <div class="multi-list-items" id="manual_channels_items">
             {% for ch in settings.manual_channels %}
@@ -1956,7 +1956,7 @@ function rebuildDatabaseList(dbList) {
 const STAT_FIELDS = [
     ['ram_display', 'RAM Free / Total'],
     ['movies', 'Movies'], ['tv_shows', 'TV Shows'], ['episodes', 'Episodes'],
-    ['streams', 'Streams'], ['db_size', 'DB Size'],
+    ['files', 'Files'], ['titles', 'Total titles'], ['db_size', 'DB Size'],
     ['auth_channels', 'AUTH Channels'], ['version', 'Version'],
 ];
 let logLiveTimer = null;

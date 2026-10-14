@@ -2426,6 +2426,8 @@ async def get_db_stats_api() -> dict:
                 "tv_shows": totals['series'],
                 "episodes": totals['episodes'],
                 "streams": totals['streams'],
+                "files": totals['files'],
+                "titles": totals['titles'],
                 "uptime": get_readable_time(int(time() - StartTime)),
                 "db_size": get_readable_file_size(totals['size_bytes']) if totals['size_bytes'] is not None else 'Unavailable',
                 "storage_dbs": db.current_db_index,
