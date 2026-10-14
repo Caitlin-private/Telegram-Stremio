@@ -49,11 +49,16 @@ async def cached_call(store: dict, key, ns: str, producer):
     flight_key = (ns, key)
     fut = _INFLIGHT.get(flight_key)
     if fut is not None:
-        return await fut
+        return await asyncio.shield(fut)
     fut = asyncio.get_running_loop().create_future()
     _INFLIGHT[flight_key] = fut
     try:
         result = await producer()
+    except asyncio.CancelledError:
+        _INFLIGHT.pop(flight_key, None)
+        if not fut.done():
+            fut.cancel()
+        raise
     except Exception as e:
         _INFLIGHT.pop(flight_key, None)
         if not fut.done():

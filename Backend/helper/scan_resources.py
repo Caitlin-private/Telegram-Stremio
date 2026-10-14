@@ -17,6 +17,7 @@ async def select_scan_clients(main, channel, limit, quick, call):
     candidates = [c for key, c in sorted(multi_clients.items())
                   if key >= 0 and c is not main and getattr(c, 'is_connected', False)]
     selected = []
+    effective_limit = limit if quick else (limit or 8)
     skip = SettingsManager.current().skip_channel
     for client in candidates + [main]:
         if client is main and selected:
@@ -44,7 +45,7 @@ async def select_scan_clients(main, channel, limit, quick, call):
             if type(exc).__name__ == '_ScanStopped':
                 raise
             LOGGER.warning(f'[Scan] Worker is not eligible for {channel}: {type(exc).__name__}')
-        if len(selected) >= (limit or 8):
+        if effective_limit and len(selected) >= effective_limit:
             break
     if not selected:
         raise RuntimeError('No eligible scan bot. Grant a connected bot delete permission in the source channel and post permission in the skip channel.')

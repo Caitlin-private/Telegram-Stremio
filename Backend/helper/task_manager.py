@@ -15,6 +15,7 @@ from pyrogram.errors import (
 )
 
 from Backend.logger import LOGGER
+from Backend.helper.scan_context import preserve_source_media
 import Backend.pyrofork.bot as botmod
 from Backend.pyrofork.bot import StreamBot
 
@@ -111,6 +112,8 @@ async def delete_message(chat_id: int, msg_id: int):
 
 
 async def delete_messages_batch(chat_id: int, msg_ids: List[int]):
+    if preserve_source_media.get():
+        return  # Quick Scan may update catalog references, never delete source media.
     if not msg_ids:
         return
 

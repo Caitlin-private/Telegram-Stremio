@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from Backend.helper.scan_http import quick_scan_http
+
 from Backend.helper.metadata.common import (
     ensure_media_ids,
     API_SEMAPHORE,
@@ -57,6 +59,9 @@ def tvdb_api_key() -> str:
 
 
 async def _get_client() -> httpx.AsyncClient:
+    scan_client = quick_scan_http.get()
+    if scan_client is not None:
+        return scan_client
     global _client
     async with _client_lock:
         if _client is None or _client.is_closed:

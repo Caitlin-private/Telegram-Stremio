@@ -5,6 +5,8 @@ from typing import Optional
 
 from themoviedb import aioTMDb
 
+from Backend.helper.scan_http import quick_scan_http
+
 from Backend.config import Telegram
 from Backend.helper.metadata.common import (
     ensure_media_ids,
@@ -44,6 +46,9 @@ def tmdb_api_key() -> str:
 def get_tmdb_client() -> aioTMDb:
     global _tmdb_client, _tmdb_client_key
     current_key = tmdb_api_key()
+    scan_client = quick_scan_http.get()
+    if scan_client is not None:
+        return scan_client.tmdb_client(current_key)
     if _tmdb_client is None or _tmdb_client_key != current_key:
         _tmdb_client = aioTMDb(key=current_key, language="en-US", region="US")
         _tmdb_client_key = current_key

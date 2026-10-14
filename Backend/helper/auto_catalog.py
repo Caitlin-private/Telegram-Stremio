@@ -6,6 +6,7 @@ import httpx
 
 from Backend.helper.metadata import tmdb_api_key
 from Backend.logger import LOGGER
+from Backend.helper.scan_http import quick_scan_http
 
 AUTO_CATALOG_REGION = "IN"
 AUTO_SYNC_CONCURRENCY = 5
@@ -281,11 +282,16 @@ async def _cached_call(store: dict, key, ns: str, producer):
     flight_key = (ns, key)
     fut = _TMDB_INFLIGHT.get(flight_key)
     if fut is not None:
-        return await fut
+        return await asyncio.shield(fut)
     fut = asyncio.get_running_loop().create_future()
     _TMDB_INFLIGHT[flight_key] = fut
     try:
         result = await producer()
+    except asyncio.CancelledError:
+        _TMDB_INFLIGHT.pop(flight_key, None)
+        if not fut.done():
+            fut.cancel()
+        raise
     except Exception as e:
         _TMDB_INFLIGHT.pop(flight_key, None)
         if not fut.done():
@@ -347,6 +353,10 @@ async def _fetch_tmdb_data(client: httpx.AsyncClient, doc: dict) -> tuple[dict, 
         _cached_call(_TMDB_PROVIDERS_CACHE, (media_type, tmdb_id), "providers", _providers),
         return_exceptions=True,
     )
+    if quick_scan_http.get() is client:
+        for result in (details, providers):
+            if isinstance(result, Exception):
+                raise result
     details = details if not isinstance(details, Exception) else {}
     providers = providers if not isinstance(providers, Exception) else {}
     return details, providers
@@ -401,11 +411,13 @@ async def _classify_one(db, client: httpx.AsyncClient, semaphore: asyncio.Semaph
                 )
             return doc, classification
         except Exception as e:
+            if quick_scan_http.get() is client:
+                raise  # Keep deferred scan work pending after timeout/failure.
             LOGGER.warning(f"Auto catalog classification failed for {doc.get('title')} ({doc.get('tmdb_id')}): {e}")
             return doc, {"auto_tags": doc.get("auto_tags", []) or []}
 
 
-async def sync_single_media(db, *, tmdb_id, media_type: str) -> dict:
+async def sync_single_media(db, *, tmdb_id, media_type: str, client=None, enabled_names=None) -> dict:
     if tmdb_id in (None, "", 0):
         return {"ok": False, "reason": "no_tmdb_id"}
 
@@ -414,10 +426,10 @@ async def sync_single_media(db, *, tmdb_id, media_type: str) -> dict:
     except (TypeError, ValueError):
         return {"ok": False, "reason": "bad_tmdb_id"}
 
-    if not await has_auto_catalog_settings(db):
-        return {"ok": False, "reason": "not_configured"}
-
-    enabled_names = await _enabled_catalog_names(db)
+    if enabled_names is None:
+        if not await has_auto_catalog_settings(db):
+            return {"ok": False, "reason": "not_configured"}
+        enabled_names = await _enabled_catalog_names(db)
     if not enabled_names:
         return {"ok": False, "reason": "no_enabled_catalogs"}
 
@@ -435,8 +447,11 @@ async def sync_single_media(db, *, tmdb_id, media_type: str) -> dict:
     timeout = httpx.Timeout(18.0, connect=10.0)
     semaphore = asyncio.Semaphore(1)
     async with _instant_sync_semaphore:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        if client is not None:
             media_doc, classification = await _classify_one(db, client, semaphore, doc, enabled_names)
+        else:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                media_doc, classification = await _classify_one(db, client, semaphore, doc, enabled_names)
 
     tags = [] if media_doc.get("exclusive_catalog_id") else [
         tag for tag in (classification.get("auto_tags") or []) if tag in enabled_names

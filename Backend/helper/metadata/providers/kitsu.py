@@ -6,6 +6,8 @@ import re
 from typing import List, Optional
 
 import httpx
+
+from Backend.helper.scan_http import quick_scan_http
 from rapidfuzz import fuzz
 
 from Backend.helper.metadata.common import (
@@ -34,6 +36,9 @@ _HEADERS = {
 
 
 async def _get_client() -> httpx.AsyncClient:
+    scan_client = quick_scan_http.get()
+    if scan_client is not None:
+        return scan_client
     global _client
     async with _client_lock:
         if _client is None or _client.is_closed:
@@ -97,7 +102,7 @@ async def _kitsu_search(query: str, subtype: Optional[str] = None) -> Optional[d
         params = {"filter[text]": query, "page[limit]": 8}
         if subtype:
             params["filter[subtype]"] = subtype
-        resp = await client.get(f"{KITSU_URL}/anime", params=params)
+        resp = await client.get(f"{KITSU_URL}/anime", params=params, headers=_HEADERS)
         if resp.status_code != 200:
             return None
         data = (resp.json() or {}).get("data") or []
@@ -156,7 +161,7 @@ async def get_anizip_mappings(kitsu_id: int) -> Optional[dict]:
     async def _produce():
         try:
             client = await _get_client()
-            resp = await client.get(ANIZIP_URL, params={"kitsu_id": kitsu_id})
+            resp = await client.get(ANIZIP_URL, params={"kitsu_id": kitsu_id}, headers=_HEADERS)
             return resp.json() if resp.status_code == 200 else None
         except Exception as e:
             LOGGER.warning(f"[KITSU] ani.zip mappings failed for {kitsu_id}: {e}")

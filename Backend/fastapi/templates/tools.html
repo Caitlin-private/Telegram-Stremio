@@ -288,12 +288,12 @@
                 <select id="scan-worker-limit" class="s-input">
                     <option value="1">1</option><option value="2" selected>2 (recommended)</option>
                     <option value="3">3</option><option value="4">4</option>
-                    <option value="8">8</option><option value="0">Auto — up to 8 eligible workers</option>
+                    <option value="8">8</option><option value="0">Auto — all eligible workers in Quick Scan</option>
                 </select>
             </label>
             <label><input type="checkbox" id="scan-pause-playback" checked> Automatically pause scans during playback</label>
         </div>
-        <p class="hint mb-3">Applies only to channel scans. Resumes after 60 seconds without active playback; manual Stop stays stopped. Workers need source-channel delete permission and skip-channel post permission. The main bot is used only if no worker qualifies. Processing is capped at eight files in total; live ingestion is unchanged.</p>
+        <p class="hint mb-3">Applies only to channel scans. Resumes after 60 seconds without active playback; manual Stop stays stopped. Workers need source-channel delete permission and skip-channel post permission. Quick Scan Auto uses every eligible worker bot; other scan modes use up to eight. The main bot is used only if no worker qualifies. Quick Scan prefetches at most one batch per bot. Quick Scan processes up to twelve files in total; other modes retain eight; live ingestion is unchanged.</p>
         <p id="scan-resources" class="hint mb-3"></p>
         <div class="flex flex-wrap gap-4 mb-3">
             <label>Start message ID <input id="scan-start-id" type="number" min="1" max="2147483647" step="1" class="s-input" placeholder="Beginning"></label>
@@ -342,7 +342,8 @@
             </button>
         </div>
         <p class="hint mt-3">Stop saves progress for Resume. Cancel Scan clears the current job so you can start any mode; already indexed media is kept.</p>
-        <p class="hint mt-3">Quick Scan suppresses individual media announcements, thumbnail uploads and skip-channel copies. Import start, stop and finish notices still go to the announcement channel. Files rejected by resolution or metadata checks are deleted directly from the source channel. Pause live ingestion during a bulk scan to avoid overlapping activity.</p>
+        <label class="hint"><input type="checkbox" id="quick-scan-all-workers" checked> Quick Scan: use all eligible worker bots (uncheck to use Scan workers selection)</label>
+        <p class="hint mt-3">Quick Scan defers catalog enrichment until channel indexing finishes and reuses provider connections with HTTP 429 backoff. Quick Scan suppresses individual media announcements, thumbnail uploads and skip-channel copies. Import start, stop and finish notices still go to the announcement channel. Quick Scan keeps source media, including resolution/metadata rejects and files superseded by replacement mode. Only its temporary probe message is removed. Pause live ingestion during a bulk scan to avoid overlapping activity.</p>
         <p class="hint mt-3" id="scan-error" style="color:#ef4444;display:none"></p>
     </div>
 
@@ -801,13 +802,13 @@ async function startScan(mode) {
         showToast('Select at least one channel to scan.', 'error', 'No channels');
         return;
     }
-    if (mode === 'quick' && !confirm('Quick Scan permanently deletes rejected files from the source channel without a skip-channel copy. Individual media announcements are skipped; import status notices remain. Continue?')) return;
+    if (mode === 'quick' && !confirm('Quick Scan keeps source media and skips unrecognized files. Individual media announcements are skipped; import status notices remain. Continue?')) return;
     try {
         const res = await fetch('/api/admin/tools/scan/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ mode, channels, start_id, end_id,
-                worker_limit: Number(document.getElementById('scan-worker-limit').value),
+                worker_limit: mode === 'quick' && document.getElementById('quick-scan-all-workers').checked ? 0 : Number(document.getElementById('scan-worker-limit').value),
                 pause_for_playback: document.getElementById('scan-pause-playback').checked })
         });
         const data = await res.json();
@@ -890,18 +891,20 @@ function renderScan(s) {
     setText('scan-elapsed', s.elapsed || '0s');
     document.getElementById('scan-discard-btn').disabled = !!s.cancelling || !(s.is_running || s.resumable);
     document.getElementById('scan-worker-limit').disabled = !!s.is_running;
+    document.getElementById('quick-scan-all-workers').disabled = !!s.is_running;
     document.getElementById('scan-pause-playback').disabled = !!s.is_running;
     if (!scanOptionsLoaded || s.is_running) {
         document.getElementById('scan-start-id').value = s.start_id ?? '';
         document.getElementById('scan-end-id').value = s.end_id ?? '';
         document.getElementById('scan-worker-limit').value = String(s.worker_limit ?? 2);
         document.getElementById('scan-pause-playback').checked = s.pause_for_playback !== false;
+        if (s.mode === 'quick') document.getElementById('quick-scan-all-workers').checked = s.worker_limit === 0;
         scanOptionsLoaded = true;
     }
     document.getElementById('scan-start-id').disabled = !!s.is_running || !!s.resumable;
     document.getElementById('scan-end-id').disabled = !!s.is_running || !!s.resumable;
     const timing = s.timings || {};
-    setText('scan-resources', `${s.active_workers || 0} eligible worker(s) · accumulated work time: Telegram ${timing.telegram_seconds || 0}s · metadata ${timing.metadata_seconds || 0}s · DB ${timing.db_seconds || 0}s · DB lock ${timing.db_lock_seconds || 0}s`);
+    setText('scan-resources', `${s.active_workers || 0} eligible worker(s) · ${s.processing_limit || 8} shared processing slots · accumulated work time: Telegram ${timing.telegram_seconds || 0}s · metadata ${timing.metadata_seconds || 0}s · DB ${timing.db_seconds || 0}s · DB lock ${timing.db_lock_seconds || 0}s · catalogs ${timing.catalog_seconds || 0}s (${s.catalog_pending_count || 0} pending) · API requests ${timing.api_requests || 0}, 429s ${timing.api_throttles || 0}, wait ${timing.api_wait_seconds || 0}s · FloodWait ${timing.flood_wait_seconds || 0}s`);
 
     const bar = document.getElementById('scan-bar');
     const startBtn = document.getElementById('scan-start-btn');
@@ -923,6 +926,9 @@ function renderScan(s) {
                 `Scanning ${name}` + (s.current_id ? ` · up to msg #${s.current_id}` : '');
         }
         startBtn.disabled = true; rescanBtn.disabled = true; cancelBtn.disabled = false;
+        if (s.phase === 'catalogs') {
+            document.getElementById('scan-current').textContent = `Updating catalogs · ${s.catalog_pending_count || 0} title(s) pending`;
+        }
         if (s.playback_paused) {
             document.getElementById('scan-current').textContent = 'Scan paused for playback — resumes automatically after 60 idle seconds.';
         }
