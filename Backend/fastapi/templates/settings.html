@@ -452,7 +452,7 @@
 
     <!-- ── Poster Provider ─────────────────────────────────────────────── -->
     <div class="settings-card">
-        <h2><i class="fa-solid fa-image"></i> Poster Provider</h2>
+        <h2><i class="fa-solid fa-image"></i> Poster Provider for Listing</h2>
         <label class="toggle-wrap" style="margin-bottom:0.75rem">
             <input type="checkbox" class="toggle-input" id="pictorium_poster_enabled"
                 {% if settings.pictorium_poster_enabled %}checked{% endif %} onchange="togglePosterProvider('pictorium')">
@@ -980,6 +980,13 @@ document.addEventListener('DOMContentLoaded', sessLoadStatus);
                 <i class="fa-solid fa-xmark"></i>
             </button>
         </div>
+        <label class="s-label" for="announcement_poster_provider" style="margin-top:1rem">POSTER PROVIDER FOR ANNOUNCEMENTS</label>
+        <select id="announcement_poster_provider" class="s-input">
+            {% for value, name in [('same', 'Same as Listing'), ('pictorium', 'Pictorium'), ('better', 'BetterPoster'), ('rpdb', 'RPDB'), ('fanart', 'Fanart.tv'), ('default', 'Original / Default')] %}
+            <option value="{{ value }}" {% if settings.announcement_poster_provider == value %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+        </select>
+        <p class="hint">Overrides the listing provider only for Telegram announcement images. Provider URLs and API keys are configured under Poster Provider for Listing.</p>
     </div>
 </div>
 
@@ -1636,6 +1643,7 @@ async function saveSettings() {
         global_search_channels:        collectList('global_search_channels'),
         manual_channels:               collectList('manual_channels'),
         announce_new_content:          document.getElementById('announce_new_content').checked,
+        announcement_poster_provider: document.getElementById('announcement_poster_provider').value,
         announcement_channel:          (function(){const el=document.getElementById('announcement_channel');return el.dataset.id||extractChannelId(el.value.trim());})(),
         skip_channel:                  (function(){const el=document.getElementById('skip_channel');return el.dataset.id||extractChannelId(el.value.trim());})(),
         delete_on_metadata_fail:       document.getElementById('delete_on_metadata_fail').checked,
@@ -1748,6 +1756,7 @@ function renderSettings(s) {
     document.getElementById('show_proxy_and_non_proxy_both').checked = !!s.show_proxy_and_non_proxy_both;
     document.getElementById('global_search').checked = !!s.global_search;
     document.getElementById('announce_new_content').checked = !!s.announce_new_content;
+    document.getElementById('announcement_poster_provider').value = s.announcement_poster_provider || 'same';
     document.getElementById('delete_on_metadata_fail').checked = !!s.delete_on_metadata_fail;
     toggleSubFields();
     toggleGlobalSearchFields();

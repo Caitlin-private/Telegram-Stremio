@@ -1841,6 +1841,10 @@ async def update_settings_api(payload: dict) -> dict:
                 raise HTTPException(status_code=400, detail=f"'{key}' must be a list.")
             payload[key] = [str(v).strip() for v in payload[key] if str(v).strip()]
 
+    if "announcement_poster_provider" in payload:
+        if payload["announcement_poster_provider"] not in ("same", "pictorium", "better", "rpdb", "fanart", "default"):
+            raise HTTPException(status_code=400, detail="Invalid announcement poster provider")
+
     if "better_poster" in payload:
         payload["better_poster"] = str(payload["better_poster"] or "").strip()
         if payload["better_poster"] and "{imdb_id}" not in payload["better_poster"]:

@@ -16,9 +16,15 @@ BETTERPOSTER_DEFAULT = "https://btttr.cc/poster/imdb/poster-default/{imdb_id}.jp
 RPDB_FREE = "https://api.ratingposterdb.com/t0-free-rpdb/imdb/poster-default/{imdb_id}.jpg"
 
 
-def _poster_url(imdb_id: str, fallback: str, tmdb_id=None, media_type='movie', shape='poster') -> str:
+def _poster_url(imdb_id: str, fallback: str, tmdb_id=None, media_type='movie', shape='poster', provider=None) -> str:
     settings = SettingsManager.current()
-    if settings.pictorium_poster_enabled:
+    if provider == 'same':
+        provider = None
+    if provider == 'default':
+        return _abs_media_url(fallback)
+    if provider == 'fanart':
+        return _abs_media_url(fallback)  # Fanart requires asynchronous artwork lookup.
+    if (provider == 'pictorium' or (provider is None and settings.pictorium_poster_enabled)):
         from Backend.helper.pictorium import poster_url
         return poster_url(settings.pictorium_poster_url, tmdb_id, imdb_id, media_type, shape=shape) or _abs_media_url(fallback)
     if shape == 'landscape':
@@ -26,10 +32,10 @@ def _poster_url(imdb_id: str, fallback: str, tmdb_id=None, media_type='movie', s
         # Fanart backgrounds are resolved by the existing artwork lookup.
         return _abs_media_url(fallback)
     if imdb_id:
-        if settings.better_poster_enabled:
+        if provider == 'better' or (provider is None and settings.better_poster_enabled):
             template = settings.better_poster or BETTERPOSTER_DEFAULT
             return template.replace("{imdb_id}", str(imdb_id))
-        if settings.rpdb_enabled:
+        if provider == 'rpdb' or (provider is None and settings.rpdb_enabled):
             key = settings.rpdb_api_key
             template = (
                 f"https://api.ratingposterdb.com/{key}/imdb/poster-default/{{imdb_id}}.jpg"

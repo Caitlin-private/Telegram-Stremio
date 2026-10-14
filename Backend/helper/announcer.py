@@ -18,7 +18,8 @@ from Backend.helper.settings_manager import SettingsManager
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import StreamBot, get_streambot_url
 from Backend.helper.pyro import artwork_available, defer_artwork
-from Backend.helper.poster_provider import _poster_url, _apply_fanart, _abs_media_url
+from Backend.helper.poster_provider import _poster_url, _abs_media_url
+from Backend.helper.fanart import fanart_artwork
 
 _announcement_lock = Lock()
 
@@ -145,6 +146,14 @@ def _build_markup(info: dict):
     return InlineKeyboardMarkup(rows) if rows else None
 
 
+async def _apply_announcement_fanart(artwork: dict, info: dict) -> None:
+    try:
+        art = await fanart_artwork(info.get('imdb_id'), info.get('tmdb_id'), info.get('media_type'))
+        artwork.update({key: value for key, value in art.items() if key in ('poster', 'background') and value})
+    except Exception as exc:
+        LOGGER.warning(f'Announcement fanart lookup failed: {exc}')
+
+
 async def _announce(info: dict) -> None:
     # Prevent concurrent photo attempts from racing past the same cooldown.
     async with _announcement_lock:
@@ -166,12 +175,25 @@ async def _announce_serial(info: dict) -> None:
         sent = None
         if artwork_available(StreamBot):
             try:
-                artwork = {'poster': _poster_url(info.get('imdb_id'), info.get('backdrop') or info.get('poster'),
-                                                 info.get('tmdb_id'), info.get('media_type'), shape='landscape')}
-                if settings.fanart_enabled:
-                    artwork['background'] = _abs_media_url(info.get('backdrop'))
-                await _apply_fanart(artwork, info)
-                image_url = artwork.get('background') or artwork.get('poster')
+                provider = settings.announcement_poster_provider
+                if provider == 'same':
+                    provider = ('pictorium' if settings.pictorium_poster_enabled else
+                                'fanart' if settings.fanart_enabled else
+                                'better' if settings.better_poster_enabled else
+                                'rpdb' if settings.rpdb_enabled else 'default')
+                fallback = info.get('backdrop') or info.get('poster')
+                if provider == 'fanart':
+                    artwork = {'poster': _abs_media_url(fallback),
+                               'background': _abs_media_url(info.get('backdrop'))}
+                    await _apply_announcement_fanart(artwork, info)
+                    image_url = artwork.get('background') or artwork.get('poster')
+                else:
+                    image_url = _poster_url(
+                        info.get('imdb_id'), fallback, info.get('tmdb_id'),
+                        info.get('media_type'),
+                        shape='landscape' if provider == 'pictorium' else 'poster',
+                        provider=provider,
+                    )
                 if image_url:
                     photo = await announcement_photo(image_url)
                     try:

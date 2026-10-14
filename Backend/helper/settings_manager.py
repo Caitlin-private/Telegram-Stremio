@@ -51,6 +51,7 @@ _DEFAULTS: Dict[str, Any] = {
     "channel_titles": {},
     "announce_new_content": False,
     "announcement_channel": "",
+    "announcement_poster_provider": "same",
     "skip_channel": "",
     "delete_on_metadata_fail": False,
     "better_poster_enabled": False,
@@ -174,6 +175,11 @@ class Settings:
     @property
     def delete_on_metadata_fail(self) -> bool:
         return bool(self._d.get("delete_on_metadata_fail", False))
+
+    @property
+    def announcement_poster_provider(self) -> str:
+        value = str(self._d.get("announcement_poster_provider") or "same").lower()
+        return value if value in ("same", "pictorium", "better", "rpdb", "fanart", "default") else "same"
 
     @property
     def announcement_channel(self) -> str:
