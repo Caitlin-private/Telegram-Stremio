@@ -1,6 +1,6 @@
 """Pictorium instance and exported poster-template URLs."""
 import re
-from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+from urllib.parse import urlsplit
 
 PLACEHOLDERS = {'type', 'tmdb_id', 'imdb_id', 'tmdb_id|imdb_id', 'shape'}
 
@@ -44,11 +44,7 @@ def poster_url(template, tmdb_id, imdb_id, media_type, shape='poster'):
         if '{'+key+'}' in template and not value:
             return None
         template = template.replace('{'+key+'}', value)
-    # Force the requested output shape even when an exported template has
-    # a fixed shape query parameter. Nuvio defaults to portrait.
-    parts = urlsplit(template)
-    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != 'shape']
-    if shape == 'landscape':
-        query.append(('shape', 'landscape'))
-    template = urlunsplit(parts._replace(query=urlencode(query)))
+    # Preserve the exported Pictorium template query exactly. In particular,
+    # do not append or override `shape`: the user's Pictorium configuration
+    # controls whether artwork is landscape or portrait.
     return template

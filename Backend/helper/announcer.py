@@ -191,7 +191,7 @@ async def _announce_serial(info: dict) -> None:
                     image_url = _poster_url(
                         info.get('imdb_id'), fallback, info.get('tmdb_id'),
                         info.get('media_type'),
-                        shape='landscape' if provider == 'pictorium' else 'poster',
+                        shape='poster',
                         provider=provider,
                     )
                 if image_url:
@@ -204,7 +204,7 @@ async def _announce_serial(info: dict) -> None:
             except FloodWait as e:
                 defer_artwork(StreamBot, e.value)
             except Exception as exc:
-                LOGGER.warning(f'Announcement artwork unavailable: {type(exc).__name__}; sending text')
+                LOGGER.warning('Announcement artwork unavailable: %s: %s; sending text', type(exc).__name__, exc)
                 sent = None
         if sent is None:
             while True:
