@@ -16,11 +16,15 @@ BETTERPOSTER_DEFAULT = "https://btttr.cc/poster/imdb/poster-default/{imdb_id}.jp
 RPDB_FREE = "https://api.ratingposterdb.com/t0-free-rpdb/imdb/poster-default/{imdb_id}.jpg"
 
 
-def _poster_url(imdb_id: str, fallback: str, tmdb_id=None, media_type='movie') -> str:
+def _poster_url(imdb_id: str, fallback: str, tmdb_id=None, media_type='movie', shape='poster') -> str:
     settings = SettingsManager.current()
     if settings.pictorium_poster_enabled:
         from Backend.helper.pictorium import poster_url
-        return poster_url(settings.pictorium_poster_url, tmdb_id, imdb_id, media_type) or _abs_media_url(fallback)
+        return poster_url(settings.pictorium_poster_url, tmdb_id, imdb_id, media_type, shape=shape) or _abs_media_url(fallback)
+    if shape == 'landscape':
+        # Existing BetterPoster/RPDB templates are portrait endpoints.
+        # Fanart backgrounds are resolved by the existing artwork lookup.
+        return _abs_media_url(fallback)
     if imdb_id:
         if settings.better_poster_enabled:
             template = settings.better_poster or BETTERPOSTER_DEFAULT

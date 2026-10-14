@@ -927,7 +927,7 @@ function renderScan(s) {
             document.getElementById('scan-current').textContent = 'Scan paused for playback — resumes automatically after 60 idle seconds.';
         }
         if (s.flood_wait_seconds > 0 && !s.playback_paused) {
-            document.getElementById('scan-current').textContent = `Telegram rate limit: waiting ${s.flood_wait_seconds}s, then retrying the same work automatically.`;
+            document.getElementById('scan-current').textContent = `Telegram cooldown: up to ${s.flood_wait_seconds}s. Other eligible workers can continue within the checkpoint window.`;
         }
         if (s.cancelling) {
             document.getElementById('scan-current').textContent = 'Cancelling — waiting for in-flight work to finish safely…';

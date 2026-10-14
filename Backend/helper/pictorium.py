@@ -1,6 +1,6 @@
 """Pictorium instance and exported poster-template URLs."""
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 PLACEHOLDERS = {'type', 'tmdb_id', 'imdb_id', 'tmdb_id|imdb_id', 'shape'}
 
@@ -25,7 +25,7 @@ def validate_poster_url(value):
     return value if fields else value.rstrip('/')
 
 
-def poster_url(template, tmdb_id, imdb_id, media_type):
+def poster_url(template, tmdb_id, imdb_id, media_type, shape='poster'):
     """Return None when the title lacks an ID required by the template."""
     if not template:
         return None
@@ -39,9 +39,14 @@ def poster_url(template, tmdb_id, imdb_id, media_type):
     if '{' not in template:
         template = template.rstrip('/') + '/api/poster/{type}/{tmdb_id|imdb_id}'
     values = {'type': 'tv' if media_type in ('tv', 'series') else 'movie',
-              'tmdb_id': tmdb, 'imdb_id': imdb, 'tmdb_id|imdb_id': tmdb or imdb, 'shape': 'poster'}
+              'tmdb_id': tmdb, 'imdb_id': imdb, 'tmdb_id|imdb_id': tmdb or imdb, 'shape': shape}
     for key, value in values.items():
         if '{'+key+'}' in template and not value:
             return None
         template = template.replace('{'+key+'}', value)
+    if shape == 'landscape':
+        parts = urlsplit(template)
+        query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != 'shape']
+        query.append(('shape', 'landscape'))
+        template = urlunsplit(parts._replace(query=urlencode(query)))
     return template

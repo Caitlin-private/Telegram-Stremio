@@ -18,14 +18,13 @@ from Backend.helper.settings_manager import SettingsManager
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import StreamBot, get_streambot_url
 from Backend.helper.pyro import artwork_available, defer_artwork
-from Backend.helper.poster_provider import _poster_url, _apply_fanart
+from Backend.helper.poster_provider import _poster_url, _apply_fanart, _abs_media_url
 
 _announcement_lock = Lock()
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_PIXELS = 12_000_000
 FRAME_SIZE = 960
-PADDING = 12
 
 
 def frame_poster(data: bytes) -> BytesIO:
@@ -34,11 +33,10 @@ def frame_poster(data: bytes) -> BytesIO:
             raise ValueError('Announcement poster dimensions exceed the limit')
         # Contain, never fit/crop: all provider badges and title text survive.
         image = ImageOps.exif_transpose(source)
-        image.thumbnail((FRAME_SIZE - PADDING * 2, FRAME_SIZE - PADDING * 2), Image.Resampling.LANCZOS)
-        frame_size = max(image.size) + PADDING * 2
+        image.thumbnail((FRAME_SIZE, FRAME_SIZE), Image.Resampling.LANCZOS)
         image = image.convert('RGBA')
-        with Image.new('RGB', (frame_size, frame_size), (24, 24, 32)) as canvas:
-            canvas.paste(image, ((frame_size-image.width)//2, (frame_size-image.height)//2), image)
+        with Image.new('RGB', image.size, (24, 24, 32)) as canvas:
+            canvas.paste(image, (0, 0), image)
             output = BytesIO()
             canvas.save(output, format='JPEG', quality=85)
         image.close()
@@ -168,11 +166,14 @@ async def _announce_serial(info: dict) -> None:
         sent = None
         if artwork_available(StreamBot):
             try:
-                artwork = {'poster': _poster_url(info.get('imdb_id'), info.get('poster') or info.get('backdrop'),
-                                                 info.get('tmdb_id'), info.get('media_type'))}
+                artwork = {'poster': _poster_url(info.get('imdb_id'), info.get('backdrop') or info.get('poster'),
+                                                 info.get('tmdb_id'), info.get('media_type'), shape='landscape')}
+                if settings.fanart_enabled:
+                    artwork['background'] = _abs_media_url(info.get('backdrop'))
                 await _apply_fanart(artwork, info)
-                if artwork.get('poster'):
-                    photo = await announcement_photo(artwork['poster'])
+                image_url = artwork.get('background') or artwork.get('poster')
+                if image_url:
+                    photo = await announcement_photo(image_url)
                     try:
                         sent = await StreamBot.send_photo(chat, photo, caption=caption,
                                                parse_mode=ParseMode.HTML, reply_markup=markup)
