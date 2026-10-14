@@ -195,6 +195,7 @@ class ScanManager:
             "counters": dict(s["counters"]),
             "elapsed": _fmt_elapsed(elapsed),
             "elapsed_seconds": int(elapsed),
+            "messages_per_second": round(s["counters"].get("processed", 0) / elapsed, 2) if elapsed > 0 else 0.0,
             "error": s["error"],
         }
 
@@ -692,10 +693,7 @@ class ScanManager:
         reason = rejection_reason(source_resolution(message.caption, file.file_name))
         if reason:
             LOGGER.info(f'[Scan] Skipped {chat_id}/{message.id}: {reason}')
-            if quick:
-                if await client.delete_messages(chat_id, message.id) is False:
-                    raise RuntimeError('Quick Scan could not delete the rejected message.')
-            else:
+            if not quick:
                 await route_to_skip_channel(client, message, reason=reason, force_delete=True, retry_call=self._telegram_call)
             s['counters']['skipped_resolution'] = s['counters'].get('skipped_resolution', 0) + 1
             return
@@ -725,8 +723,6 @@ class ScanManager:
 
         if metadata_info is None:
             if quick:
-                if await client.delete_messages(chat_id, message.id) is False:
-                    raise RuntimeError('Quick Scan could not delete the rejected message.')
                 s["counters"]["skipped_meta"] += 1
                 return
             try:
