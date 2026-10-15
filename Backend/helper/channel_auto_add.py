@@ -78,11 +78,15 @@ def build_session(payload, now=None):
         raise ValueError("Catalogue IDs must be a list of strings.")
     catalogs = list(dict.fromkeys(c.strip() for c in catalogs if c.strip()))
     session = {
-        "enabled": True, "session_id": secrets.token_hex(12),
+        "enabled": True,
+        "session_id": secrets.token_hex(12),
         "starts_at": now + delay * 60,
         "expires_at": now + (delay + duration) * 60 if duration is not None else None,
-        "duration_minutes": duration, "delay_minutes": delay,
-        "media_type": media_type, "manual_metadata": fields, "catalog_ids": catalogs,
+        "duration_minutes": duration,
+        "delay_minutes": delay,
+        "media_type": media_type,
+        "manual_metadata": fields,
+        "catalog_ids": catalogs,
         "quality": str(payload.get("quality") or "").strip()[:100],
         "episode_title": str(payload.get("episode_title") or "").strip()[:1000],
         "selected_id": str(payload.get("selected_id") or "").strip(),
@@ -91,8 +95,12 @@ def build_session(payload, now=None):
     for key in ("season_number", "episode_number"):
         value = payload.get(key)
         session[key] = None if value in (None, "") else _integer(value, key)
-    session["untagged"] = not (fields or catalogs or session["episode_title"] or
-                               any(session[k] is not None for k in ("season_number", "episode_number")))
+    session["untagged"] = not (
+        fields
+        or catalogs
+        or session["episode_title"]
+        or any(session[k] is not None for k in ("season_number", "episode_number"))
+    )
     if media_type == "tv":
         if not fields.get("title") and not session["selected_id"]:
             raise ValueError("Select a TV show or enter its title.")
@@ -115,6 +123,7 @@ async def start_session(db, payload):
     session = build_session(payload)
     if session.get("group_series") and session["selected_id"]:
         from Backend.helper.metadata import fetch_selected_tv_metadata
+
         selected = await fetch_selected_tv_metadata(session["selected_id"])
         if not selected:
             raise ValueError("Could not resolve the selected TV show. Select it again.")
@@ -139,14 +148,18 @@ async def start_session(db, payload):
     if len(catalogs) > 1 and any(c.get("exclusive") for c in catalogs):
         raise ValueError("An exclusive catalogue cannot be combined with other catalogues.")
     await db.dbs["tracking"]["state"].replace_one(
-        {"_id": STATE_ID}, {"_id": STATE_ID, **session}, upsert=True,
+        {"_id": STATE_ID},
+        {"_id": STATE_ID, **session},
+        upsert=True,
     )
     return {**session, "status": session_status(session)}
 
 
 async def stop_session(db):
     await db.dbs["tracking"]["state"].update_one(
-        {"_id": STATE_ID}, {"$set": {"enabled": False}}, upsert=True,
+        {"_id": STATE_ID},
+        {"$set": {"enabled": False}},
+        upsert=True,
     )
     return {"status": "off", "enabled": False}
 
@@ -172,13 +185,20 @@ def capture_metadata(session, filename, parsed, channel, message_id, split_key=N
     tmdb_id, imdb_id = capture_identity(session, channel, message_id, split_key)
     media_type = "movie" if session["untagged"] else session["media_type"]
     meta = {
-        "tmdb_id": tmdb_id, "imdb_id": imdb_id, "media_type": media_type,
+        "tmdb_id": tmdb_id,
+        "imdb_id": imdb_id,
+        "media_type": media_type,
         "title": fields.get("title") or filename,
-        "year": fields.get("year", 0), "rate": fields.get("rate", 0),
+        "year": fields.get("year", 0),
+        "rate": fields.get("rate", 0),
         "genres": [g.strip() for g in fields.get("genres", "").split(",") if g.strip()],
         "description": fields.get("description", ""),
-        "poster": fields.get("poster", ""), "backdrop": fields.get("backdrop", ""),
-        "logo": "", "cast": [], "runtime": "", "is_anime": False,
+        "poster": fields.get("poster", ""),
+        "backdrop": fields.get("backdrop", ""),
+        "logo": "",
+        "cast": [],
+        "runtime": "",
+        "is_anime": False,
         "quality": session.get("quality") or parsed.get("quality") or "Unknown",
     }
     if session.get("series_metadata"):
@@ -192,11 +212,16 @@ def capture_metadata(session, filename, parsed, channel, message_id, split_key=N
         episode = session.get("episode_number")
         season = season if season is not None else (parsed.get("season") or 1)
         episode = episode if episode is not None else (parsed.get("episode") or 1)
-        meta.update({
-            "season_number": season, "episode_number": episode,
-            "episode_title": session.get("episode_title") or f"S{season:02d}E{episode:02d}",
-            "episode_backdrop": meta["backdrop"], "episode_overview": "", "episode_released": "",
-        })
+        meta.update(
+            {
+                "season_number": season,
+                "episode_number": episode,
+                "episode_title": session.get("episode_title") or f"S{season:02d}E{episode:02d}",
+                "episode_backdrop": meta["backdrop"],
+                "episode_overview": "",
+                "episode_released": "",
+            }
+        )
     return meta
 
 
@@ -218,7 +243,10 @@ async def capture_message(db, message, session):
     except Exception:
         parsed = {}
     from Backend.helper.ingestion_rules import resolution_hint
-    detected_quality = resolution_hint(message.caption, filename) or quality_from_height(getattr(file, "height", 0) or 0)
+
+    detected_quality = resolution_hint(message.caption, filename) or quality_from_height(
+        getattr(file, "height", 0) or 0
+    )
     if detected_quality:
         parsed["quality"] = detected_quality
     meta = capture_metadata(session, filename, parsed, channel, message.id, split_key)
@@ -242,10 +270,14 @@ async def capture_message(db, message, session):
                 if str(season.get("season_number")) != str(meta["season_number"]):
                     continue
                 for episode in season.get("episodes", []):
-                    if meta.get("group_key") and any(q.get("group_key") == meta["group_key"] for q in episode.get("telegram", [])):
+                    if meta.get("group_key") and any(
+                        q.get("group_key") == meta["group_key"] for q in episode.get("telegram", [])
+                    ):
                         number = episode["episode_number"]
             meta["episode_number"] = int(number)
-        meta["episode_title"] = session.get("episode_title") or f"S{meta['season_number']:02d}E{meta['episode_number']:02d}"
+        meta["episode_title"] = (
+            session.get("episode_title") or f"S{meta['season_number']:02d}E{meta['episode_number']:02d}"
+        )
     meta["poster"] = meta["poster"] or gradient_cover_path(meta["title"], portrait=True)
     meta["backdrop"] = meta["backdrop"] or gradient_cover_path(meta["title"])
 
@@ -255,8 +287,12 @@ async def capture_message(db, message, session):
         return
     if not existing:
         result = await db.insert_media(
-            meta, channel=channel, msg_id=message.id, name=filename,
-            size=get_readable_file_size(file.file_size or 0), raw_size=file.file_size or 0,
+            meta,
+            channel=channel,
+            msg_id=message.id,
+            name=filename,
+            size=get_readable_file_size(file.file_size or 0),
+            raw_size=file.file_size or 0,
         )
         if not result:
             raise RuntimeError("Could not save captured media.")
@@ -269,11 +305,20 @@ async def capture_message(db, message, session):
         now = datetime.utcnow()
         await db.dbs["tracking"]["custom_catalogs"].update_one(
             {"_id": ObjectId(UNTAGGED_ID)},
-            {"$setOnInsert": {
-                "name": "Untagged", "visibility": "public", "visible": True,
-                "allowed_tokens": [], "exclusive": False, "searchable": False,
-                "items": [], "created_at": now, "updated_at": now,
-            }}, upsert=True,
+            {
+                "$setOnInsert": {
+                    "name": "Untagged",
+                    "visibility": "public",
+                    "visible": True,
+                    "allowed_tokens": [],
+                    "exclusive": False,
+                    "searchable": False,
+                    "items": [],
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            },
+            upsert=True,
         )
         catalog_ids = [UNTAGGED_ID]
     for catalog_id in catalog_ids:
@@ -282,8 +327,14 @@ async def capture_message(db, message, session):
             raise RuntimeError("A selected catalogue no longer exists.")
         await db.add_item_to_custom_catalog(catalog_id, meta["tmdb_id"], location[1], meta["media_type"])
         if catalog.get("visibility") in ("owner", "tokens"):
-            await db.set_media_visibility(meta["tmdb_id"], location[1], meta["media_type"],
-                                          catalog["visibility"], catalog.get("allowed_tokens") or [])
+            await db.set_media_visibility(
+                meta["tmdb_id"],
+                location[1],
+                meta["media_type"],
+                catalog["visibility"],
+                catalog.get("allowed_tokens") or [],
+            )
         if catalog.get("exclusive"):
-            await db.mark_item_exclusive(catalog_id, meta["tmdb_id"], location[1],
-                                         meta["media_type"], catalog.get("searchable", False))
+            await db.mark_item_exclusive(
+                catalog_id, meta["tmdb_id"], location[1], meta["media_type"], catalog.get("searchable", False)
+            )

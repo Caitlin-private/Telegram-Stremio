@@ -504,7 +504,7 @@ class ScanManager:
         await self._announce_import(client, 'start')
         from Backend.helper.scan_resources import select_scan_clients
         workers = await select_scan_clients(client, chat_id, s.get('worker_limit', 2),
-                                            s.get('mode') == 'quick', self._telegram_call)
+                                            s.get('mode') == 'quick', self._telegram_call, stopped_error=_ScanStopped)
         s['active_workers'] = len(workers)
         worker_slots = {id(c): asyncio.Semaphore(max(1, SCAN_PROCESS_CONCURRENCY // len(workers))) for c in workers}
         LOGGER.info(

@@ -51,7 +51,7 @@ from Backend.helper.metadata import (
     search_tv_candidates,
 )
 from Backend.helper.passwords import hash_password, verify_password
-from Backend.helper.pyro import get_readable_file_size, get_readable_time
+from Backend.helper.pyro import get_readable_time
 from Backend.helper.scan_manager import dbcheck_manager, duplicate_manager, scan_manager
 from Backend.helper.session_auth import (
     disconnect_session,
@@ -400,17 +400,14 @@ async def grant_lifetime_api() -> dict:
 async def update_token_limits_api(token: str, payload: dict):
     if "session_streaming_allowed" in payload and not isinstance(payload["session_streaming_allowed"], bool):
         raise HTTPException(status_code=400, detail="Session playback permission must be true or false")
-    existing = await db.get_api_token(token)
-    if not existing:
+    success = await db.update_api_token_limits(
+        token,
+        _parse_limit(payload["daily_limit_gb"]) if "daily_limit_gb" in payload else None,
+        _parse_limit(payload["monthly_limit_gb"]) if "monthly_limit_gb" in payload else None,
+        session_streaming_allowed=payload.get("session_streaming_allowed"),
+    )
+    if not success:
         raise HTTPException(status_code=404, detail="Token not found")
-    updates = {}
-    for key in ("daily_limit_gb", "monthly_limit_gb"):
-        if key in payload:
-            updates["limits." + key] = _parse_limit(payload[key])
-    if "session_streaming_allowed" in payload:
-        updates["session_streaming_allowed"] = payload["session_streaming_allowed"]
-    if updates:
-        await db.dbs["tracking"]["api_tokens"].update_one({"token": token}, {"$set": updates})
     return {"message": "User settings updated successfully"}
 
 
@@ -2432,36 +2429,8 @@ LOG_FILE = "log.txt"
 
 #----- Aggregate content + system metrics across all storage DBs (was /stats)
 async def get_db_stats_api() -> dict:
-    from Backend.helper.ingestion_status import ingestion_snapshot
-    from Backend.helper.system_memory import memory_status
-    from Backend.helper.stats_display import live_counts
-    from Backend.helper.custom_dl import ACTIVE_STREAMS, STALE_STREAM_IDLE
-    try:
-        from Backend.helper.stats_display import library_totals
-        totals = await library_totals(db)
-
-        return {
-            "status": "success",
-            "data": {
-                "version": __version__,
-                "ram": memory_status(),
-                **await ingestion_snapshot(StreamBot),
-                **live_counts(list(ACTIVE_STREAMS.values()), time(), STALE_STREAM_IDLE),
-                "movies": totals['movies'],
-                "tv_shows": totals['series'],
-                "episodes": totals['episodes'],
-                "streams": totals['streams'],
-                "files": totals['files'],
-                "titles": totals['titles'],
-                "uptime": get_readable_time(int(time() - StartTime)),
-                "db_size": get_readable_file_size(totals['size_bytes']) if totals['size_bytes'] is not None else 'Unavailable',
-                "storage_dbs": db.current_db_index,
-                "auth_channels": len(SettingsManager.current().auth_channels),
-            },
-        }
-    except Exception as e:
-        LOGGER.error(f"[Stats] Error: {e}")
-        return {"status": "error", "message": str(e)}
+    from Backend.helper.stats_display import collect_system_stats
+    return await collect_system_stats(db, StreamBot)
 
 
 #----- First-run setup checklist: what's configured vs still missing
@@ -2926,3 +2895,61 @@ async def bot_admin_apply_status_api() -> dict:
             "error": st["error"],
         },
     }
+
+
+#----- Ingestion metrics
+async def ingestion_metrics_api() -> dict:
+    from Backend.helper.ingestion_status import ingestion_snapshot
+    return await ingestion_snapshot(StreamBot)
+
+
+#----- Pause ingestion
+async def pause_ingestion_api(payload: dict) -> dict:
+    from Backend.helper.durable_ingestion import durable_ingestion
+    if not isinstance(payload.get('paused'), bool):
+        raise HTTPException(status_code=400, detail='paused must be true or false.')
+    return await durable_ingestion.set_paused(payload['paused'])
+
+
+#----- Channel ingestion
+async def channel_ingestion_api(payload: dict) -> dict:
+    from Backend.helper.durable_ingestion import durable_ingestion
+    try:
+        return await durable_ingestion.set_channel_enabled(
+            str(payload.get('channel', '')), payload.get('enabled'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+#----- Ingestion start from
+async def ingestion_start_from_api(payload: dict) -> dict:
+    from Backend.helper.durable_ingestion import durable_ingestion
+    try:
+        return await durable_ingestion.set_start(str(payload.get('channel', '')), payload.get('message_id'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+#----- Channel auto add status
+async def channel_auto_add_status_api() -> dict:
+    from Backend.helper.channel_auto_add import get_session
+    return await get_session(db)
+
+
+#----- Channel auto add start
+async def channel_auto_add_start_api(payload: dict) -> dict:
+    from Backend.helper.channel_auto_add import start_session
+    if Backend.MANUAL_SESSION:
+        raise HTTPException(status_code=409, detail="Stop the manual upload session before starting auto-add.")
+    if not SettingsManager.current().auth_channels:
+        raise HTTPException(status_code=400, detail="Configure at least one AUTH channel first.")
+    try:
+        return await start_session(Backend.db, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+#----- Channel auto add stop
+async def channel_auto_add_stop_api() -> dict:
+    from Backend.helper.channel_auto_add import stop_session
+    return await stop_session(db)

@@ -51,8 +51,10 @@ def normalize_batch(payload):
 def library_filter(search="", custom=False):
     query = {"tmdb_id": {"$lt": 0}} if custom else {}
     if search.strip():
-        query["$or"] = [{field: {"$regex": re.escape(search.strip()), "$options": "i"}}
-                        for field in ("title", "title_english", "original_title")]
+        query["$or"] = [
+            {field: {"$regex": re.escape(search.strip()), "$options": "i"}}
+            for field in ("title", "title_english", "original_title")
+        ]
     return query
 
 
@@ -70,16 +72,21 @@ async def list_library(db, media_type="all", page=1, page_size=24, search="", cu
         raise ValueError("Type must be all, movie or tv.")
     query = library_filter(search, custom)
     types = ("movie", "tv") if media_type == "all" else (media_type,)
-    sources = [(int(key[8:]), kind, storage[kind])
-               for key, storage in db.dbs.items() if key.startswith("storage_")
-               for kind in types]
+    sources = [
+        (int(key[8:]), kind, storage[kind])
+        for key, storage in db.dbs.items()
+        if key.startswith("storage_")
+        for kind in types
+    ]
     counts = await asyncio.gather(*(collection.count_documents(query) for _, _, collection in sources))
     total = sum(counts)
     total_pages = (total + page_size - 1) // page_size
     page = max(1, min(page, total_pages or 1))
     skip = (page - 1) * page_size
-    cursors = [collection.find(query).sort([("updated_on", -1), ("_id", -1)]).batch_size(page_size)
-               for _, _, collection in sources]
+    cursors = [
+        collection.find(query).sort([("updated_on", -1), ("_id", -1)]).batch_size(page_size)
+        for _, _, collection in sources
+    ]
 
     async def next_doc(cursor):
         try:
@@ -110,7 +117,8 @@ async def list_library(db, media_type="all", page=1, page_size=24, search="", cu
         refs = [media_ref(item) for item in items]
         by_ref = {ref_key(item): item for item in items}
         cursor = db.dbs["tracking"]["custom_catalogs"].find(
-            {"items": {"$elemMatch": {"$or": refs}}}, {"name": 1, "items": 1},
+            {"items": {"$elemMatch": {"$or": refs}}},
+            {"name": 1, "items": 1},
         )
         async for catalog in cursor:
             for ref in catalog.get("items", []):
@@ -119,8 +127,13 @@ async def list_library(db, media_type="all", page=1, page_size=24, search="", cu
                     tag = {"id": str(catalog["_id"]), "name": catalog.get("name") or "Catalogue"}
                     if tag not in item["catalog_tags"]:
                         item["catalog_tags"].append(tag)
-    result = {"items": items, "total_count": total, "current_page": page, "total_pages": total_pages,
-              "databases_checked": sorted({index for index, _, _ in sources})}
+    result = {
+        "items": items,
+        "total_count": total,
+        "current_page": page,
+        "total_pages": total_pages,
+        "databases_checked": sorted({index for index, _, _ in sources}),
+    }
     if media_type != "all":
         result["movies" if media_type == "movie" else "tv_shows"] = items
     return result
@@ -158,7 +171,13 @@ async def bulk_library(db, payload, delete_one, add_one):
                     completed_catalogs.append(catalog_id)
             results.append({**ref, "ok": True, "catalog_ids": completed_catalogs})
         except Exception as exc:
-            results.append({**ref, "ok": False, "error": str(getattr(exc, "detail", None) or exc),
-                            "catalog_ids": completed_catalogs})
+            results.append(
+                {
+                    **ref,
+                    "ok": False,
+                    "error": str(getattr(exc, "detail", None) or exc),
+                    "catalog_ids": completed_catalogs,
+                }
+            )
     succeeded = sum(result["ok"] for result in results)
     return {"results": results, "succeeded": succeeded, "failed": len(results) - succeeded}

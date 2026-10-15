@@ -11,7 +11,6 @@ import Backend
 from Backend import db
 from Backend.helper.announcer import announce_new_media, _build_caption, _build_markup
 from Backend.config import Telegram
-from datetime import datetime
 from Backend.helper.auto_catalog import start_single_media_catalog_sync
 from Backend.helper.channel_auto_add import accepts_message, capture_message, get_session
 from Backend.helper.encrypt import encode_string
@@ -32,7 +31,7 @@ from Backend.helper.resolution_policy import source_resolution, rejection_reason
 file_queue = Queue()
 ingestion_status.queue = file_queue
 db_lock = Lock()
-from Backend.helper.ingestion_rules import manual_ingestion_lock as manual_session_lock, next_episode, resolution_hint
+from Backend.helper.ingestion_rules import manual_ingestion_lock as manual_session_lock, next_episode
 
 
 #----- True when the message carries a streamable video or a split-archive part

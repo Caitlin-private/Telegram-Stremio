@@ -2292,6 +2292,76 @@ class Database:
         doc = await self.dbs["tracking"]["api_tokens"].find_one({"user_id": user_id})
         return convert_objectid_to_str(doc) if doc else None
 
+    #----- Registered addon users for owner inbox and messaging commands
+    async def has_registered_token(self, user_id: int) -> bool:
+        return bool(await self.dbs["tracking"]["api_tokens"].find_one(
+            {"user_id": user_id}, {"_id": 1}
+        ))
+
+    async def get_registered_user_ids(self, user_id: int = None) -> List[int]:
+        query = {"user_id": {"$gt": 0}} if user_id is None else {"user_id": user_id}
+        return await self.dbs["tracking"]["api_tokens"].distinct("user_id", query)
+
+    async def list_registered_token_users(self, page: int = 0, page_size: int = 8) -> List[dict]:
+        return await self.dbs["tracking"]["api_tokens"].aggregate([
+            {"$match": {"user_id": {"$gt": 0}}},
+            {"$group": {"_id": "$user_id", "name": {"$first": "$name"}}},
+            {"$sort": {"_id": 1}}, {"$skip": page * page_size}, {"$limit": page_size + 1},
+        ]).to_list(page_size + 1)
+
+    async def set_user_stream_notice(self, user_id: int, notice: dict = None) -> bool:
+        change = {"$unset": {"stream_notice": ""}} if notice is None else {"$set": {"stream_notice": notice}}
+        result = await self.dbs["tracking"]["api_tokens"].update_many({"user_id": user_id}, change)
+        return result.matched_count > 0
+
+    #----- Title search for private bot cards
+    async def search_media_titles(self, query: str, limit: int = 5) -> List[dict]:
+        query = query.strip()
+        if not 2 <= len(query) <= 100:
+            return []
+        condition = {
+            "$or": [
+                {field: {"$regex": re.escape(query), "$options": "i"}}
+                for field in ("title", "title_english", "original_title")
+            ]
+        }
+        matches = []
+        for key, storage in self.dbs.items():
+            if not key.startswith("storage_"):
+                continue
+            for kind in ("movie", "tv"):
+                async for doc in storage[kind].find(condition).sort("title", 1).limit(limit + 1):
+                    matches.append({**doc, "media_type": kind, "db_index": int(key[8:])})
+        matches.sort(
+            key=lambda d: (
+                not any(
+                    str(d.get(f) or "").casefold() == query.casefold() for f in ("title", "title_english", "original_title")
+                ),
+                str(d.get("title") or "").casefold(),
+                d["media_type"],
+                d["db_index"],
+            )
+        )
+        return matches[: limit + 1]
+
+    #----- Resolve previously published file links into their media record
+    async def find_media_by_announcement_file(self, file_id: str) -> Optional[dict]:
+        source = await self.dbs["tracking"]["announcement_files"].find_one({"_id": file_id})
+        if not source:
+            return None
+
+        channel = int(str(source["chat_id"]).removeprefix("-100"))
+        hashes = [await encode_string({"chat_id": c, "msg_id": source["message_id"]}) for c in (channel, str(channel))]
+        parts = {"$elemMatch": {"chat_id": {"$in": [channel, str(channel)]}, "msg_id": source["message_id"]}}
+        for key, storage in self.dbs.items():
+            if not key.startswith("storage_"):
+                continue
+            for kind, prefix in (("movie", "telegram"), ("tv", "seasons.episodes.telegram")):
+                doc = await storage[kind].find_one({"$or": [{prefix + ".id": {"$in": hashes}}, {prefix + ".parts": parts}]})
+                if doc:
+                    return {**doc, "media_type": kind, "db_index": int(key[8:])}
+        return None
+
     async def get_all_api_tokens(self) -> List[dict]:
         cursor = self.dbs["tracking"]["api_tokens"].find().sort("created_at", DESCENDING)
         tokens = await cursor.to_list(None)
@@ -2363,17 +2433,24 @@ class Database:
             }
         )
 
-    async def update_api_token_limits(self, token: str, daily_limit_gb: float, monthly_limit_gb: float) -> bool:
+    async def update_api_token_limits(
+        self, token: str, daily_limit_gb: float = None, monthly_limit_gb: float = None,
+        session_streaming_allowed: bool = None,
+    ) -> bool:
+        update = {}
+        if daily_limit_gb is not None:
+            update["limits.daily_limit_gb"] = daily_limit_gb or 0
+        if monthly_limit_gb is not None:
+            update["limits.monthly_limit_gb"] = monthly_limit_gb or 0
+        if session_streaming_allowed is not None:
+            update["session_streaming_allowed"] = session_streaming_allowed
+        if not update:
+            return bool(await self.get_api_token(token))
         result = await self.dbs["tracking"]["api_tokens"].update_one(
-            {"token": token},
-            {"$set": {
-                "limits": {
-                    "daily_limit_gb": daily_limit_gb if daily_limit_gb else 0,
-                    "monthly_limit_gb": monthly_limit_gb if monthly_limit_gb else 0
-                }
-            }}
+            {"token": token}, {"$set": update}
         )
-        return result.modified_count > 0
+        return result.modified_count > 0 or result.matched_count > 0
+
 
     #-----
     #----- Admin / Link Checker Methods

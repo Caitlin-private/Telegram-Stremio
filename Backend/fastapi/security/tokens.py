@@ -11,6 +11,12 @@ MONTHLY_LIMIT_VIDEO = "https://bit.ly/4rfjtgd"
 SUBSCRIPTION_EXPIRED_VIDEO = "https://bit.ly/4rfjtgd"
 
 
+#----- Session playback is opt-in for users; owner tokens retain access
+def can_stream_session(token_data: dict) -> bool:
+    token_data = token_data or {}
+    return bool(token_data.get("is_admin")) or token_data.get("session_streaming_allowed") is True
+
+
 #----- Validate an API token and annotate it with subscription/limit status
 async def verify_token(token: str):
     token_data = await db.get_api_token(token)

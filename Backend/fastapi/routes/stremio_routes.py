@@ -15,7 +15,7 @@ from pyrogram.errors import UserNotParticipant
 from Backend import __version__, db
 from Backend.config import Telegram
 from Backend.helper.analytics import client_ip_from, record_client
-from Backend.fastapi.security.tokens import verify_token
+from Backend.fastapi.security.tokens import can_stream_session, verify_token
 from Backend.helper.cf_stream import cf_enabled, cf_stream_url
 from Backend.fastapi.themes import DEFAULT_THEME, DEFAULT_STYLE, get_theme
 from Backend.helper.poster_provider import _abs_media_url, _poster_url, _apply_fanart
@@ -25,7 +25,6 @@ from Backend.helper.metadata import COMBINED_SEASON, COMBINED_EPISODE_BASE
 from Backend.helper.split_files import parse_combined_episodes, combined_name_key
 from Backend.helper.settings_manager import SettingsManager
 from Backend.helper.stream_formatter import format_stream
-from Backend.helper.playback_access import can_stream_session
 from Backend.helper.series_media import SERIES_PREFIX, series_id, original_id
 from Backend.helper.subtitles import get_subtitles_for, stremio_subtitle_entries
 from Backend.logger import LOGGER

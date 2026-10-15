@@ -1,4 +1,5 @@
 """Process-local ingestion metrics; never imply that Telegram history is queued."""
+
 from contextlib import contextmanager
 from functools import wraps
 
@@ -18,6 +19,7 @@ class IngestionStatus:
                 return await function(*args, **kwargs)
             finally:
                 self.handlers -= 1
+
         return wrapped
 
     @contextmanager
@@ -33,15 +35,15 @@ class IngestionStatus:
 
     def snapshot(self, client=None):
         queued = self.queue.qsize() if self.queue is not None else 0
-        updates = getattr(getattr(client, 'dispatcher', None), 'updates_queue', None)
+        updates = getattr(getattr(client, "dispatcher", None), "updates_queue", None)
         return {
-            'pending_media': self.handlers + queued + self.writing,
-            'media_handlers': self.handlers,
-            'queued_media': queued,
-            'writing_media': self.writing,
-            'ingestion_write_errors': self.write_errors,
+            "pending_media": self.handlers + queued + self.writing,
+            "media_handlers": self.handlers,
+            "queued_media": queued,
+            "writing_media": self.writing,
+            "ingestion_write_errors": self.write_errors,
             # Unclassified updates include edits and non-media events.
-            'telegram_updates_waiting': updates.qsize() if updates is not None else None,
+            "telegram_updates_waiting": updates.qsize() if updates is not None else None,
         }
 
 
@@ -50,9 +52,13 @@ ingestion_status = IngestionStatus()
 
 async def ingestion_snapshot(client=None):
     from Backend.helper.durable_ingestion import durable_ingestion
+
     live = ingestion_status.snapshot(client)
     durable = await durable_ingestion.status()
-    live['pending_media'] = (durable['pending'] + live['queued_media'] + live['writing_media']
-        + max(0, live['media_handlers'] - int(durable['active'] is not None)))
-    return {**live, 'durable': durable, 'ingestion_paused': durable['paused'],
-            'durable_pending': durable['pending']}
+    live["pending_media"] = (
+        durable["pending"]
+        + live["queued_media"]
+        + live["writing_media"]
+        + max(0, live["media_handlers"] - int(durable["active"] is not None))
+    )
+    return {**live, "durable": durable, "ingestion_paused": durable["paused"], "durable_pending": durable["pending"]}

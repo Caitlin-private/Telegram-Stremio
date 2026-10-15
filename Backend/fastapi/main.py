@@ -83,6 +83,13 @@ from Backend.fastapi.routes.api_routes import (
     list_custom_catalogs_api,
     list_media_api,
     bulk_media_api,
+    ingestion_metrics_api,
+    pause_ingestion_api,
+    channel_ingestion_api,
+    ingestion_start_from_api,
+    channel_auto_add_status_api,
+    channel_auto_add_start_api,
+    channel_auto_add_stop_api,
     manage_subscriber_api,
     manual_add_media_api,
     list_manual_add_catalogs_api,
@@ -374,36 +381,22 @@ async def revoke_token(token: str, _: bool = Depends(require_auth)):
 
 @app.get("/api/system/ingestion")
 async def ingestion_metrics(_: bool = Depends(require_auth)):
-    from Backend.helper.ingestion_status import ingestion_snapshot
-    from Backend.pyrofork.bot import StreamBot
-    return JSONResponse(await ingestion_snapshot(StreamBot), headers={"Cache-Control": "no-store"})
+    return JSONResponse(await ingestion_metrics_api(), headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/system/ingestion/pause")
 async def pause_ingestion(payload: dict, _: bool = Depends(require_auth)):
-    from Backend.helper.durable_ingestion import durable_ingestion
-    if not isinstance(payload.get('paused'), bool):
-        raise HTTPException(status_code=400, detail='paused must be true or false.')
-    return await durable_ingestion.set_paused(payload['paused'])
+    return await pause_ingestion_api(payload)
 
 
 @app.post("/api/system/ingestion/channel")
 async def channel_ingestion(payload: dict, _: bool = Depends(require_auth)):
-    from Backend.helper.durable_ingestion import durable_ingestion
-    try:
-        return await durable_ingestion.set_channel_enabled(
-            str(payload.get('channel', '')), payload.get('enabled'))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    return await channel_ingestion_api(payload)
 
 
 @app.post("/api/system/ingestion/start-from")
 async def ingestion_start_from(payload: dict, _: bool = Depends(require_auth)):
-    from Backend.helper.durable_ingestion import durable_ingestion
-    try:
-        return await durable_ingestion.set_start(str(payload.get('channel', '')), payload.get('message_id'))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    return await ingestion_start_from_api(payload)
 
 
 @app.get("/api/system/stats")
@@ -825,31 +818,17 @@ async def admin_restart(_: bool = Depends(require_auth)):
 #----- Timed auth-channel capture, independent of the browser lifetime.
 @app.get("/api/media/auto-add")
 async def channel_auto_add_status(_: bool = Depends(require_auth)):
-    from Backend import db
-    from Backend.helper.channel_auto_add import get_session
-    return await get_session(db)
+    return await channel_auto_add_status_api()
 
 
 @app.post("/api/media/auto-add")
 async def channel_auto_add_start(payload: dict, _: bool = Depends(require_auth)):
-    import Backend
-    from Backend.helper.channel_auto_add import start_session
-    from Backend.helper.settings_manager import SettingsManager
-    if Backend.MANUAL_SESSION:
-        raise HTTPException(status_code=409, detail="Stop the manual upload session before starting auto-add.")
-    if not SettingsManager.current().auth_channels:
-        raise HTTPException(status_code=400, detail="Configure at least one AUTH channel first.")
-    try:
-        return await start_session(Backend.db, payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    return await channel_auto_add_start_api(payload)
 
 
 @app.delete("/api/media/auto-add")
 async def channel_auto_add_stop(_: bool = Depends(require_auth)):
-    from Backend import db
-    from Backend.helper.channel_auto_add import stop_session
-    return await stop_session(db)
+    return await channel_auto_add_stop_api()
 
 
 #----- Tools (WebUI replacement for /scan, /rescan, /dbcheck bot commands)

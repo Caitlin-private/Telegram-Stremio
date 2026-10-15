@@ -1,0 +1,161 @@
+from html import escape
+from time import monotonic
+from urllib.parse import urlsplit
+
+from pyrogram import Client, filters, enums
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
+
+from Backend import db
+from Backend.config import Telegram
+from Backend.helper.settings_manager import SettingsManager
+from Backend.logger import LOGGER
+from Backend.helper.subscriber_tools import subscriber_picker
+
+# Only unfinished owner edits are transient; saved notices live in MongoDB.
+_notice_edit = {}
+
+
+async def _notice_menu(message, scope):
+    if scope == "all":
+        notice = SettingsManager.current().stream_notice
+        label = "All subscribers (global default)"
+    else:
+        token = await db.get_api_token_by_user(int(scope))
+        if not token:
+            return await message.reply_text("User no longer has a linked addon token.")
+        notice = token.get("stream_notice", SettingsManager.current().stream_notice)
+        label = f"{token.get('name') or 'User'} · {scope}"
+    text = f"📢 <b>Stream message</b>\n<b>Applies to:</b> {escape(label)}\n"
+    text += f"<b>Status:</b> {'Enabled' if notice.get('enabled') else 'Disabled'}\n"
+    if notice.get("enabled"):
+        text += f"\n<b>{escape(notice.get('name') or '')}</b>\n{escape(notice.get('message') or '')}\n{escape(notice.get('url') or '')}\n"
+    text += "\nUser overrides take priority over the global default."
+    rows = [
+        [
+            InlineKeyboardButton("✏️ Set message & link", callback_data=f"sn:edit:{scope}"),
+            InlineKeyboardButton("🚫 Disable", callback_data=f"sn:off:{scope}"),
+        ]
+    ]
+    if scope != "all":
+        rows.append([InlineKeyboardButton("↩️ Use global default", callback_data=f"sn:inherit:{scope}")])
+    rows.append([InlineKeyboardButton("Back", callback_data="sn:home")])
+    await message.reply_text(
+        text, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+
+@Client.on_message(filters.command("streammessage") & filters.private & filters.user(Telegram.OWNER_ID), group=-2)
+async def stream_message_menu(client, message):
+    _notice_edit.pop(message.chat.id, None)
+    await message.reply_text(
+        "📢 Stream message\nSet a custom label, message and donation/website link in the stream list.",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🌍 All subscribers", callback_data="sn:scope:all")],
+                [InlineKeyboardButton("👤 Select user", callback_data="sn:users:0")],
+            ]
+        ),
+    )
+    message.stop_propagation()
+
+
+@Client.on_callback_query(filters.regex(r"^sn:"))
+async def stream_message_action(client, query):
+    if (
+        not query.from_user
+        or query.from_user.id != Telegram.OWNER_ID
+        or not query.message
+        or query.message.chat.id != Telegram.OWNER_ID
+    ):
+        return await query.answer("Owner only.", show_alert=True)
+    await query.answer()
+    parts = query.data.split(":")
+    action = parts[1]
+    scope = parts[2] if len(parts) > 2 else ""
+    if action == "home":
+        return await stream_message_menu(client, query.message)
+    if action == "users":
+        return await subscriber_picker(query.message, scope, "sn")
+    if scope != "all" and (not scope.isdigit() or int(scope) <= 0):
+        return
+    if action == "scope":
+        _notice_edit.pop(query.message.chat.id, None)
+        return await _notice_menu(query.message, scope)
+    if action == "edit":
+        prompt = await query.message.reply_text(
+            "Reply with exactly three lines:\n1. Stream label (up to 80 characters)\n2. Custom message (up to 500 characters)\n3. https:// donation or website link\n\nExample:\n💛 Support Caitlin Stream\nHelp keep the service running.\nhttps://example.com/donate\n\nUse /streammessage to cancel.",
+            reply_markup=ForceReply(selective=True),
+        )
+        _notice_edit[query.message.chat.id] = dict(scope=scope, prompt=prompt.id, until=monotonic() + 600)
+        return
+    if action not in ("save", "off", "inherit") or (action == "inherit" and scope == "all"):
+        return
+    if action == "save":
+        draft = _notice_edit.get(query.message.chat.id) or {}
+        if (
+            draft.get("scope") != scope
+            or draft.get("until", 0) < monotonic()
+            or draft.get("preview") != query.message.id
+            or not draft.get("notice")
+        ):
+            return await query.message.reply_text("This preview expired. Open /streammessage again.")
+        notice = draft["notice"]
+    else:
+        notice = {"enabled": False}
+    try:
+        if scope == "all":
+            await SettingsManager.update(db, {"stream_notice": notice})
+        else:
+            saved = await db.set_user_stream_notice(int(scope), None if action == "inherit" else notice)
+            if not saved:
+                return await query.message.reply_text("User no longer has a linked addon token.")
+    except Exception:
+        LOGGER.exception("Could not save stream message")
+        return await query.message.reply_text("Save failed. Please try again.")
+    _notice_edit.pop(query.message.chat.id, None)
+    await query.message.reply_text("✅ Saved. Applies when the client refreshes its stream list.")
+    await _notice_menu(query.message, scope)
+
+
+@Client.on_message(filters.private & filters.user(Telegram.OWNER_ID) & filters.text & ~filters.regex(r"^/"), group=-2)
+async def stream_message_reply(client, message):
+    draft = _notice_edit.get(message.chat.id)
+    if not draft or not message.reply_to_message or message.reply_to_message.id != draft.get("prompt"):
+        return
+    if draft["until"] < monotonic():
+        _notice_edit.pop(message.chat.id, None)
+        await message.reply_text("Edit expired. Open /streammessage again.")
+        message.stop_propagation()
+    lines = [s.strip() for s in message.text.splitlines()]
+    error = "Use three nonempty lines: label, message, HTTP(S) link."
+    valid = len(lines) == 3 and all(lines) and len(lines[0]) <= 80 and len(lines[1]) <= 500 and len(lines[2]) <= 2048
+    if valid:
+        try:
+            url = urlsplit(lines[2])
+            url.port
+            valid = (
+                url.scheme in ("http", "https")
+                and bool(url.hostname)
+                and not (url.username or url.password or any(c.isspace() for c in lines[2]))
+            )
+        except ValueError:
+            valid = False
+    if not valid:
+        await message.reply_text(error + " Reply to the original prompt to retry.")
+        message.stop_propagation()
+    draft["notice"] = dict(enabled=True, name=lines[0], message=lines[1], url=lines[2])
+    preview = await message.reply_text(
+        f"<b>Preview · {'All subscribers' if draft['scope']=='all' else 'User '+draft['scope']}</b>\n\n<b>{escape(lines[0])}</b>\n{escape(lines[1])}\n{escape(lines[2])}",
+        parse_mode=enums.ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("✅ Save", callback_data=f"sn:save:{draft['scope']}"),
+                    InlineKeyboardButton("Cancel", callback_data="sn:home"),
+                ]
+            ]
+        ),
+    )
+    draft["preview"] = preview.id
+    message.stop_propagation()
