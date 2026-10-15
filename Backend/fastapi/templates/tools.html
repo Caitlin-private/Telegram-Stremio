@@ -952,6 +952,12 @@ function renderScan(s) {
                 status === 'error' ? 'Scan failed.' : 'No scan running';
         }
 
+        if (['cancelled', 'paused', 'error', 'idle'].includes(status) && s.last_processed_message_id != null) {
+            document.getElementById('scan-current').textContent +=
+                ` Last processed message: #${s.last_processed_message_id} (channel ${s.last_processed_channel}).`;
+        } else if (['cancelled', 'paused', 'error'].includes(status)) {
+            document.getElementById('scan-current').textContent += ' No messages processed yet.';
+        }
         if (s.error) { errEl.style.display = ''; errEl.textContent = s.error; }
         else errEl.style.display = 'none';
 

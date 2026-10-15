@@ -398,19 +398,20 @@ async def grant_lifetime_api() -> dict:
     return {"status": "success", "updated": count, "message": f"{count} token(s) marked as lifetime."}
 
 async def update_token_limits_api(token: str, payload: dict):
-    try:
-        daily_limit = payload.get("daily_limit_gb")
-        monthly_limit = payload.get("monthly_limit_gb")
-
-        await db.update_api_token_limits(
-            token,
-            _parse_limit(daily_limit),
-            _parse_limit(monthly_limit)
-        )
-        return {"message": "Limits updated successfully"}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if "session_streaming_allowed" in payload and not isinstance(payload["session_streaming_allowed"], bool):
+        raise HTTPException(status_code=400, detail="Session playback permission must be true or false")
+    existing = await db.get_api_token(token)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Token not found")
+    updates = {}
+    for key in ("daily_limit_gb", "monthly_limit_gb"):
+        if key in payload:
+            updates["limits." + key] = _parse_limit(payload[key])
+    if "session_streaming_allowed" in payload:
+        updates["session_streaming_allowed"] = payload["session_streaming_allowed"]
+    if updates:
+        await db.dbs["tracking"]["api_tokens"].update_one({"token": token}, {"$set": updates})
+    return {"message": "User settings updated successfully"}
 
 
 #----- Speed test
@@ -850,6 +851,7 @@ async def get_all_tokens_api() -> dict:
                 "lifetime": lifetime,
                 "never_expires": never_expires,
                 "has_token": bool(token_str),
+                "session_streaming_allowed": is_admin or token_doc.get("session_streaming_allowed") is True,
                 "has_active_sub": has_active_sub,
                 "created_at": created.isoformat() if created else None,
                 "expires_at": expiry.isoformat() if expiry else None,

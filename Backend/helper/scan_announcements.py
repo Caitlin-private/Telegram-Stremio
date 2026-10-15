@@ -32,6 +32,10 @@ def format_notice(event, report, counts, elapsed, totals=None):
     lines += [f'🔍 <b>Scan type:</b> {escape(mode)}',
               f'📢 <b>Channel:</b> {escape(str(report["name"]))}',
               f'🆔 <b>Channel ID:</b> <code>{escape(str(report["channel"]))}</code>']
+    if event in ('stop', 'cancel', 'error'):
+        last_id = report.get('last_processed_message_id')
+        lines.append(f'📍 <b>Last processed message ID:</b> <code>{escape(str(last_id))}</code>'
+                     if last_id is not None else '📍 <b>Last processed message ID:</b> None in this channel yet')
     if event == 'start':
         if report.get('cursor', 1) > 1:
             lines += [f'🔄 <b>Continuing from message ID:</b> <code>{report["cursor"]}</code>']

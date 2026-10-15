@@ -29,16 +29,16 @@ class MergeTests(unittest.TestCase):
                   USERBOT_CLIENT_INDEX=-1, _get_userbot_streamer=lambda: 'user',
                   select_best_client=lambda _: 0, multi_clients={0:'bot'},
                   _get_streamer=lambda client, _: client, LOGGER=logging.getLogger('test'),
-                  get_parallel_prefetch=lambda _: (3, 3))
+                  get_parallel_prefetch=lambda _: (3, 3), can_stream_session=lambda t: bool(t and t.get('session_streaming_allowed')))
         load_nodes('Backend/fastapi/routes/stream_routes.py', {'_db_client','_prefetch_for'}, ns)
         async def fetch(client): return client + '-file'
         async def failing_user(client):
             if client == 'user': raise RuntimeError('unavailable')
             return client + '-file'
-        self.assertEqual(asyncio.run(ns['_db_client'](fetch)), (-1,'user','user-file'))
-        self.assertEqual(asyncio.run(ns['_db_client'](failing_user)), (0,'bot','bot-file'))
+        self.assertEqual(asyncio.run(ns['_db_client'](fetch, {'session_streaming_allowed':True})), (-1,'user','user-file'))
+        self.assertEqual(asyncio.run(ns['_db_client'](failing_user, {'session_streaming_allowed':True})), (0,'bot','bot-file'))
         setting.default_streaming = 'bots'
-        self.assertEqual(asyncio.run(ns['_db_client'](fetch)), (0,'bot','bot-file'))
+        self.assertEqual(asyncio.run(ns['_db_client'](fetch, {'session_streaming_allowed':True})), (0,'bot','bot-file'))
         self.assertEqual(ns['_prefetch_for'](-1), (1,1))
         self.assertEqual(ns['_prefetch_for'](0), (3,3))
 

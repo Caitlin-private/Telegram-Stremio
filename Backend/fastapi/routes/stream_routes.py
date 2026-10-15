@@ -19,6 +19,7 @@ from Backend.helper.custom_dl import ACTIVE_STREAMS, RECENT_STREAMS, ByteStreame
 from Backend.helper.encrypt import decode_string
 from Backend.helper.pyro import get_thumb_download_target
 from Backend.helper.settings_manager import SettingsManager
+from Backend.helper.playback_access import can_stream_session
 from Backend.helper.utils import track_usage
 from Backend.helper.virtual_dl import resolve_virtual_parts, virtual_stream_generator
 from Backend.helper.zip_stream import resolve_zip_entry
@@ -133,8 +134,8 @@ def _prefetch_for(index: int) -> tuple[int, int]:
 
 
 #----- Run fetch(streamer) on the Userbot when it is the default streamer, else (or on failure) on the bot pool
-async def _db_client(fetch):
-    if SettingsManager.current().default_streaming == "userbot" and (ub := _get_userbot_streamer()):
+async def _db_client(fetch, token_data=None):
+    if can_stream_session(token_data) and SettingsManager.current().default_streaming == "userbot" and (ub := _get_userbot_streamer()):
         try:
             return USERBOT_CLIENT_INDEX, ub, await fetch(ub)
         except Exception as e:
@@ -323,7 +324,7 @@ async def stream_handler(request: Request, token: str, id: str, name: str, token
 
 #----- Stream a single Telegram file, with optional multi-client parallelism
 async def media_streamer(request: Request, chat_id: int, msg_id: int, token: str, token_data: dict = None, stream_id_hash: str = None):
-    index, streamer, file_id = await _db_client(lambda s: s.get_file_properties(chat_id=chat_id, message_id=msg_id))
+    index, streamer, file_id = await _db_client(lambda s: s.get_file_properties(chat_id=chat_id, message_id=msg_id), token_data)
     file_size = file_id.file_size
     range_header = request.headers.get("Range", "")
     start, end = parse_range_header(range_header, file_size)
@@ -393,7 +394,7 @@ async def media_streamer(request: Request, chat_id: int, msg_id: int, token: str
 
 #----- Stream media reconstructed from multiple split parts
 async def virtual_media_streamer(request: Request, parts_payload: list, token: str, token_data: dict = None, stream_id_hash: str = None):
-    index, streamer, (parts, file_size) = await _db_client(lambda s: resolve_virtual_parts(parts_payload, s))
+    index, streamer, (parts, file_size) = await _db_client(lambda s: resolve_virtual_parts(parts_payload, s), token_data)
     if not parts or file_size <= 0:
         raise HTTPException(status_code=404, detail="Split media parts not found")
 
@@ -448,6 +449,8 @@ def _get_userbot_streamer() -> ByteStreamer:
 
 #----- Stream a Global Search file through the Userbot session directly
 async def global_media_streamer(request: Request, chat_id: int, msg_id: int, token: str, token_data: dict = None, stream_id_hash: str = None):
+    if not can_stream_session(token_data):
+        raise HTTPException(status_code=403, detail="Session playback is not enabled for this user")
     streamer = _get_userbot_streamer()
     if streamer is None:
         raise HTTPException(status_code=503, detail="Global Search streaming is unavailable (no Userbot configured)")
@@ -509,6 +512,8 @@ async def global_media_streamer(request: Request, chat_id: int, msg_id: int, tok
 
 #----- Stream a split Global Search file (multiple parts) through the Userbot session
 async def global_virtual_media_streamer(request: Request, parts_payload: list, token: str, token_data: dict = None, stream_id_hash: str = None):
+    if not can_stream_session(token_data):
+        raise HTTPException(status_code=403, detail="Session playback is not enabled for this user")
     streamer = _get_userbot_streamer()
     if streamer is None:
         raise HTTPException(status_code=503, detail="Global Search streaming is unavailable (no Userbot connected)")
@@ -631,6 +636,8 @@ async def _zip_media_streamer(request, parts_payload, token, token_data, stream_
 
 #----- ZIP split from Global Search (streamed via the Userbot session)
 async def global_zip_media_streamer(request: Request, parts_payload: list, token: str, token_data: dict = None, stream_id_hash: str = None):
+    if not can_stream_session(token_data):
+        raise HTTPException(status_code=403, detail="Session playback is not enabled for this user")
     return await _zip_media_streamer(
         request, parts_payload, token, token_data, stream_id_hash,
         _get_userbot_streamer(), USERBOT_CLIENT_INDEX, False, 1, 1,
@@ -639,7 +646,7 @@ async def global_zip_media_streamer(request: Request, parts_payload: list, token
 
 #----- ZIP split from the indexed library (streamed via the multi-bot pool)
 async def db_zip_media_streamer(request: Request, parts_payload: list, token: str, token_data: dict = None, stream_id_hash: str = None):
-    index, streamer, _ = await _db_client(lambda s: resolve_virtual_parts(parts_payload[:1], s))
+    index, streamer, _ = await _db_client(lambda s: resolve_virtual_parts(parts_payload[:1], s), token_data)
     parallelism, prefetch_count = _prefetch_for(index)
     return await _zip_media_streamer(
         request, parts_payload, token, token_data, stream_id_hash,

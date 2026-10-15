@@ -273,12 +273,17 @@
     <div class="modal-glass">
         <div class="flex items-start justify-between gap-4 mb-5">
             <div>
-                <h3 class="text-xl font-bold section-title">Edit Data Limits</h3>
+                <h3 class="text-xl font-bold section-title">User Playback & Data Limits</h3>
                 <p class="text-sm text-soft mt-1">Set 0 for unlimited.</p>
             </div>
             <button onclick="closeModal('limits-modal')" class="glass-btn rounded-full w-10 h-10 flex items-center justify-center"><i class="fas fa-xmark"></i></button>
         </div>
         <input type="hidden" id="limits-token">
+        <label class="flex items-center gap-3 mb-2 section-title">
+            <input type="checkbox" id="limits-session" class="w-4 h-4">
+            Allow Telegram session playback
+        </label>
+        <p class="text-sm text-soft mb-5">Allows session-only Global Search playback and library playback when Default Streaming is set to Userbot. Unselected users stream library files through bots. Owner access is always enabled.</p>
         <div class="grid grid-cols-2 gap-3">
             <div class="modal-field">
                 <label>Daily (GB)</label>
@@ -415,6 +420,7 @@
         return `<div class="usage-box text-soft">
             <div><span class="section-title font-semibold">Day:</span> ${fmtBytes(t.daily_bytes)} / ${dl}</div>
             <div><span class="section-title font-semibold">Mon:</span> ${fmtBytes(t.monthly_bytes)} / ${ml}</div>
+            <div><span class="section-title font-semibold">Session:</span> ${t.session_streaming_allowed ? 'Allowed' : 'Not allowed'}</div>
         </div>`;
     }
 
@@ -431,7 +437,7 @@
         const tokenArg = t.token ? escHtml(t.token) : '';
 
         if (t.has_token) {
-            btns += `<button onclick="openLimitsModal('${tokenArg}', ${t.daily_limit_gb || 0}, ${t.monthly_limit_gb || 0})" class="action-chip glass-btn">Limits</button>`;
+            btns += `<button onclick="openLimitsModal('${tokenArg}', ${t.daily_limit_gb || 0}, ${t.monthly_limit_gb || 0}, ${!!t.session_streaming_allowed}, ${!!t.is_admin})" class="action-chip glass-btn">Playback & Limits</button>`;
         }
 
         if (subEnabled) {
@@ -603,7 +609,9 @@
         } catch (err) { showToast('Error: ' + err.message, 'error', 'Network Error'); }
     }
 
-    function openLimitsModal(token, daily, monthly) {
+    function openLimitsModal(token, daily, monthly, sessionAllowed, isAdmin) {
+        document.getElementById('limits-session').checked = !!sessionAllowed;
+        document.getElementById('limits-session').disabled = !!isAdmin;
         document.getElementById('limits-token').value = token;
         document.getElementById('limits-daily').value = daily || 0;
         document.getElementById('limits-monthly').value = monthly || 0;
@@ -615,11 +623,12 @@
         const payload = {
             daily_limit_gb: Number(document.getElementById('limits-daily').value || 0),
             monthly_limit_gb: Number(document.getElementById('limits-monthly').value || 0),
+            session_streaming_allowed: document.getElementById('limits-session').checked,
         };
         try {
             const resp = await fetch('/api/tokens/' + encodeURIComponent(token), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-            if (resp.ok) { showToast('Limits updated.', 'success', 'Updated'); closeModal('limits-modal'); loadTokens(); }
-            else { showToast('Failed to update limits.', 'error', 'Failed'); }
+            if (resp.ok) { showToast('User settings updated.', 'success', 'Updated'); closeModal('limits-modal'); loadTokens(); }
+            else { showToast('Failed to update user settings.', 'error', 'Failed'); }
         } catch (err) { showToast('Error: ' + err.message, 'error', 'Network Error'); }
     }
 

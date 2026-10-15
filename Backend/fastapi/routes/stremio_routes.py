@@ -25,6 +25,7 @@ from Backend.helper.metadata import COMBINED_SEASON, COMBINED_EPISODE_BASE
 from Backend.helper.split_files import parse_combined_episodes, combined_name_key
 from Backend.helper.settings_manager import SettingsManager
 from Backend.helper.stream_formatter import format_stream
+from Backend.helper.playback_access import can_stream_session
 from Backend.helper.series_media import SERIES_PREFIX, series_id, original_id
 from Backend.helper.subtitles import get_subtitles_for, stremio_subtitle_entries
 from Backend.logger import LOGGER
@@ -1079,7 +1080,7 @@ async def get_streams(
                 for stream in streams[stream_offset:]:
                     stream['video_part'] = quality.get('video_part')
                     stream['video_group'] = quality.get('video_group')
-    elif is_global_search_enabled():
+    elif is_global_search_enabled() and can_stream_session(token_data):
         try:
             is_anime = bool(is_kitsu or (media_details and media_details.get("is_anime")))
             log_id = f"kitsu:{kitsu_id}" if is_kitsu else imdb_id

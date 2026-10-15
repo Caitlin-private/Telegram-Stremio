@@ -86,6 +86,8 @@ class ScanManager:
             "pending": [],               
             "current_channel": None,
             "current_channel_name": "",
+            "last_processed_message_id": None,
+            "last_processed_channel": None,
             "current_id": 0,             
             "current_target_id": 0,      
             "cursors": {},               
@@ -188,6 +190,8 @@ class ScanManager:
             "pending": list(s["pending"]),
             "current_channel": s["current_channel"],
             "current_channel_name": s["current_channel_name"],
+            "last_processed_message_id": s.get("last_processed_message_id"),
+            "last_processed_channel": s.get("last_processed_channel"),
             "current_id": cur,
             "current_target_id": target,
             "progress": progress,
@@ -240,6 +244,10 @@ class ScanManager:
                 self.state['start_id'], self.state['end_id'] = start_id, end_id
                 for ch in channels:
                     self.state['cursors'].pop(ch, None)
+
+            if not resuming_job:
+                self.state['last_processed_message_id'] = None
+                self.state['last_processed_channel'] = None
 
             if mode == 'rescan' or self.state['status'] not in ('paused', 'cancelled', 'error'):
                 self.state.pop('import_report', None)
@@ -304,7 +312,7 @@ class ScanManager:
         return {"ok": True, "message": "Stop requested — the scan will pause after the current batch."}
 
     async def _discard_job(self):
-        keep = {key: self.state[key] for key in ('worker_limit', 'pause_for_playback', 'worker_waits') if key in self.state}
+        keep = {key: self.state[key] for key in ('worker_limit', 'pause_for_playback', 'worker_waits', 'last_processed_message_id', 'last_processed_channel') if key in self.state}
         self.state = self._blank_state()
         self.state.update(keep)
         self._priority = None
@@ -535,6 +543,9 @@ class ScanManager:
                 finally:
                     self._worker_context.reset(token)
                 s['counters']['processed'] += 1
+                s['last_processed_message_id'] = msg.id
+                s['last_processed_channel'] = ch_key
+                report['last_processed_message_id'] = msg.id
                 if msg.video or msg.document:
                     s['counters']['media_processed'] = s['counters'].get('media_processed', 0) + 1
 
