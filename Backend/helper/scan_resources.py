@@ -9,7 +9,15 @@ from Backend.helper.stats_display import live_counts
 def playback_active():
     from Backend.helper.custom_dl import ACTIVE_STREAMS, STALE_STREAM_IDLE
 
-    return live_counts(list(ACTIVE_STREAMS.values()), time.time(), STALE_STREAM_IDLE)["live_streams"] > 0
+    from Backend.pyrofork.bot import USERBOT_CLIENT_INDEX
+
+    # Session/Userbot streams do not compete with worker bots used by scans.
+    # Only bot-backed playback should trigger the scanner pause.
+    bot_streams = [
+        stream for stream in ACTIVE_STREAMS.values()
+        if stream.get("client_index") != USERBOT_CLIENT_INDEX
+    ]
+    return live_counts(bot_streams, time.time(), STALE_STREAM_IDLE)["live_streams"] > 0
 
 
 async def select_scan_clients(main, channel, limit, quick, call, stopped_error=()):
