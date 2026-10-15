@@ -178,6 +178,7 @@ async def _announce_serial(info: dict) -> None:
                 provider = settings.announcement_poster_provider
                 if provider == 'same':
                     provider = ('pictorium' if settings.pictorium_poster_enabled else
+                                'spatial' if settings.spatial_poster_enabled else
                                 'fanart' if settings.fanart_enabled else
                                 'better' if settings.better_poster_enabled else
                                 'rpdb' if settings.rpdb_enabled else 'default')

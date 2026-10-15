@@ -32,6 +32,9 @@ def _poster_url(imdb_id: str, fallback: str, tmdb_id=None, media_type='movie', s
         # Fanart backgrounds are resolved by the existing artwork lookup.
         return _abs_media_url(fallback)
     if imdb_id:
+        if (provider == "spatial" or (provider is None and settings.spatial_poster_enabled)) and settings.spatial_poster:
+            spatial_type = "series" if media_type in ("tv", "series") else "movie"
+            return settings.spatial_poster.replace("{type}", spatial_type).replace("{imdb_id}", str(imdb_id))
         if provider == 'better' or (provider is None and settings.better_poster_enabled):
             template = settings.better_poster or BETTERPOSTER_DEFAULT
             return template.replace("{imdb_id}", str(imdb_id))

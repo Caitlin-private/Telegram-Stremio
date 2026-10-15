@@ -45,6 +45,7 @@ _DEFAULTS: Dict[str, Any] = {
     "multi_tokens": [],
     "extra_databases": [],
     "global_search": False,
+    "default_streaming": "bots",
     "global_search_channels": [],
     "anime_channels": [],
     "manual_channels": [],
@@ -60,6 +61,11 @@ _DEFAULTS: Dict[str, Any] = {
     "better_poster": "",
     "rpdb_enabled": False,
     "rpdb_api_key": "",
+    "spatial_poster_enabled": False,
+    "spatial_poster": "",
+    "stream_formatter": "default",
+    "formatter_name": "",
+    "formatter_description": "",
     "fanart_enabled": False,
     "fanart_api_key": "",
     "fanart_shuffle": False,
@@ -150,6 +156,10 @@ class Settings:
         return bool(self._d.get("global_search", False))
 
     @property
+    def default_streaming(self) -> str:
+        return "userbot" if self._d.get("default_streaming") == "userbot" else "bots"
+
+    @property
     def global_search_channels(self):
         return list(self._d.get("global_search_channels") or [])
 
@@ -179,7 +189,7 @@ class Settings:
     @property
     def announcement_poster_provider(self) -> str:
         value = str(self._d.get("announcement_poster_provider") or "same").lower()
-        return value if value in ("same", "pictorium", "better", "rpdb", "fanart", "default") else "same"
+        return value if value in ("same", "pictorium", "better", "rpdb", "spatial", "fanart", "default") else "same"
 
     @property
     def announcement_channel(self) -> str:
@@ -283,6 +293,26 @@ class Settings:
     @property
     def rpdb_api_key(self) -> str:
         return str(self._d.get("rpdb_api_key") or "").strip()
+
+    @property
+    def stream_formatter(self) -> str:
+        return str(self._d.get("stream_formatter") or "default")
+
+    @property
+    def formatter_name(self) -> str:
+        return str(self._d.get("formatter_name") or "")
+
+    @property
+    def formatter_description(self) -> str:
+        return str(self._d.get("formatter_description") or "")
+
+    @property
+    def spatial_poster_enabled(self) -> bool:
+        return bool(self._d.get("spatial_poster_enabled", False))
+
+    @property
+    def spatial_poster(self) -> str:
+        return str(self._d.get("spatial_poster") or "").strip()
 
     @property
     def fanart_enabled(self) -> bool:

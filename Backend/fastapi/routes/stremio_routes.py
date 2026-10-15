@@ -24,6 +24,7 @@ from Backend.helper.metadata.providers.cinemeta import get_detail, get_season
 from Backend.helper.metadata import COMBINED_SEASON, COMBINED_EPISODE_BASE
 from Backend.helper.split_files import parse_combined_episodes, combined_name_key
 from Backend.helper.settings_manager import SettingsManager
+from Backend.helper.stream_formatter import format_stream
 from Backend.helper.series_media import SERIES_PREFIX, series_id, original_id
 from Backend.helper.subtitles import get_subtitles_for, stremio_subtitle_entries
 from Backend.logger import LOGGER
@@ -748,20 +749,24 @@ def _streams_from_global_results(token: str, global_results: list) -> list:
     for r in global_results:
         is_split = bool(r.get("is_split"))
         _, stream_title = format_stream_details(r["title"], r["quality"], r["size"], is_split=is_split)
-        stream_name = f"🌐 GLOBAL {r['quality']}"
+        stream_name = sort_name = f"🌐 GLOBAL {r['quality']}"
         stream_title = f"{stream_title}\n📡 {r['source_chat']}"
         if is_split:
             kind = "zip parts" if r.get("is_zip") else "parts"
             stream_title += f" · 📦 {r.get('part_count', 0)} {kind}"
-        url = f"{SettingsManager.current().base_url}/dl/{token}/{r['token']}/{quote(r['title'])}"
         size_bytes = parse_size_to_bytes(r.get("size", ""))
+        custom = format_stream(SettingsManager.current(), r["title"], size_bytes, addon_name="🌐 Global",
+                               is_split=is_split, parts=r.get("part_count", 0), channel=r.get("source_chat"))
+        if custom:
+            stream_name, stream_title = custom
+        url = f"{SettingsManager.current().base_url}/dl/{token}/{r['token']}/{quote(r['title'])}"
         if cf_enabled():
             cf_url = cf_stream_url(token, r['token'], quote(r['title']))
             if SettingsManager.current().cf_stream_mode == "cloudflare":
                 url = cf_url
             else:
-                streams.append({"name": f"{stream_name} (Cloudflare)", "title": stream_title, "url": cf_url, "size_bytes": size_bytes})
-        streams.append({"name": stream_name, "title": stream_title, "url": url, "size_bytes": size_bytes})
+                streams.append({"name": f"{stream_name} (Cloudflare)", "title": stream_title, "url": cf_url, "size_bytes": size_bytes, "sort_name": sort_name})
+        streams.append({"name": stream_name, "title": stream_title, "url": url, "size_bytes": size_bytes, "sort_name": sort_name})
     return streams
 
 
@@ -1013,6 +1018,11 @@ async def get_streams(
     is_combined = season_num == COMBINED_SEASON and episode_num is not None and episode_num >= COMBINED_EPISODE_BASE
 
     if media_details and "telegram" in media_details:
+        fmt_meta = {
+            "queryType": media_type, "type": media_type, "isAnime": bool(media_details.get("is_anime")),
+            "title": media_details.get("title"), "year": media_details.get("release_year"),
+            "season": season_num, "episode": episode_num,
+        }
         from Backend.helper.multipart_video import with_video_part
         for quality in media_details.get("telegram", []):
             quality = with_video_part(quality)
@@ -1033,31 +1043,39 @@ async def get_streams(
                     filename, quality_str, size, is_split=bool(quality.get("group_key"))
                 )
 
-                if combined:
-                    label = "Full" if combined.get("start") is None else f"E{combined['start']:02d}-E{combined['end']:02d}"
-                    if label.lower() not in stream_name.lower():
-                        stream_name = f"{stream_name} {label}"
-
-                if quality.get('video_part'):
-                    label = f"[Multi-Part · Part {quality['video_part']}]"
-                    stream_name += f" {label}"
-                    stream_title = f"{label}\n{stream_title}"
-
+                sort_name = stream_name
                 original_url = f"{SettingsManager.current().base_url}/dl/{token}/{quality.get('id')}/video.mkv"
                 proxy_url = build_proxy_url(original_url)
                 cf_url = cf_stream_url(token, quality.get('id'), "video.mkv") if cf_enabled() else None
                 cf_only = cf_url and SettingsManager.current().cf_stream_mode == "cloudflare"
 
+                def add(suffix, url, proxied=False):
+                    name, title = stream_name, stream_title
+                    custom = format_stream(
+                        SettingsManager.current(), filename, size_bytes, addon_name=ADDON_NAME, proxied=proxied,
+                        is_split=bool(quality.get("group_key")), meta=fmt_meta,
+                    )
+                    if custom:
+                        name, title = custom
+                    if combined:
+                        label = "Full" if combined.get("start") is None else f"E{combined['start']:02d}-E{combined['end']:02d}"
+                        if label.lower() not in name.lower():
+                            name = f"{name} {label}"
+                    if quality.get('video_part'):
+                        label = f"[Multi-Part · Part {quality['video_part']}]"
+                        name += f" {label}"
+                        title = f"{label}\n{title}"
+                    streams.append({"name": f"{name} {suffix}".strip(), "title": title, "url": url, "size_bytes": size_bytes,
+                                    "episode_start": episode_start, "name_key": name_key, "sort_name": sort_name})
+
                 if cf_url:
-                    streams.append({"name": stream_name if cf_only else f"{stream_name} (Cloudflare)", "title": stream_title, "url": cf_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
+                    add("" if cf_only else "(Cloudflare)", cf_url)
                 if not cf_only:
                     if SettingsManager.current().show_proxy_and_non_proxy_both and proxy_url:
-                        streams.append({"name": f"{stream_name} (Proxy)", "title": stream_title, "url": proxy_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
-                        streams.append({"name": f"{stream_name} (Direct)", "title": stream_title, "url": original_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
-                    elif proxy_url:
-                        streams.append({"name": stream_name, "title": stream_title, "url": proxy_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
+                        add("(Proxy)", proxy_url, True)
+                        add("(Direct)", original_url)
                     else:
-                        streams.append({"name": stream_name, "title": stream_title, "url": original_url, "size_bytes": size_bytes, "episode_start": episode_start, "name_key": name_key})
+                        add("", proxy_url or original_url, bool(proxy_url))
                 for stream in streams[stream_offset:]:
                     stream['video_part'] = quality.get('video_part')
                     stream['video_group'] = quality.get('video_group')
@@ -1085,7 +1103,7 @@ async def get_streams(
     config = token_data.get("config") or {}
     quality_filter = set(config.get("quality_filter") or [])
     if quality_filter and streams:
-        filtered = [s for s in streams if stream_res_label(s.get("name", "")) in quality_filter]
+        filtered = [s for s in streams if stream_res_label(s.get("sort_name", s.get("name", ""))) in quality_filter]
         if filtered:
             streams = filtered
 
@@ -1096,10 +1114,10 @@ async def get_streams(
     if is_combined:
         streams.sort(key=lambda s: s.get("episode_start", 0))
         streams.sort(key=lambda s: s.get("name_key", ""))
-        streams.sort(key=lambda s: get_resolution_priority(s.get("name", "")), reverse=not ascending)
+        streams.sort(key=lambda s: get_resolution_priority(s.get("sort_name", s.get("name", ""))), reverse=not ascending)
     else:
         streams.sort(
-            key=lambda s: (get_resolution_priority(s.get("name", "")), s.get("size_bytes", 0)),
+            key=lambda s: (get_resolution_priority(s.get("sort_name", s.get("name", ""))), s.get("size_bytes", 0)),
             reverse=not ascending
         )
     from Backend.helper.multipart_video import part_sort_key
