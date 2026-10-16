@@ -932,6 +932,8 @@ class DbCheckManager:
             if self.state["status"] == "running":
                 return {"ok": False, "message": "A DB check is already running."}
             self.state = self._blank_state()
+            from Backend.helper.check_coordination import manual_check_started
+            manual_check_started()
             self.state["status"] = "running"
             self.state["started_at"] = _now()
             self._cancel = False
@@ -1107,6 +1109,9 @@ class DbCheckManager:
             s["error"] = str(e)
             s["finished_at"] = _now()
             LOGGER.error(f"[DbCheck] Error: {e}")
+        finally:
+            from Backend.helper.check_coordination import manual_check_finished
+            manual_check_finished(s["status"] == "completed")
 
     #----- ── Purge ────────────────────────────────────────────────────────────────────
     async def purge(self, stream_ids: Optional[List[str]] = None) -> Dict[str, Any]:

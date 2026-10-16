@@ -101,7 +101,7 @@ async def library_totals(db):
         "unknown_size_files": unknown_files,
         "titles": movies + series,
         "size_bytes": size if size_available else None,
-        "size": f"{size / 1024**2:.2f} MiB" if size_available else "Unavailable",
+        "size": f"{size / 1000**2:.2f} MB" if size_available else "Unavailable",
     }
 
 

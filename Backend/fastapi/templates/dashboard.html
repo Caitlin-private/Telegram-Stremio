@@ -68,7 +68,7 @@
                 <i class="fa-solid fa-hard-drive"></i>
             </div>
             <div class="min-w-0">
-                <p class="text-[9px] sm:text-[10px] uppercase font-bold text-text-secondary tracking-widest">Telegram Files Size</p>
+                <p class="text-[9px] sm:text-[10px] uppercase font-bold text-text-secondary tracking-widest">Total File Size</p>
                 <p id="sys-media-size" class="text-sm font-bold text-text break-words">{{ system_stats.media_size|default('Unavailable') }}</p>
             </div>
         </div>
@@ -191,7 +191,7 @@
                             <div class="space-y-2 min-w-0">
                                 <div class="flex justify-between text-xs font-bold uppercase tracking-widest gap-2 min-w-0">
                                     <span class="text-text-secondary whitespace-nowrap">Disk Usage</span>
-                                    <span class="text-primary truncate">{{ "%.1f"|format(db_stat.storageSize / 1024 / 1024) }} MB</span>
+                                    <span class="text-primary truncate">{{ "%.1f"|format(db_stat.storageSize / 1000 / 1000) }} MB</span>
                                 </div>
                                 <div class="w-full h-1.5 bg-surface rounded-full overflow-hidden">
                                     {% set storage_percent = (db_stat.storageSize / (500 * 1024 * 1024) * 100) | round %}
@@ -326,7 +326,7 @@
                                         </div>
                                         <div class="text-center min-w-0">
                                             <p class="text-[9px] text-text-secondary uppercase tracking-widest font-bold">Total</p>
-                                            <p class="text-xs font-bold text-text truncate">{{ "%.1f"|format((stream.total_bytes or 0) / 1024 / 1024) }} MB</p>
+                                            <p class="text-xs font-bold text-text truncate">{{ "%.1f"|format((stream.total_bytes or 0) / 1000 / 1000) }} MB</p>
                                         </div>
                                         <div class="text-center min-w-0">
                                             <p class="text-[9px] text-text-secondary uppercase tracking-widest font-bold">Duration</p>
@@ -420,8 +420,8 @@
         const value = Number(bytes || 0);
         if (!value) return '0 B';
         const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
-        return (value / Math.pow(1024, index)).toFixed(index === 0 ? 0 : 2) + ' ' + units[index];
+        const index = Math.min(Math.floor(Math.log(value) / Math.log(1000)), units.length - 1);
+        return (value / Math.pow(1000, index)).toFixed(index === 0 ? 0 : 2) + ' ' + units[index];
     }
 
     function formatDuration(seconds) {

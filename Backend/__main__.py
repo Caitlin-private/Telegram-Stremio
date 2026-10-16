@@ -81,6 +81,8 @@ async def start_services():
         loop.create_task(ping())
 
         link_checker_task = DeadLinkChecker(db, app, check_interval_hours=24)
+        from Backend.helper.check_coordination import register_checker
+        register_checker(link_checker_task)
         loop.create_task(link_checker_task.start())
 
         await subscription_task_manager.sync(StreamBot)

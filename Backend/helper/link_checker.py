@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from pyrogram.errors import FloodWait
 
@@ -19,6 +20,9 @@ class DeadLinkChecker:
         self.app = app
         self.check_interval_seconds = check_interval_hours * 3600
         self.is_running = False
+        self._next_check_at = time.monotonic() + 120
+        self._manual_running = False
+        self._manual_generation = 0
 
     async def start(self):
         if self.is_running:
@@ -27,25 +31,45 @@ class DeadLinkChecker:
         LOGGER.info(f"Started Dead Link Checker background task (Interval: {self.check_interval_seconds}s)")
         asyncio.create_task(self._run_loop())
 
-    async def _run_loop(self):
-        await asyncio.sleep(120)
+    def manual_started(self):
+        """Suspend automatic checks immediately while a manual check is active."""
+        self._manual_running = True
+        self._manual_generation += 1
 
+    def manual_finished(self, successful: bool):
+        """A completed manual check replaces the last automatic check."""
+        self._manual_running = False
+        if successful:
+            self._next_check_at = time.monotonic() + self.check_interval_seconds
+
+    async def _run_loop(self):
         while self.is_running:
+            if self._manual_running or time.monotonic() < self._next_check_at:
+                await asyncio.sleep(1)
+                continue
+            generation = self._manual_generation
             try:
                 LOGGER.info("Starting Dead Link Checker scan...")
-                await self._scan_all_media()
-                LOGGER.info("Dead Link Checker scan complete.")
+                completed = await self._scan_all_media(generation)
+                if completed and generation == self._manual_generation:
+                    LOGGER.info("Dead Link Checker scan complete.")
+                    self._next_check_at = time.monotonic() + self.check_interval_seconds
             except Exception as e:
                 LOGGER.error(f"Error in Dead Link Checker loop: {e}")
+                self._next_check_at = time.monotonic() + self.check_interval_seconds
+            await asyncio.sleep(1)
 
-            await asyncio.sleep(self.check_interval_seconds)
+    async def _wait_for_manual(self, generation):
+        return self._manual_running or generation != self._manual_generation
 
-    async def _scan_all_media(self):
+    async def _scan_all_media(self, generation=None):
         if not multi_clients:
             LOGGER.warning("No bot clients available for Dead Link Checker.")
-            return
+            return False
 
         for i in range(1, self.db.current_db_index + 1):
+            if await self._wait_for_manual(generation):
+                return False
             active_db = self.db.dbs[f"storage_{i}"]
 
             #----- Movies (snapshot ids first so no cursor stays open during the slow Telegram checks)
@@ -55,11 +79,15 @@ class DeadLinkChecker:
                     {"_id": 1},
                 ).to_list(None)]
                 for movie_id in movie_ids:
+                    if await self._wait_for_manual(generation):
+                        return False
                     movie = await active_db["movie"].find_one({"_id": movie_id})
                     if not movie:
                         continue
                     tmdb_id = movie.get("tmdb_id")
                     for quality in movie.get("telegram", []):
+                        if await self._wait_for_manual(generation):
+                            return False
                         if quality.get("is_dead"):
                             continue
                         sizes = []
@@ -79,6 +107,8 @@ class DeadLinkChecker:
                     {"_id": 1},
                 ).to_list(None)]
                 for tv_id in tv_ids:
+                    if await self._wait_for_manual(generation):
+                        return False
                     tv = await active_db["tv"].find_one({"_id": tv_id})
                     if not tv:
                         continue
@@ -86,6 +116,8 @@ class DeadLinkChecker:
                     for season in tv.get("seasons", []):
                         for ep in season.get("episodes", []):
                             for quality in ep.get("telegram", []):
+                                if await self._wait_for_manual(generation):
+                                    return False
                                 if quality.get("is_dead"):
                                     continue
                                 sizes = []
@@ -97,6 +129,8 @@ class DeadLinkChecker:
                                 await asyncio.sleep(0.5)
             except Exception as e:
                 LOGGER.error(f"Error scanning TV shows in DB {i}: {e}")
+
+        return True
 
     def _next_clients(self):
         offset = getattr(self, "_worker_cursor", 0)
