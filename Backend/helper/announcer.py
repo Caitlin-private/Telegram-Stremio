@@ -154,6 +154,32 @@ async def _apply_announcement_fanart(artwork: dict, info: dict) -> None:
         LOGGER.warning(f'Announcement fanart lookup failed: {exc}')
 
 
+async def announcement_image_url(info: dict):
+    """Use one provider/fallback policy for announcements and private title cards."""
+    settings = SettingsManager.current()
+    provider = settings.announcement_poster_provider
+    if provider == 'same':
+        provider = ('pictorium' if settings.pictorium_poster_enabled else
+                    'spatial' if settings.spatial_poster_enabled else
+                    'fanart' if settings.fanart_enabled else
+                    'better' if settings.better_poster_enabled else
+                    'rpdb' if settings.rpdb_enabled else 'default')
+    fallback = info.get('backdrop') or info.get('poster')
+    if provider == 'fanart':
+        artwork = {'poster': _abs_media_url(fallback),
+                   'background': _abs_media_url(info.get('backdrop'))}
+        await _apply_announcement_fanart(artwork, info)
+        image_url = artwork.get('background') or artwork.get('poster')
+    else:
+        image_url = _poster_url(
+            info.get('imdb_id'), fallback, info.get('tmdb_id'),
+            info.get('media_type'),
+            shape='poster',
+            provider=provider,
+        )
+    return image_url
+
+
 async def _announce(info: dict) -> None:
     # Prevent concurrent photo attempts from racing past the same cooldown.
     async with _announcement_lock:
@@ -175,26 +201,7 @@ async def _announce_serial(info: dict) -> None:
         sent = None
         if artwork_available(StreamBot):
             try:
-                provider = settings.announcement_poster_provider
-                if provider == 'same':
-                    provider = ('pictorium' if settings.pictorium_poster_enabled else
-                                'spatial' if settings.spatial_poster_enabled else
-                                'fanart' if settings.fanart_enabled else
-                                'better' if settings.better_poster_enabled else
-                                'rpdb' if settings.rpdb_enabled else 'default')
-                fallback = info.get('backdrop') or info.get('poster')
-                if provider == 'fanart':
-                    artwork = {'poster': _abs_media_url(fallback),
-                               'background': _abs_media_url(info.get('backdrop'))}
-                    await _apply_announcement_fanart(artwork, info)
-                    image_url = artwork.get('background') or artwork.get('poster')
-                else:
-                    image_url = _poster_url(
-                        info.get('imdb_id'), fallback, info.get('tmdb_id'),
-                        info.get('media_type'),
-                        shape='poster',
-                        provider=provider,
-                    )
+                image_url = await announcement_image_url(info)
                 if image_url:
                     photo = await announcement_photo(image_url)
                     try:

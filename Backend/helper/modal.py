@@ -19,6 +19,7 @@ class QualityDetail(BaseModel):
     id: str
     name: str
     size: str
+    size_bytes: Optional[int] = Field(default=None, ge=0)
     group_key: Optional[str] = None
     parts: Optional[List[QualityPart]] = None
 

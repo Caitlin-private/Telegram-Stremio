@@ -1,10 +1,55 @@
 """Shared live counts and owner-friendly stats formatting."""
 
 
+def file_size_pipeline(media_type):
+    pipeline = []
+    if media_type == "tv":
+        pipeline.extend([{"$unwind": "$seasons"}, {"$unwind": "$seasons.episodes"},
+                         {"$project": {"telegram": "$seasons.episodes.telegram"}}])
+    pipeline.extend([
+        {"$unwind": "$telegram"},
+        # Count each physical part once, never add the parent size as well.
+        {"$unwind": {"path": "$telegram.parts", "preserveNullAndEmptyArrays": True}},
+        {"$project": {"files": {"$ifNull": ["$telegram.parts", "$telegram"]}}},
+        {"$project": {"bytes": {"$cond": [
+            {"$and": [{"$isNumber": "$files.size_bytes"}, {"$gt": ["$files.size_bytes", 0]}]},
+            "$files.size_bytes", 0]}}},
+        {"$group": {"_id": None, "files": {"$sum": 1}, "bytes": {"$sum": "$bytes"},
+                    "unknown": {"$sum": {"$cond": [{"$gt": ["$bytes", 0]}, 0, 1]}}}},
+    ])
+    return pipeline
+
+
+def format_media_size(total_bytes, unknown):
+    size = float(total_bytes)
+    unit = "B"
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
+        if size < 1024 or unit == "PiB":
+            break
+        size /= 1024
+    label = f"{size:.2f} {unit}"
+    return f"{label} known ({unknown:,} files unknown)" if unknown else label
+
+
+async def media_size_stats(db):
+    """Size-only snapshot for dashboard rendering and its refresh endpoint."""
+    total = unknown = files = 0
+    for storage in (db.dbs[key] for key in db.dbs if key.startswith("storage_")):
+        for kind in ("movie", "tv"):
+            rows = await storage[kind].aggregate(file_size_pipeline(kind)).to_list(length=1)
+            if rows:
+                total += rows[0]["bytes"]
+                unknown += rows[0]["unknown"]
+                files += rows[0]["files"]
+    return {"media_size": format_media_size(total, unknown), "media_size_bytes": total,
+            "unknown_size_files": unknown, "files": files}
+
+
 async def library_totals(db):
     """Count on MongoDB; do not transfer entire episode/stream arrays to Python."""
     movies = series = episodes = streams = size = 0
     size_available = True
+    media_bytes = media_files = unknown_files = 0
     for i in range(1, db.current_db_index + 1):
         storage = db.dbs.get(f"storage_{i}")
         if storage is None:
@@ -41,6 +86,12 @@ async def library_totals(db):
         if episode_rows:
             episodes += episode_rows[0]["episodes"]
             streams += episode_rows[0]["streams"]
+        for media_type in ("movie", "tv"):
+            rows = await storage[media_type].aggregate(file_size_pipeline(media_type)).to_list(length=1)
+            if rows:
+                media_bytes += rows[0]["bytes"]
+                media_files += rows[0]["files"]
+                unknown_files += rows[0]["unknown"]
         try:
             size += (await storage.command("dbStats"))["dataSize"]
         except Exception:
@@ -50,7 +101,9 @@ async def library_totals(db):
         "series": series,
         "episodes": episodes,
         "streams": streams,
-        "files": streams,
+        "files": media_files,
+        "media_size_bytes": media_bytes,
+        "unknown_size_files": unknown_files,
         "titles": movies + series,
         "size_bytes": size if size_available else None,
         "size": f"{size / 1024**2:.2f} MiB" if size_available else "Unavailable",
@@ -91,6 +144,7 @@ def format_stats(s):
         f'🎞️ Episodes: {s["episodes"]:,}\n'
         f'📂 Files: {s["files"]:,}\n'
         f'📚 Total titles: {s["titles"]:,}\n'
+        f'💾 Telegram files size: {s["media_size"]}\n'
         f'🗄️ DB size: {s["db_size"]}\n\n'
         "🟢 Live Activity\n"
         f'▶️ Live streams: {s["live_streams"]:,}\n'
@@ -127,6 +181,9 @@ async def collect_system_stats(db, client):
                 "streams": totals["streams"],
                 "files": totals["files"],
                 "titles": totals["titles"],
+                "media_size_bytes": totals["media_size_bytes"],
+                "unknown_size_files": totals["unknown_size_files"],
+                "media_size": format_media_size(totals["media_size_bytes"], totals["unknown_size_files"]),
                 "uptime": get_readable_time(int(time() - StartTime)),
                 "db_size": (
                     get_readable_file_size(totals["size_bytes"]) if totals["size_bytes"] is not None else "Unavailable"

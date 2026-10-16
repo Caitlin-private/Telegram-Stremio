@@ -931,3 +931,17 @@ If Telegram-Stremio is useful to you, you can support its development here:
 ## Caitlin fork
 
 See [Caitlin features](docs/CAITLIN.md).
+
+### Telegram file sizes and dead-link checks
+
+Settings → System & Maintenance and the owner `/stats` command show **Telegram Files Size** separately from MongoDB's **DB Size**. The total covers indexed movie and episode file references across every connected storage database. Multipart entries contribute each part once; duplicate references in different entries are counted separately. Known sizes remain included until their entries are removed, even if a link is flagged dead.
+
+Newly indexed files save their exact byte sizes. For existing files, run **Tools → Run DB Check**: the checker saves file sizes from the same Telegram messages it fetches to verify links. The scheduled dead-link checker also fills sizes for the non-flagged entries it checks. No media downloads or channel rescans are required.
+
+While sizes are missing, the total displays the known bytes and the number of files with unknown sizes. Rounded legacy size strings are not treated as exact values. Inaccessible messages remain unknown; the checker does not classify access errors as dead links. Telegram FloodWait responses are respected.
+
+The manual check shows **Size records updated** (database modifications during this run). Updates are saved after each batch and survive cancellation or restart. Starting another check verifies links from the beginning, but does not rewrite unchanged sizes. Existing check concurrency and pacing are retained; this is not a promise of faster processing.
+
+The dashboard's System Overview also shows Telegram Files Size on initial load and when Refresh Data is clicked. WebDAV builds its tree after all storage databases connect, before the bot starts accepting title searches. Concurrent requests share one tree build; invalidation during a build triggers a fresh build instead of caching stale data. WebDAV uses exact stored sizes when available.
+
+Private title-search and announcement deep-link cards use the same announcement poster-provider selection and photo framing as channel announcements, with a text fallback if artwork cannot be delivered.

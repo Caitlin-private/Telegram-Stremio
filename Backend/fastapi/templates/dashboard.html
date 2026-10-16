@@ -23,7 +23,7 @@
     </header>
 
     <div id="setup-card" class="mb-8"></div>
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-8">
+    <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3 sm:gap-4 mb-8">
         <div class="glass-panel p-3.5 sm:p-5 rounded-2xl sm:rounded-[2rem] flex items-center gap-3 sm:gap-4 min-w-0">
             <div class="w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-primary/10 flex items-center justify-center text-primary shadow-glow flex-shrink-0">
                 <i class="fa-solid fa-clock"></i>
@@ -61,6 +61,15 @@
             <div class="min-w-0">
                 <p class="text-[9px] sm:text-[10px] uppercase font-bold text-text-secondary tracking-widest">Version</p>
                 <p id="sys-version" class="text-sm sm:text-lg font-bold text-text truncate">v{{ system_stats.version or '1.0.0' }}</p>
+            </div>
+        </div>
+        <div class="glass-panel p-3.5 sm:p-5 rounded-2xl sm:rounded-[2rem] flex items-center gap-3 min-w-0 col-span-2 sm:col-span-1">
+            <div class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary flex-shrink-0">
+                <i class="fa-solid fa-hard-drive"></i>
+            </div>
+            <div class="min-w-0">
+                <p class="text-[9px] sm:text-[10px] uppercase font-bold text-text-secondary tracking-widest">Telegram Files Size</p>
+                <p id="sys-media-size" class="text-sm font-bold text-text break-words">{{ system_stats.media_size|default('Unavailable') }}</p>
             </div>
         </div>
     </div>
@@ -589,6 +598,9 @@
             const response = await fetch('/api/system/stats', { cache: 'no-store' });
             if (response.ok) {
                 const stats = await response.json();
+
+                const elMediaSize = document.getElementById('sys-media-size');
+                if (elMediaSize) elMediaSize.textContent = stats.media_size || 'Unavailable';
 
                 const elUptime = document.getElementById('sys-uptime');
                 if (elUptime) elUptime.innerText = stats.uptime || 'N/A';

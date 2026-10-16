@@ -20,6 +20,7 @@ Layout (stable paths):
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import dataclass, field
@@ -144,9 +145,11 @@ class WebDAVFilesystem:
         self.cache_ttl = cache_ttl
         self._root: Optional[VNode] = None
         self._built_at: float = 0.0
-        self._building = False
+        self._build_lock = asyncio.Lock()
+        self._generation = 0
 
     def invalidate(self) -> None:
+        self._generation += 1
         self._built_at = 0.0
         self._root = None
 
@@ -154,20 +157,14 @@ class WebDAVFilesystem:
         now = time.time()
         if self._root is not None and (now - self._built_at) < self.cache_ttl:
             return self._root
-        if self._building:
-            # another coroutine is building; wait briefly for it
-            for _ in range(50):
-                await _async_sleep(0.1)
-                if self._root is not None and (time.time() - self._built_at) < self.cache_ttl:
-                    return self._root
-        self._building = True
-        try:
-            root = await self._build_tree()
-            self._root = root
-            self._built_at = time.time()
-            return root
-        finally:
-            self._building = False
+        async with self._build_lock:
+            while self._root is None or (time.time() - self._built_at) >= self.cache_ttl:
+                generation = self._generation
+                root = await self._build_tree()
+                if generation == self._generation:
+                    self._root = root
+                    self._built_at = time.time()
+            return self._root
 
     async def resolve(self, path: str) -> Optional[VNode]:
         root = await self.ensure_tree()
@@ -211,6 +208,8 @@ class WebDAVFilesystem:
             [k for k in db.dbs.keys() if k.startswith("storage_")],
             key=lambda k: int(k.split("_")[1]),
         )
+        if not storage_keys:
+            raise RuntimeError("WebDAV storage databases are not initialized")
         for db_key in storage_keys:
             storage = db.dbs[db_key]
             try:
@@ -264,6 +263,7 @@ class WebDAVFilesystem:
                     movie_count += 1
             except Exception as e:
                 LOGGER.warning("[WebDAV] movie scan failed on %s: %s", db_key, e)
+                raise
 
             #----- TV Shows
             try:
@@ -359,6 +359,7 @@ class WebDAVFilesystem:
                     show_count += 1
             except Exception as e:
                 LOGGER.warning("[WebDAV] tv scan failed on %s: %s", db_key, e)
+                raise
 
         LOGGER.info("[WebDAV] Tree ready: %s movies, %s shows", movie_count, show_count)
         return root
@@ -375,7 +376,7 @@ class WebDAVFilesystem:
         fname = f"{folder} - {qlabel}{ext}"
         if qual.get('video_part'):
             fname = f"{safe_name(raw_name.rsplit('.', 1)[0])} [Multi-Part - Part {qual['video_part']}]{ext}"
-        size = parse_size_bytes(qual.get("size"), qual.get("parts"))
+        size = parse_size_bytes(qual.get("size_bytes") or qual.get("size"), qual.get("parts"))
         return VNode(
             path=f"{folder_path}/{fname}",
             name=fname,
@@ -415,7 +416,7 @@ class WebDAVFilesystem:
         fname = f"{show_short} S{sn:02d}E{en:02d} - {ep_title} - {qlabel}{ext}"
         if qual.get('video_part'):
             fname = f"{safe_name(raw_name.rsplit('.', 1)[0])} [Multi-Part - Part {qual['video_part']}]{ext}"
-        size = parse_size_bytes(qual.get("size"), qual.get("parts"))
+        size = parse_size_bytes(qual.get("size_bytes") or qual.get("size"), qual.get("parts"))
         return VNode(
             path=f"{season_path}/{fname}",
             name=fname,

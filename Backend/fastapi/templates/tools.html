@@ -437,7 +437,8 @@
         </div>
 
         <p class="hint mt-3 mb-4">
-            Verify indexed files still exist on Telegram, then purge dead entries below.
+            Verify indexed files and save their exact sizes using the same Telegram requests.
+            Saved sizes survive stops and restarts; rerunning checks all links again. Purge dead entries below.
         </p>
 
         <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
@@ -456,6 +457,7 @@
             <div class="stat-box"><div class="v" style="color:#22c55e" id="dbc-alive">0</div><div class="l">Alive</div></div>
             <div class="stat-box"><div class="v" style="color:#ef4444" id="dbc-dead">0</div><div class="l">Dead</div></div>
             <div class="stat-box"><div class="v" id="dbc-errors">0</div><div class="l">Errors</div></div>
+            <div class="stat-box"><div class="v" id="dbc-sizes">0</div><div class="l">Size records updated</div></div>
             <div class="stat-box"><div class="v" id="dbc-purged">0</div><div class="l">Purged</div></div>
         </div>
 
@@ -1010,6 +1012,7 @@ function renderDbc(s) {
     pill.textContent = status.charAt(0).toUpperCase() + status.slice(1);
 
     setText('dbc-checked', s.checked || 0);
+    setText('dbc-sizes', s.sizes_updated || 0);
     setText('dbc-alive', s.alive || 0);
     setText('dbc-dead', s.dead || 0);
     setText('dbc-errors', s.errors || 0);

@@ -111,6 +111,7 @@ def _require_tmdb_id(value) -> int:
 
 #----- System stats
 async def get_system_stats_api():
+    from Backend.helper.stats_display import media_size_stats
     from Backend.helper.ingestion_status import ingestion_snapshot
     try:
         db_stats = await db.get_database_stats()
@@ -119,6 +120,7 @@ async def get_system_stats_api():
         
         return {
             "server_status": "running",
+            **await media_size_stats(db),
             **await ingestion_snapshot(StreamBot),
             "uptime": get_readable_time(time() - StartTime),
             "telegram_bot": f"@{StreamBot.username}" if StreamBot and StreamBot.username else "@StreamBot",

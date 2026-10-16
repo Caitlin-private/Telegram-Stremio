@@ -71,7 +71,7 @@ async def send_card(message, doc, token):
     from pyrogram.enums import ParseMode
     from pyrogram.errors import FloodWait
     from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-    from Backend.helper.announcer import _build_caption
+    from Backend.helper.announcer import _build_caption, announcement_image_url, announcement_photo
     from Backend.helper.settings_manager import SettingsManager
     from Backend.helper.webdav_fs import fs
 
@@ -91,15 +91,19 @@ async def send_card(message, doc, token):
     markup = InlineKeyboardMarkup(
         [[InlineKeyboardButton(label, url=url)] for label, url in card_links(base, token, path, doc)]
     )
-    poster = doc.get("backdrop") or doc.get("poster")
-    if poster:
-        try:
-            await message.reply_photo(poster, caption=caption, parse_mode=ParseMode.HTML, reply_markup=markup)
-            return
-        except FloodWait:
-            raise
-        except Exception:
-            pass
+    try:
+        poster = await announcement_image_url(info)
+        if poster:
+            photo = await announcement_photo(poster)
+            try:
+                await message.reply_photo(photo, caption=caption, parse_mode=ParseMode.HTML, reply_markup=markup)
+                return
+            finally:
+                photo.close()
+    except FloodWait:
+        raise
+    except Exception:
+        pass
     await message.reply_text(caption, parse_mode=ParseMode.HTML, reply_markup=markup, disable_web_page_preview=True)
 
 

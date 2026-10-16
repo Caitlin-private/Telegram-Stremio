@@ -10,6 +10,7 @@ from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired, Messag
 
 from Backend.logger import LOGGER
 from Backend.helper.encrypt import encode_string, decode_string
+from Backend.helper.file_sizes import ALIVE, DEAD, inspect_quality, size_updates
 from Backend.helper.metadata import metadata, extract_default_id
 from Backend.helper.pyro import apply_video_thumb_to_metadata, clean_filename, finalize_media_name, get_readable_file_size
 from Backend.helper.skip_channel import is_skip_channel, route_to_skip_channel
@@ -886,6 +887,7 @@ class DbCheckManager:
         return {
             "status": "idle",   
             "checked": 0,
+            "sizes_updated": 0,
             "alive": 0,
             "dead": 0,
             "errors": 0,
@@ -910,6 +912,7 @@ class DbCheckManager:
             "status": s["status"],
             "is_running": s["status"] == "running",
             "checked": s["checked"],
+            "sizes_updated": s["sizes_updated"],
             "alive": s["alive"],
             "dead": s["dead"],
             "errors": s["errors"],
@@ -941,54 +944,30 @@ class DbCheckManager:
         return {"ok": True, "message": "Stop requested — finishing the current batch."}
 
     #----- ── Single-message check ───────────────────────────────────────────────────
-    async def _check_message(self, client, stream_hash: str):
-        try:
-            decoded = await decode_string(stream_hash)
-            if isinstance(decoded, dict) and "parts" in decoded:
-                parts = decoded.get("parts") or []
-                if not parts:
-                    return False
-                for part in parts:
-                    alive = await self._check_one(client, part.get("chat_id"), part.get("msg_id"))
-                    if alive is None:
-                        return None
-                    if not alive:
-                        return False
-                return True
-            return await self._check_one(client, decoded.get("chat_id"), decoded.get("msg_id"))
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            return await self._check_message(client, stream_hash)
-        except Exception:
-            return None
-
-    async def _check_one(self, client, chat_id, msg_id):
-        if chat_id is None or msg_id is None:
-            return False
-        try:
-            chat_id = int(f"-100{chat_id}")
-            msg_id = int(msg_id)
-            msg = await client.get_messages(chat_id, msg_id)
-            if msg is None or msg.empty:
-                return False
-            return True
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            return await self._check_one(client, str(chat_id).replace("-100", ""), msg_id)
-        except Exception:
-            return None
-
     async def _process_batch(self, client, batch: List[str]):
-        tasks = [self._check_message(client, h) for h in batch]
-        return await asyncio.gather(*tasks, return_exceptions=True)
+        return await asyncio.gather(*(inspect_quality([client], h) for h in batch), return_exceptions=True)
+
+    async def _save_sizes(self, storage, media_type, document, batch, results):
+        qualities = document.get("telegram", []) if media_type == "movie" else [
+            q for season in document.get("seasons", []) for ep in season.get("episodes", [])
+            for q in ep.get("telegram", [])]
+        by_id = {q.get("id"): q for q in qualities}
+        operations = []
+        for stream_id, result in zip(batch, results):
+            if isinstance(result, tuple):
+                operations.extend(size_updates(document["_id"], media_type, by_id[stream_id], result[1]))
+        if operations:
+            result = await storage[media_type].bulk_write(operations, ordered=False)
+            self.state["sizes_updated"] += result.modified_count
 
     async def _record_results(self, batch: List[str], results) -> None:
         s = self.state
         for stream_hash, result in zip(batch, results):
             s["checked"] += 1
-            if result is True:
+            status = result[0] if isinstance(result, tuple) else None
+            if status == ALIVE:
                 s["alive"] += 1
-            elif result is False:
+            elif status == DEAD:
                 s["dead"] += 1
                 title = None
                 try:
@@ -1027,6 +1006,7 @@ class DbCheckManager:
                                 break
                             batch = stream_ids[x:x + DBCHECK_CONCURRENCY]
                             results = await self._process_batch(client, batch)
+                            await self._save_sizes(storage, "movie", movie, batch, results)
                             await self._record_results(batch, results)
                             await asyncio.sleep(DBCHECK_BATCH_DELAY)
 
@@ -1051,6 +1031,7 @@ class DbCheckManager:
                                 break
                             batch = stream_ids[x:x + DBCHECK_CONCURRENCY]
                             results = await self._process_batch(client, batch)
+                            await self._save_sizes(storage, "tv", show, batch, results)
                             await self._record_results(batch, results)
                             await asyncio.sleep(DBCHECK_BATCH_DELAY)
 

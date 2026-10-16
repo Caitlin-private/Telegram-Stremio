@@ -1,9 +1,6 @@
 import asyncio
 
-from pyrogram.errors import FloodWait
-
-from Backend.helper.encrypt import decode_string
-from Backend.helper.pyro import is_media
+from Backend.helper.file_sizes import inspect_quality, size_updates
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import multi_clients
 
@@ -51,7 +48,7 @@ class DeadLinkChecker:
             #----- Movies (snapshot ids first so no cursor stays open during the slow Telegram checks)
             try:
                 movie_ids = [d["_id"] for d in await active_db["movie"].find(
-                    {"telegram": {"$exists": True, "$not": {"$size": 0}}, "telegram.is_dead": {"$ne": True}},
+                    {"telegram": {"$exists": True, "$not": {"$size": 0}}},
                     {"_id": 1},
                 ).to_list(None)]
                 for movie_id in movie_ids:
@@ -62,7 +59,10 @@ class DeadLinkChecker:
                     for quality in movie.get("telegram", []):
                         if quality.get("is_dead"):
                             continue
-                        status = await self._check_file_alive(clients, quality.get("id"))
+                        status, sizes = await inspect_quality(clients, quality.get("id"))
+                        operations = size_updates(movie_id, "movie", quality, sizes)
+                        if operations:
+                            await active_db["movie"].bulk_write(operations, ordered=False)
                         if status == DEAD:
                             LOGGER.warning(f"Found dead link for Movie {tmdb_id} (Quality: {quality.get('quality')})")
                             await self.db.flag_dead_link("movie", tmdb_id, i, quality.get("id"))
@@ -73,7 +73,7 @@ class DeadLinkChecker:
             #----- TV Shows (snapshot ids first, then re-read each doc with a short query)
             try:
                 tv_ids = [d["_id"] for d in await active_db["tv"].find(
-                    {"seasons.episodes.telegram": {"$exists": True, "$not": {"$size": 0}}, "seasons.episodes.telegram.is_dead": {"$ne": True}},
+                    {"seasons.episodes.telegram": {"$exists": True, "$not": {"$size": 0}}},
                     {"_id": 1},
                 ).to_list(None)]
                 for tv_id in tv_ids:
@@ -86,63 +86,13 @@ class DeadLinkChecker:
                             for quality in ep.get("telegram", []):
                                 if quality.get("is_dead"):
                                     continue
-                                status = await self._check_file_alive(clients, quality.get("id"))
+                                status, sizes = await inspect_quality(clients, quality.get("id"))
+                                operations = size_updates(tv_id, "tv", quality, sizes)
+                                if operations:
+                                    await active_db["tv"].bulk_write(operations, ordered=False)
                                 if status == DEAD:
                                     LOGGER.warning(f"Found dead link for TV {tmdb_id} S{season.get('season_number')}E{ep.get('episode_number')} (Quality: {quality.get('quality')})")
                                     await self.db.flag_dead_link("tv", tmdb_id, i, quality.get("id"))
                                 await asyncio.sleep(0.5)
             except Exception as e:
                 LOGGER.error(f"Error scanning TV shows in DB {i}: {e}")
-
-    async def _check_file_alive(self, clients, quality_id: str) -> str:
-        try:
-            decoded = await decode_string(quality_id)
-        except Exception as e:
-            LOGGER.error(f"Link checker failed to decode {quality_id}: {e}")
-            return UNKNOWN
-        if not decoded:
-            return UNKNOWN
-
-        #----- Split file: every part must be alive; one confirmed-dead part kills the link
-        if "parts" in decoded:
-            parts = decoded.get("parts") or []
-            if not parts:
-                return UNKNOWN
-            saw_unknown = False
-            for part in parts:
-                status = await self._check_message_status(clients, part.get("chat_id"), part.get("msg_id"))
-                if status == DEAD:
-                    return DEAD
-                if status == UNKNOWN:
-                    saw_unknown = True
-            return UNKNOWN if saw_unknown else ALIVE
-
-        #----- Single file
-        if "chat_id" not in decoded or "msg_id" not in decoded:
-            return UNKNOWN
-        return await self._check_message_status(clients, decoded["chat_id"], decoded["msg_id"])
-
-    async def _check_message_status(self, clients, chat_id, msg_id) -> str:
-        if chat_id is None or msg_id is None:
-            return UNKNOWN
-
-        chat_id = int(f"-100{chat_id}")
-        msg_id = int(msg_id)
-        confirmed_dead = False
-        for client in clients:
-            try:
-                message = await client.get_messages(chat_id, msg_id)
-            except FloodWait as e:
-                await asyncio.sleep(getattr(e, "value", 5) + 1)
-                continue
-            except Exception:
-                continue
-
-            if message is None or message.empty:
-                confirmed_dead = True
-                continue
-            if is_media(message):
-                return ALIVE
-            confirmed_dead = True
-
-        return DEAD if confirmed_dead else UNKNOWN

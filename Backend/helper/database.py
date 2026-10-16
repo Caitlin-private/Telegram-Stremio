@@ -1288,6 +1288,7 @@ class Database:
                 video_group=metadata_info.get('video_group'),
                 name=name,
                 size=size,
+                size_bytes=raw_size if raw_size > 0 else None,
             )
 
         def _as_int(val):

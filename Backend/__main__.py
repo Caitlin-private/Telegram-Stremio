@@ -47,6 +47,11 @@ async def start_services():
         await durable_ingestion.load(db)
         await asyncio.sleep(0.5)
 
+        # Build after all storage databases are connected, before bot search handlers run.
+        from Backend.helper.webdav_fs import fs
+        LOGGER.info("Initializing WebDAV filesystem...")
+        await fs.ensure_tree()
+
         await StreamBot.start()
         StreamBot.username = StreamBot.me.username
         LOGGER.info(f"Bot Client : [@{StreamBot.username}]")

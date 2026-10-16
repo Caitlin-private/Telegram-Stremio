@@ -118,8 +118,10 @@ async def dashboard_page(request: Request, _: bool = Depends(require_auth)):
             for stream_id, info in ACTIVE_STREAMS.items()
         ]
 
+        from Backend.helper.stats_display import media_size_stats
         system_stats = {
             "server_status": "running",
+            **await media_size_stats(db),
             "uptime": get_readable_time(now - StartTime),
             "telegram_bot": f"@{StreamBot.username}" if StreamBot and StreamBot.username else "@StreamBot",
             "connected_bots": len(multi_clients),
