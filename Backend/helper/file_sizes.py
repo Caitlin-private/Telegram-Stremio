@@ -1,64 +1,15 @@
-"""Telegram verification and exact-size backfill shared by both link checkers."""
-import asyncio
-
-from pyrogram.errors import FloodWait
+"""Collect video/document sizes alongside the original link-checking logic."""
 from pymongo import UpdateOne
 
-from Backend.helper.encrypt import decode_string
 
-ALIVE, DEAD, UNKNOWN = "alive", "dead", "unknown"
-
-
-async def inspect_message(clients, chat_id, msg_id):
-    try:
-        chat_id, msg_id = int(chat_id), int(msg_id)
-        if chat_id > 0:
-            chat_id = int(f"-100{chat_id}")
-    except (TypeError, ValueError):
-        return UNKNOWN, None
-    confirmed_dead = False
-    for client in clients:
-        while True:
-            try:
-                message = await client.get_messages(chat_id, msg_id)
-                break
-            except FloodWait as exc:
-                await asyncio.sleep(getattr(exc, "value", 5) + 1)
-            except Exception:
-                message = None
-                break
-        # Transport/access failures are unknown, never evidence for deletion.
-        if message is None:
-            continue
-        if message.empty:
-            confirmed_dead = True
-            continue
-        media = next((getattr(message, name, None) for name in
-                      ("document", "video", "audio", "animation", "voice", "video_note", "photo", "sticker")
-                      if getattr(message, name, None)), None)
-        if media is not None:
-            size = getattr(media, "file_size", None)
-            return ALIVE, size if isinstance(size, int) and size > 0 else None
-        confirmed_dead = True
-    return (DEAD if confirmed_dead else UNKNOWN), None
-
-
-async def inspect_quality(clients, quality_id):
-    try:
-        decoded = await decode_string(quality_id)
-        refs = decoded.get("parts") if "parts" in decoded else [decoded]
-        if not refs:
-            return UNKNOWN, []
-        sizes, statuses = [], []
-        for ref in refs:
-            status, size = await inspect_message(clients, ref.get("chat_id"), ref.get("msg_id"))
-            statuses.append(status)
-            if size is not None:
-                sizes.append({"chat_id": ref["chat_id"], "msg_id": ref["msg_id"], "size_bytes": size})
-        status = DEAD if DEAD in statuses else UNKNOWN if UNKNOWN in statuses else ALIVE
-        return status, sizes
-    except Exception:
-        return UNKNOWN, []
+def collect_file_size(message, chat_id, msg_id, sizes):
+    if sizes is None:
+        return
+    media = getattr(message, "video", None) or getattr(message, "document", None)
+    size = getattr(media, "file_size", None)
+    if isinstance(size, int) and size > 0:
+        sizes.append({"chat_id": str(chat_id).removeprefix("-100"),
+                      "msg_id": msg_id, "size_bytes": size})
 
 
 def size_updates(document_id, media_type, quality, sizes):

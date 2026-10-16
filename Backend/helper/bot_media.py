@@ -1,7 +1,6 @@
 """Private title search/cards shared by text search and announcement deep links."""
 
 import re
-from urllib.parse import quote
 
 
 def media_payload(kind, tmdb_id):
@@ -17,27 +16,6 @@ def parse_media_payload(payload):
 
 async def search_titles(db, query, limit=5):
     return await db.search_media_titles(query, limit)
-
-
-async def webdav_path(fs, doc):
-    # Use the actual tree: duplicate names may have a numbered suffix.
-    root = await fs.ensure_tree()
-    parent = root.children.get("Movies" if doc["media_type"] == "movie" else "TV Shows")
-    if parent:
-        for node in parent.children.values():
-            if node.tmdb_id == doc["tmdb_id"] and node.db_index == doc["db_index"]:
-                return node.path
-    return None
-
-
-def card_links(base, token, path, doc):
-    links = [("🌐 WebDAV", f"{base.rstrip('/')}/webdav/{quote(token, safe='')}{quote(path, safe='/')}/")]
-    if doc.get("imdb_id"):
-        kind = "series" if doc["media_type"] == "tv" else "movie"
-        links.append(
-            ("▶️ Open in Stremio", f"{base.rstrip('/')}/open/stremio/{kind}/{quote(str(doc['imdb_id']), safe='')}")
-        )
-    return links
 
 
 async def registered_token(message):
@@ -70,27 +48,15 @@ async def registered_token(message):
 async def send_card(message, doc, token):
     from pyrogram.enums import ParseMode
     from pyrogram.errors import FloodWait
-    from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-    from Backend.helper.announcer import _build_caption, announcement_image_url, announcement_photo
+    from Backend.helper.announcer import _build_caption, _build_markup, announcement_image_url, announcement_photo
     from Backend.helper.settings_manager import SettingsManager
-    from Backend.helper.webdav_fs import fs
-
-    path = await webdav_path(fs, doc)
-    if path is None:
-        fs.invalidate()
-        path = await webdav_path(fs, doc)
-    if path is None:
-        await message.reply_text("This title is no longer available in WebDAV.")
-        return
     base = SettingsManager.current().base_url
     if not base:
         await message.reply_text("The server URL is not configured. Please contact the administrator.")
         return
     info = {**doc, "year": doc.get("release_year"), "rate": doc.get("rating")}
     caption = _build_caption(info)
-    markup = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(label, url=url)] for label, url in card_links(base, token, path, doc)]
-    )
+    markup = _build_markup(info, include_addon=False)
     try:
         poster = await announcement_image_url(info)
         if poster:

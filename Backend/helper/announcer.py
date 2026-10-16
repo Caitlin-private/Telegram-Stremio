@@ -13,7 +13,6 @@ from pyrogram.errors import FloodWait, MessageDeleteForbidden, MessageIdInvalid
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from Backend import db
-from Backend.helper.bot_media import media_payload
 from Backend.helper.settings_manager import SettingsManager
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import StreamBot, get_streambot_url
@@ -126,7 +125,7 @@ def _build_caption(info: dict) -> str:
     return "\n".join(lines)
 
 
-def _build_markup(info: dict):
+def _build_markup(info: dict, include_addon: bool = True):
     rows = []
     playback_buttons = []
     base = SettingsManager.current().base_url
@@ -135,13 +134,9 @@ def _build_markup(info: dict):
     if base and imdb_id:
         playback_buttons.append(InlineKeyboardButton("📱 Nuvio", url=f"{base}/open/nuvio/{stremio_type}/{imdb_id}"))
     bot_url = get_streambot_url()
-    if bot_url and bot_url != "https://t.me/":
-        payload = media_payload(info.get("media_type"), info.get("tmdb_id"))
-        if payload:
-            playback_buttons.append(InlineKeyboardButton("📂 View media", url=f"{bot_url}?start={payload}"))
     if playback_buttons:
         rows.append(playback_buttons)
-    if bot_url and bot_url != "https://t.me/":
+    if include_addon and bot_url and bot_url != "https://t.me/":
         rows.append([InlineKeyboardButton("🤖 Get Addon", url=bot_url)])
     return InlineKeyboardMarkup(rows) if rows else None
 

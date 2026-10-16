@@ -10,7 +10,7 @@ from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired, Messag
 
 from Backend.logger import LOGGER
 from Backend.helper.encrypt import encode_string, decode_string
-from Backend.helper.file_sizes import ALIVE, DEAD, inspect_quality, size_updates
+from Backend.helper.file_sizes import collect_file_size, size_updates
 from Backend.helper.metadata import metadata, extract_default_id
 from Backend.helper.pyro import apply_video_thumb_to_metadata, clean_filename, finalize_media_name, get_readable_file_size
 from Backend.helper.skip_channel import is_skip_channel, route_to_skip_channel
@@ -944,8 +944,50 @@ class DbCheckManager:
         return {"ok": True, "message": "Stop requested — finishing the current batch."}
 
     #----- ── Single-message check ───────────────────────────────────────────────────
+    async def _check_message(self, client, stream_hash: str, sizes=None):
+        try:
+            decoded = await decode_string(stream_hash)
+            if isinstance(decoded, dict) and "parts" in decoded:
+                parts = decoded.get("parts") or []
+                if not parts:
+                    return False
+                for part in parts:
+                    alive = await self._check_one(client, part.get("chat_id"), part.get("msg_id"), sizes)
+                    if alive is None:
+                        return None
+                    if not alive:
+                        return False
+                return True
+            return await self._check_one(client, decoded.get("chat_id"), decoded.get("msg_id"), sizes)
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            return await self._check_message(client, stream_hash, sizes)
+        except Exception:
+            return None
+
+    async def _check_one(self, client, chat_id, msg_id, sizes=None):
+        if chat_id is None or msg_id is None:
+            return False
+        try:
+            chat_id = int(f"-100{chat_id}")
+            msg_id = int(msg_id)
+            msg = await client.get_messages(chat_id, msg_id)
+            if msg is None or msg.empty:
+                return False
+            collect_file_size(msg, chat_id, msg_id, sizes)
+            return True
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            return await self._check_one(client, str(chat_id).replace("-100", ""), msg_id, sizes)
+        except Exception:
+            return None
+
     async def _process_batch(self, client, batch: List[str]):
-        return await asyncio.gather(*(inspect_quality([client], h) for h in batch), return_exceptions=True)
+        async def check(stream_hash):
+            sizes = []
+            result = await self._check_message(client, stream_hash, sizes)
+            return result, sizes
+        return await asyncio.gather(*(check(h) for h in batch), return_exceptions=True)
 
     async def _save_sizes(self, storage, media_type, document, batch, results):
         qualities = document.get("telegram", []) if media_type == "movie" else [
@@ -957,17 +999,20 @@ class DbCheckManager:
             if isinstance(result, tuple):
                 operations.extend(size_updates(document["_id"], media_type, by_id[stream_id], result[1]))
         if operations:
-            result = await storage[media_type].bulk_write(operations, ordered=False)
-            self.state["sizes_updated"] += result.modified_count
+            try:
+                result = await storage[media_type].bulk_write(operations, ordered=False)
+                self.state["sizes_updated"] += result.modified_count
+            except Exception:
+                LOGGER.warning("[DbCheck] Size update failed; continuing the link check", exc_info=True)
 
     async def _record_results(self, batch: List[str], results) -> None:
         s = self.state
         for stream_hash, result in zip(batch, results):
             s["checked"] += 1
             status = result[0] if isinstance(result, tuple) else None
-            if status == ALIVE:
+            if status is True:
                 s["alive"] += 1
-            elif status == DEAD:
+            elif status is False:
                 s["dead"] += 1
                 title = None
                 try:
