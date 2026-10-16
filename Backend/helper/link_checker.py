@@ -5,6 +5,7 @@ from pyrogram.errors import FloodWait
 from Backend.helper.encrypt import decode_string
 from Backend.helper.pyro import is_media
 from Backend.helper.file_sizes import collect_file_size, size_updates
+from Backend.helper.checker_workers import ordered_check_clients
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import multi_clients
 
@@ -44,8 +45,6 @@ class DeadLinkChecker:
             LOGGER.warning("No bot clients available for Dead Link Checker.")
             return
 
-        clients = list(multi_clients.values())
-
         for i in range(1, self.db.current_db_index + 1):
             active_db = self.db.dbs[f"storage_{i}"]
 
@@ -64,7 +63,7 @@ class DeadLinkChecker:
                         if quality.get("is_dead"):
                             continue
                         sizes = []
-                        status = await self._check_file_alive(clients, quality.get("id"), sizes)
+                        status = await self._check_file_alive(self._next_clients(), quality.get("id"), sizes)
                         await self._save_sizes(active_db, "movie", movie_id, quality, sizes)
                         if status == DEAD:
                             LOGGER.warning(f"Found dead link for Movie {tmdb_id} (Quality: {quality.get('quality')})")
@@ -90,7 +89,7 @@ class DeadLinkChecker:
                                 if quality.get("is_dead"):
                                     continue
                                 sizes = []
-                                status = await self._check_file_alive(clients, quality.get("id"), sizes)
+                                status = await self._check_file_alive(self._next_clients(), quality.get("id"), sizes)
                                 await self._save_sizes(active_db, "tv", tv_id, quality, sizes)
                                 if status == DEAD:
                                     LOGGER.warning(f"Found dead link for TV {tmdb_id} S{season.get('season_number')}E{ep.get('episode_number')} (Quality: {quality.get('quality')})")
@@ -98,6 +97,11 @@ class DeadLinkChecker:
                                 await asyncio.sleep(0.5)
             except Exception as e:
                 LOGGER.error(f"Error scanning TV shows in DB {i}: {e}")
+
+    def _next_clients(self):
+        offset = getattr(self, "_worker_cursor", 0)
+        self._worker_cursor = offset + 1
+        return ordered_check_clients(multi_clients, offset)
 
     async def _save_sizes(self, storage, kind, document_id, quality, sizes):
         try:

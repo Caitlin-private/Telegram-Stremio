@@ -11,6 +11,7 @@ from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired, Messag
 from Backend.logger import LOGGER
 from Backend.helper.encrypt import encode_string, decode_string
 from Backend.helper.file_sizes import collect_file_size, size_updates
+from Backend.helper.checker_workers import ordered_check_clients
 from Backend.helper.metadata import metadata, extract_default_id
 from Backend.helper.pyro import apply_video_thumb_to_metadata, clean_filename, finalize_media_name, get_readable_file_size
 from Backend.helper.skip_channel import is_skip_channel, route_to_skip_channel
@@ -983,11 +984,25 @@ class DbCheckManager:
             return None
 
     async def _process_batch(self, client, batch: List[str]):
-        async def check(stream_hash):
+        from Backend.pyrofork.bot import multi_clients
+
+        async def check(stream_hash, worker):
             sizes = []
-            result = await self._check_message(client, stream_hash, sizes)
+            result = await self._check_message(worker, stream_hash, sizes)
+            # A worker may not have access to this channel. Keep the original
+            # client's decision authoritative for missing/inaccessible results.
+            if worker is not client and result is not True:
+                sizes = []
+                result = await self._check_message(client, stream_hash, sizes)
             return result, sizes
-        return await asyncio.gather(*(check(h) for h in batch), return_exceptions=True)
+
+        tasks = []
+        for stream_hash in batch:
+            offset = getattr(self, "_worker_cursor", 0)
+            workers = ordered_check_clients(multi_clients, offset, fallback=client)
+            self._worker_cursor = offset + 1
+            tasks.append(check(stream_hash, workers[0]))
+        return await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _save_sizes(self, storage, media_type, document, batch, results):
         qualities = document.get("telegram", []) if media_type == "movie" else [

@@ -21,13 +21,8 @@ def file_size_pipeline(media_type):
 
 
 def format_media_size(total_bytes, unknown):
-    size = float(total_bytes)
-    unit = "B"
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
-        if size < 1024 or unit == "PiB":
-            break
-        size /= 1024
-    label = f"{size:.2f} {unit}"
+    # Decimal terabytes, consistently across dashboard, settings, and /stats.
+    label = f"{total_bytes / 1_000_000_000_000:.2f} TB"
     return f"{label} known ({unknown:,} files unknown)" if unknown else label
 
 
