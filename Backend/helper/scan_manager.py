@@ -204,8 +204,6 @@ class ScanManager:
             "elapsed_seconds": int(elapsed),
             "messages_per_second": round(s["counters"].get("processed", 0) / elapsed, 2) if elapsed > 0 else 0.0,
             "error": s["error"],
-            "last_manual_success": self.last_success,
-            "last_auto_success": self._auto_success(),
         }
 
     async def _stream_id_exists(self, channel: int, msg_id: int) -> bool:
