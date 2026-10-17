@@ -77,7 +77,7 @@ class ScanManager:
             "status": "idle",            
             "mode": "scan",              
             "flood_wait_until": 0.0,
-            "worker_limit": 2,
+            "worker_limit": 0,
             "start_id": None,
             "end_id": None,
             "pause_for_playback": True,
@@ -179,7 +179,7 @@ class ScanManager:
             "status": s["status"],
             "mode": s["mode"],
             "cancelling": bool(s.get('discard_requested')),
-            "worker_limit": s.get('worker_limit', 2),
+            "worker_limit": s.get('worker_limit', 0),
             "start_id": s.get('start_id'),
             "end_id": s.get('end_id'),
             "pause_for_playback": s.get('pause_for_playback', True),
@@ -288,9 +288,9 @@ class ScanManager:
             self._cancel = False
             self._stop_event.clear()
             from Backend.helper.scan_resources import PlaybackPriority
-            self.state['worker_limit'] = worker_limit if worker_limit is not None else self.state.get('worker_limit', 2)
+            self.state['worker_limit'] = worker_limit if worker_limit is not None else self.state.get('worker_limit', 0)
             self.state['pause_for_playback'] = pause_for_playback if pause_for_playback is not None else self.state.get('pause_for_playback', True)
-            self._priority = PlaybackPriority(self._stop_event, self.state['pause_for_playback'])
+            self._priority = PlaybackPriority(self._stop_event, self.state['pause_for_playback'], grace=10 if mode == 'quick' else 60)
             self._worker_waits = {k: v for k, v in self.state.get('worker_waits', {}).items() if v > _now()}
             self.state['worker_waits'] = self._worker_waits
             self._metrics = dict.fromkeys(self._metrics, 0.0)
@@ -508,14 +508,15 @@ class ScanManager:
         await self._persist()
         await self._announce_import(client, 'start')
         from Backend.helper.scan_resources import select_scan_clients
-        workers = await select_scan_clients(client, chat_id, s.get('worker_limit', 2),
+        workers = await select_scan_clients(client, chat_id, s.get('worker_limit', 0),
                                             s.get('mode') == 'quick', self._telegram_call, stopped_error=_ScanStopped)
         s['active_workers'] = len(workers)
-        worker_slots = {id(c): asyncio.Semaphore(max(1, SCAN_PROCESS_CONCURRENCY // len(workers))) for c in workers}
+        process_limit = max(SCAN_PROCESS_CONCURRENCY, len(workers) * 4) if s['mode'] == 'quick' else SCAN_PROCESS_CONCURRENCY
+        worker_slots = {id(c): asyncio.Semaphore(max(1, process_limit // len(workers))) for c in workers}
         LOGGER.info(
             f"[ScanManager] Scanning {s['current_channel_name']} ({chat_id}) from id {current}"
             + (f" up to {last_id} (probe)" if use_probe else " (heuristic mode — probe unavailable)")
-            + f" using {len(workers)} bot(s), configured limit {s.get('worker_limit', 2) or 'Auto'}"
+            + f" using {len(workers)} bot(s), configured limit {s.get('worker_limit', 0) or 'Auto'}"
         )
 
         # Independent worker loops with a bounded look-ahead window. Completed
@@ -532,7 +533,7 @@ class ScanManager:
         report['completed_ranges'] = completed
         condition = asyncio.Condition()
         commit_lock = asyncio.Lock()
-        sem = asyncio.Semaphore(SCAN_PROCESS_CONCURRENCY)
+        sem = asyncio.Semaphore(process_limit)
         empty_streak = 0
 
         async def process(worker, msg):
@@ -611,7 +612,7 @@ class ScanManager:
                         condition.notify_all()
                     await self._persist()
                     await self._flush_scan_catalogs()
-                await asyncio.sleep(SCAN_BATCH_DELAY)
+                await asyncio.sleep(0.02 if s['mode'] == 'quick' else SCAN_BATCH_DELAY)
 
         tasks = [asyncio.create_task(lane(worker)) for worker in workers]
         try:

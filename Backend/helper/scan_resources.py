@@ -60,7 +60,7 @@ async def select_scan_clients(main, channel, limit, quick, call, stopped_error=(
             if isinstance(exc, stopped_error):
                 raise
             LOGGER.warning(f"[Scan] Worker is not eligible for {channel}: {type(exc).__name__}")
-        if len(selected) >= (limit or 8):
+        if limit and len(selected) >= limit:
             break
     if not selected:
         raise RuntimeError(

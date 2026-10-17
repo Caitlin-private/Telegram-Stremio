@@ -286,14 +286,14 @@
         <div class="flex flex-wrap items-center gap-4 mb-4">
             <label>Scan workers
                 <select id="scan-worker-limit" class="s-input">
-                    <option value="1">1</option><option value="2" selected>2 (recommended)</option>
+                    <option value="1">1</option><option value="2">2</option>
                     <option value="3">3</option><option value="4">4</option>
-                    <option value="8">8</option><option value="0">Auto — up to 8 eligible workers</option>
+                    <option value="8">8</option><option value="0" selected>Auto — all eligible workers</option>
                 </select>
             </label>
             <label><input type="checkbox" id="scan-pause-playback" checked> Automatically pause scans during bot playback</label>
         </div>
-        <p class="hint mb-3">Applies only to channel scans. Resumes after 60 seconds without active playback; manual Stop stays stopped. Workers need source-channel delete permission and skip-channel post permission. The main bot is used only if no worker qualifies. Processing is capped at eight files in total; live ingestion is unchanged.</p>
+        <p class="hint mb-3">Applies only to channel scans. Quick Scan resumes after 10 seconds without active playback (other modes: 60 seconds); manual Stop stays stopped. Workers need source-channel delete permission and skip-channel post permission. The main bot is used only if no worker qualifies. Quick Scan processes up to four files per worker concurrently; other modes are capped at eight; live ingestion is unchanged.</p>
         <p id="scan-resources" class="hint mb-3"></p>
         <div class="flex flex-wrap gap-4 mb-3">
             <label>Start message ID <input id="scan-start-id" type="number" min="1" max="2147483647" step="1" class="s-input" placeholder="Beginning"></label>
@@ -902,7 +902,7 @@ function renderScan(s) {
     if (!scanOptionsLoaded || s.is_running) {
         document.getElementById('scan-start-id').value = s.start_id ?? '';
         document.getElementById('scan-end-id').value = s.end_id ?? '';
-        document.getElementById('scan-worker-limit').value = String(s.worker_limit ?? 2);
+        document.getElementById('scan-worker-limit').value = String(s.worker_limit ?? 0);
         document.getElementById('scan-pause-playback').checked = s.pause_for_playback !== false;
         scanOptionsLoaded = true;
     }
