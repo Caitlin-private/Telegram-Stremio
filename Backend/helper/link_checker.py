@@ -1,12 +1,11 @@
 import asyncio
 import time
 
-from pyrogram.errors import FloodWait
-
 from Backend.helper.encrypt import decode_string
 from Backend.helper.pyro import is_media
 from Backend.helper.file_sizes import collect_file_size, size_updates
 from Backend.helper.checker_workers import ordered_check_clients
+from Backend.helper.checker_requests import CHECK_TIMEOUT, CheckUnavailable, check_reference, get_check_message
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import multi_clients
 
@@ -23,6 +22,7 @@ class DeadLinkChecker:
         self._next_check_at = time.monotonic() + 120
         self._manual_running = False
         self._manual_generation = 0
+        self._scan_task = None
 
     async def start(self):
         if self.is_running:
@@ -35,6 +35,8 @@ class DeadLinkChecker:
         """Suspend automatic checks immediately while a manual check is active."""
         self._manual_running = True
         self._manual_generation += 1
+        if self._scan_task is not None and not self._scan_task.done():
+            self._scan_task.cancel()
 
     def manual_finished(self, successful: bool):
         """A completed manual check replaces the last automatic check."""
@@ -50,13 +52,20 @@ class DeadLinkChecker:
             generation = self._manual_generation
             try:
                 LOGGER.info("Starting Dead Link Checker scan...")
-                completed = await self._scan_all_media(generation)
+                self._scan_task = asyncio.create_task(self._scan_all_media(generation))
+                completed = await self._scan_task
                 if completed and generation == self._manual_generation:
                     LOGGER.info("Dead Link Checker scan complete.")
                     self._next_check_at = time.monotonic() + self.check_interval_seconds
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    raise
+                LOGGER.info("[LinkChecker] Automatic scan interrupted for manual check.")
             except Exception as e:
                 LOGGER.error(f"Error in Dead Link Checker loop: {e}")
                 self._next_check_at = time.monotonic() + self.check_interval_seconds
+            finally:
+                self._scan_task = None
             await asyncio.sleep(1)
 
     async def _wait_for_manual(self, generation):
@@ -147,11 +156,26 @@ class DeadLinkChecker:
 
     async def _check_file_alive(self, clients, quality_id: str, sizes=None) -> str:
         try:
-            decoded = await decode_string(quality_id)
-        except Exception as e:
-            LOGGER.error(f"Link checker failed to decode {quality_id}: {e}")
+            # Includes decoding, every split part, client fallback and cooldown.
+            async with asyncio.timeout(CHECK_TIMEOUT):
+                return await self._check_file_alive_inner(clients, quality_id, sizes)
+        except TimeoutError:
+            if sizes is not None:
+                sizes.clear()
+            LOGGER.warning("[LinkChecker] Complete check timed out: stream=%s limit=%ss; result=unknown",
+                           check_reference(quality_id), CHECK_TIMEOUT)
             return UNKNOWN
-        if not decoded:
+        except Exception:
+            LOGGER.warning("[LinkChecker] Cannot check stream=%s", check_reference(quality_id), exc_info=True)
+            return UNKNOWN
+
+    async def _check_file_alive_inner(self, clients, quality_id: str, sizes=None) -> str:
+        try:
+            decoded = await decode_string(quality_id)
+        except Exception:
+            LOGGER.warning("[LinkChecker] Cannot decode stream=%s", check_reference(quality_id), exc_info=True)
+            return UNKNOWN
+        if not isinstance(decoded, dict) or not decoded:
             return UNKNOWN
 
         #----- Split file: every part must be alive; one confirmed-dead part kills the link
@@ -177,24 +201,22 @@ class DeadLinkChecker:
         if chat_id is None or msg_id is None:
             return UNKNOWN
 
-        chat_id = int(f"-100{chat_id}")
-        msg_id = int(msg_id)
         confirmed_dead = False
+        saw_unknown = False
         for client in clients:
             try:
-                message = await client.get_messages(chat_id, msg_id)
-            except FloodWait as e:
-                await asyncio.sleep(getattr(e, "value", 5) + 1)
-                continue
-            except Exception:
+                message = await get_check_message(client, chat_id, msg_id, source="LinkChecker")
+            except CheckUnavailable:
+                saw_unknown = True
                 continue
 
             if message is None or message.empty:
                 confirmed_dead = True
                 continue
             if is_media(message):
-                collect_file_size(message, chat_id, msg_id, sizes)
+                collect_file_size(message, chat_id, int(msg_id), sizes)
                 return ALIVE
             confirmed_dead = True
 
-        return DEAD if confirmed_dead else UNKNOWN
+        # An inaccessible/restricted/timed-out client is not proof of deletion.
+        return DEAD if confirmed_dead and not saw_unknown else UNKNOWN

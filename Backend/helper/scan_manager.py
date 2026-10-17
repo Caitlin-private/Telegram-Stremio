@@ -12,6 +12,7 @@ from Backend.logger import LOGGER
 from Backend.helper.encrypt import encode_string, decode_string
 from Backend.helper.file_sizes import collect_file_size, size_updates
 from Backend.helper.checker_workers import ordered_check_clients
+from Backend.helper.checker_requests import CHECK_TIMEOUT, CheckUnavailable, check_reference, get_check_message
 from Backend.helper.metadata import metadata, extract_default_id
 from Backend.helper.pyro import apply_video_thumb_to_metadata, clean_filename, finalize_media_name, get_readable_file_size
 from Backend.helper.skip_channel import is_skip_channel, route_to_skip_channel
@@ -943,17 +944,33 @@ class DbCheckManager:
     async def cancel(self) -> Dict[str, Any]:
         if self.state["status"] != "running":
             return {"ok": False, "message": "No DB check is currently running."}
-        self._cancel = True
-        return {"ok": True, "message": "Stop requested — finishing the current batch."}
+        async with self._lock:
+            if self.state["status"] != "running":
+                return {"ok": False, "message": "No DB check is currently running."}
+            self._cancel = True
+            task = self._task
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            # A task cancelled before its first execution never enters _run's
+            # finally block. Release automatic-check coordination in that case.
+            if self.state["status"] == "running":
+                self.state["status"] = "cancelled"
+                self.state["finished_at"] = _now()
+                from Backend.helper.check_coordination import manual_check_finished
+                manual_check_finished(False)
+            return {"ok": True, "message": "DB check stopped; pending checks cancelled."}
 
     #----- ── Single-message check ───────────────────────────────────────────────────
     async def _check_message(self, client, stream_hash: str, sizes=None):
         try:
             decoded = await decode_string(stream_hash)
+            if not isinstance(decoded, dict):
+                raise ValueError("invalid decoded stream")
             if isinstance(decoded, dict) and "parts" in decoded:
                 parts = decoded.get("parts") or []
                 if not parts:
-                    return False
+                    raise ValueError("empty parts list")
                 for part in parts:
                     alive = await self._check_one(client, part.get("chat_id"), part.get("msg_id"), sizes)
                     if alive is None:
@@ -962,27 +979,24 @@ class DbCheckManager:
                         return False
                 return True
             return await self._check_one(client, decoded.get("chat_id"), decoded.get("msg_id"), sizes)
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            return await self._check_message(client, stream_hash, sizes)
         except Exception:
+            LOGGER.warning("[DbCheck] Cannot check stream=%s", check_reference(stream_hash), exc_info=True)
             return None
 
     async def _check_one(self, client, chat_id, msg_id, sizes=None):
         if chat_id is None or msg_id is None:
-            return False
+            LOGGER.warning("[DbCheck] Missing message coordinates: chat=%s message=%s", chat_id, msg_id)
+            return None
         try:
-            chat_id = int(f"-100{chat_id}")
-            msg_id = int(msg_id)
-            msg = await client.get_messages(chat_id, msg_id)
+            msg = await get_check_message(client, chat_id, msg_id, source="DbCheck")
             if msg is None or msg.empty:
                 return False
-            collect_file_size(msg, chat_id, msg_id, sizes)
+            collect_file_size(msg, chat_id, int(msg_id), sizes)
             return True
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            return await self._check_one(client, str(chat_id).replace("-100", ""), msg_id, sizes)
+        except CheckUnavailable:
+            return None
         except Exception:
+            LOGGER.warning("[DbCheck] Message processing failed: chat=%s message=%s", chat_id, msg_id, exc_info=True)
             return None
 
     async def _process_batch(self, client, batch: List[str]):
@@ -990,13 +1004,19 @@ class DbCheckManager:
 
         async def check(stream_hash, worker):
             sizes = []
-            result = await self._check_message(worker, stream_hash, sizes)
-            # A worker may not have access to this channel. Keep the original
-            # client's decision authoritative for missing/inaccessible results.
-            if worker is not client and result is not True:
-                sizes = []
-                result = await self._check_message(client, stream_hash, sizes)
-            return result, sizes
+            try:
+                # One deadline covers all parts, cooldowns and the fallback.
+                async with asyncio.timeout(CHECK_TIMEOUT):
+                    result = await self._check_message(worker, stream_hash, sizes)
+                    # Keep the original client's decision authoritative.
+                    if worker is not client and result is not True:
+                        sizes = []
+                        result = await self._check_message(client, stream_hash, sizes)
+                    return result, sizes
+            except TimeoutError:
+                LOGGER.warning("[DbCheck] Complete check timed out: stream=%s limit=%ss; result=unknown",
+                               check_reference(stream_hash), CHECK_TIMEOUT)
+                return None, []
 
         tasks = []
         for stream_hash in batch:
