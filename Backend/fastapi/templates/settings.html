@@ -2127,7 +2127,7 @@ function rebuildDatabaseList(dbList) {
 const STAT_FIELDS = [
     ['ram_display', 'RAM Free / Total'],
     ['movies', 'Movies'], ['tv_shows', 'TV Shows'], ['episodes', 'Episodes'],
-    ['files', 'Files'], ['media_size', 'Total File Size'], ['titles', 'Total titles'], ['db_size', 'DB Size'],
+    ['files', 'Files'], ['media_size', 'Telegram File Size'], ['titles', 'Total titles'], ['db_size', 'DB Size'],
     ['auth_channels', 'AUTH Channels'], ['version', 'Version'],
 ];
 let logLiveTimer = null;
@@ -2146,7 +2146,7 @@ async function loadDbStats(btn) {
         const data = await res.json();
         if (data.status !== 'success') throw new Error(data.message || 'failed');
         const s = data.data;
-        grid.innerHTML = STAT_FIELDS.map(([k, label]) =>
+        grid.innerHTML = STAT_FIELDS.concat(Number(s.unknown_size_files || 0) > 0 ? [['unknown_size_files', 'Unknown File']] : []).map(([k, label]) =>
             `<div class="stat-box"><div class="v">${escapeHtml(String(k === 'ram_display' ? (s.ram?.display ?? 'Unavailable') : (s[k] ?? '—')))}</div><div class="l">${label}</div></div>`
         ).join('');
     } catch (e) {

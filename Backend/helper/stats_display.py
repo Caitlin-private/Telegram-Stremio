@@ -23,7 +23,7 @@ def file_size_pipeline(media_type):
 def format_media_size(total_bytes, unknown):
     # Decimal terabytes, consistently across dashboard, settings, and /stats.
     label = f"{total_bytes / 1_000_000_000_000:.2f} TB"
-    return f"{label} known ({unknown:,} files unknown)" if unknown else label
+    return label
 
 
 async def media_size_stats(db):
@@ -139,7 +139,8 @@ def format_stats(s):
         f'🎞️ Episodes: {s["episodes"]:,}\n'
         f'📂 Files: {s["files"]:,}\n'
         f'📚 Total titles: {s["titles"]:,}\n'
-        f'💾 Telegram files size: {s["media_size"]}\n'
+        f'💾 Telegram File Size: {s["media_size"]}\n'
+        + (f'❔ Unknown File: {s["unknown_size_files"]:,}\n' if s.get("unknown_size_files", 0) else "") +
         f'🗄️ DB size: {s["db_size"]}\n\n'
         "🟢 Live Activity\n"
         f'▶️ Live streams: {s["live_streams"]:,}\n'

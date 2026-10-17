@@ -68,8 +68,9 @@
                 <i class="fa-solid fa-hard-drive"></i>
             </div>
             <div class="min-w-0">
-                <p class="text-[9px] sm:text-[10px] uppercase font-bold text-text-secondary tracking-widest">Total File Size</p>
+                <p class="text-[9px] sm:text-[10px] uppercase font-bold text-text-secondary tracking-widest">Telegram File Size</p>
                 <p id="sys-media-size" class="text-sm font-bold text-text break-words">{{ system_stats.media_size|default('Unavailable') }}</p>
+                <p id="sys-unknown-files" class="text-xs text-text-secondary mt-1" {% if not system_stats.unknown_size_files %}style="display:none"{% endif %}>Unknown File: {{ system_stats.unknown_size_files|default(0) }}</p>
             </div>
         </div>
     </div>
@@ -601,6 +602,8 @@
 
                 const elMediaSize = document.getElementById('sys-media-size');
                 if (elMediaSize) elMediaSize.textContent = stats.media_size || 'Unavailable';
+                const unknownEl = document.getElementById('sys-unknown-files');
+                if (unknownEl) { const n = Number(stats.unknown_size_files || 0); unknownEl.style.display = n > 0 ? '' : 'none'; if (n > 0) unknownEl.textContent = 'Unknown File: ' + n.toLocaleString(); }
 
                 const elUptime = document.getElementById('sys-uptime');
                 if (elUptime) elUptime.innerText = stats.uptime || 'N/A';
