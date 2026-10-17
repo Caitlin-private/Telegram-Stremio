@@ -11,6 +11,7 @@ from Backend.logger import LOGGER
 #----- Default values (used when nothing exists in the DB yet)
 _DEFAULTS: Dict[str, Any] = {
     "stream_notice": {},
+    "db_scan_mode": "auto",
     "forward_subscriber_messages": True,
     "replace_mode": True,
     "duplicate_protection": False,
@@ -109,6 +110,10 @@ class Settings:
         merged = dict(_DEFAULTS)
         merged.update({k: v for k, v in data.items() if k != "_id"})
         self._d = merged
+
+    @property
+    def db_scan_mode(self) -> str:
+        return "manual" if self._d.get("db_scan_mode") == "manual" else "auto"
 
     #----- Booleans
     @property
@@ -460,6 +465,8 @@ class SettingsManager:
     #----- Persist new values, flip the snapshot, and reinitialise dependents
     @classmethod
     async def update(cls, db, new_values: Dict[str, Any]) -> Dict[str, str]:
+        if "db_scan_mode" in new_values and new_values["db_scan_mode"] not in ("auto", "manual"):
+            raise ValueError("db_scan_mode must be auto or manual")
         old = cls.current().to_dict()
         merged = dict(old)
         merged.update(new_values)
@@ -487,6 +494,8 @@ class SettingsManager:
         #----- Phase 2: persist and flip the in-memory snapshot
         await db.save_settings(merged)
         cls._current = Settings(merged)
+        from Backend.helper.check_coordination import scan_settings_changed
+        await scan_settings_changed()
 
         #----- Phase 3: reinit everything that reads current()
         results.update(await cls._reinit_dependent(old, merged))

@@ -270,6 +270,14 @@
     </div>
     <div class="settings-card">
         <h2><i class="fa-solid fa-sliders"></i> General</h2>
+        <div class="mb-4">
+            <label for="db_scan_mode">Database scan mode</label>
+            <select id="db_scan_mode" class="s-input">
+                <option value="auto" {% if settings.db_scan_mode == 'auto' %}selected{% endif %}>Automatic</option>
+                <option value="manual" {% if settings.db_scan_mode == 'manual' %}selected{% endif %}>Manual only</option>
+            </select>
+            <p class="hint">Automatic checks run after startup and every 24 hours. Manual only stops automatic checks; run a DB check from Tools when needed. Channel scans and DB checks run one at a time.</p>
+        </div>
         <div class="space-y-4">
             <label class="toggle-wrap">
                 <input type="checkbox" class="toggle-input" id="replace_mode"
@@ -1742,6 +1750,7 @@ async function saveSettings() {
     label.textContent = 'Saving…';
 
     const payload = {
+        db_scan_mode:                  document.getElementById('db_scan_mode').value,
         replace_mode:                  document.getElementById('replace_mode').checked,
         duplicate_protection:          document.getElementById('duplicate_protection').checked,
         allow_multipart_video:         document.getElementById('allow_multipart_video').checked,
@@ -1898,6 +1907,7 @@ async function refreshSettingsFromServer() {
 
 function renderSettings(s) {
     // Toggles
+    document.getElementById('db_scan_mode').value = s.db_scan_mode || 'auto';
     document.getElementById('replace_mode').checked = !!s.replace_mode;
     document.getElementById('duplicate_protection').checked = !!s.duplicate_protection;
     document.getElementById('allow_multipart_video').checked = !!s.allow_multipart_video;

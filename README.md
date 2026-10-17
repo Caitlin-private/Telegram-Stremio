@@ -949,3 +949,27 @@ Private title-search and announcement deep-link cards use the same caption, anno
 Both link checkers automatically distribute requests across connected worker bots in round-robin order, without a toggle or increased concurrency. The manual DB check confirms worker missing/error results with its original client before recording the result. The background checker rotates its starting bot while retaining its existing fallback through other clients. Workers need access to the indexed channels to be useful; no extra Telegram request is made solely to collect a size. This spreads the load but does not guarantee a faster scan.
 
 Telegram Files Size is displayed in decimal TB (1 TB = 1,000,000,000,000 bytes) in the dashboard, settings, and `/stats`. The unknown-size count remains visible until those sizes are collected.
+
+### Database scan scheduling
+
+In **Settings → General → Database scan mode**, choose **Automatic** (default)
+for the startup check and checks every 24 hours, or **Manual only** to disable
+background checks. Save Settings to apply; switching to Manual only cancels an
+active automatic check. **Tools → DB Check** remains available in either mode.
+A completed manual check resets the automatic 24-hour timer.
+
+Channel scans (including Quick Scan and Rescan) and DB checks are mutually
+exclusive. A requested channel scan or manual DB check cancels and waits for an
+automatic check to finish cleaning up before starting. If another channel scan
+or manual DB check is active, stop it before starting the other operation.
+Automatic checks wait until the scanner is free. Coordination applies within the
+single application process used by the supplied launcher.
+
+Run the scan regression tests with `python -m unittest discover -s tests -v`.
+
+Channel progress counts checked **message IDs in the selected range**, including
+out-of-order worker completions; deleted IDs and non-media messages are part of
+that range. The Processed counter counts actual messages, so it can be lower.
+Live and paused views show the last completed message ID and channel. Parallel
+workers can complete IDs out of order. Resume retains successful messages from
+partial batches, and the rate measures only work done since the latest start.

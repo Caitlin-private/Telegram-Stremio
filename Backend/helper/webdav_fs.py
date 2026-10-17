@@ -375,7 +375,7 @@ class WebDAVFilesystem:
         fname = f"{folder} - {qlabel}{ext}"
         if qual.get('video_part'):
             fname = f"{safe_name(raw_name.rsplit('.', 1)[0])} [Multi-Part - Part {qual['video_part']}]{ext}"
-        size = parse_size_bytes(qual.get("size"), qual.get("parts"))
+        size = parse_size_bytes(qual.get("size_bytes") or qual.get("size"), qual.get("parts"))
         return VNode(
             path=f"{folder_path}/{fname}",
             name=fname,
@@ -415,7 +415,7 @@ class WebDAVFilesystem:
         fname = f"{show_short} S{sn:02d}E{en:02d} - {ep_title} - {qlabel}{ext}"
         if qual.get('video_part'):
             fname = f"{safe_name(raw_name.rsplit('.', 1)[0])} [Multi-Part - Part {qual['video_part']}]{ext}"
-        size = parse_size_bytes(qual.get("size"), qual.get("parts"))
+        size = parse_size_bytes(qual.get("size_bytes") or qual.get("size"), qual.get("parts"))
         return VNode(
             path=f"{season_path}/{fname}",
             name=fname,

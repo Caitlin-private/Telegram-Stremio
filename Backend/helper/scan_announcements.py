@@ -28,15 +28,16 @@ def format_notice(event, report, counts, elapsed, totals=None):
     target = report.get("target")
     lines += [
         (
-            f"📨 <b>Total Media Detected:</b> {target:,}"
+            f"📨 <b>Message IDs in scan range:</b> {target:,}"
             if target is not None
-            else "📨 <b>Total Media Detected:</b> Unknown"
+            else "📨 <b>Message IDs in scan range:</b> Unknown"
         ),
         "",
     ]
     if event != "start":
         lines += [
             f"⏱️ <b>Elapsed time:</b> {escape(elapsed)}",
+            f'📨 <b>Media files detected:</b> {counts.get("media_detected", 0):,}',
             f'📂 <b>Processed files:</b> {counts.get("media_processed", 0):,}',
             f'✅ <b>Indexed files:</b> {counts.get("indexed", 0):,}',
             f'🚫 <b>Resolution skips:</b> {counts.get("skipped_resolution", 0):,}',
@@ -49,7 +50,7 @@ def format_notice(event, report, counts, elapsed, totals=None):
         f'📢 <b>Channel:</b> {escape(str(report["name"]))}',
         f'🆔 <b>Channel ID:</b> <code>{escape(str(report["channel"]))}</code>',
     ]
-    if event in ("stop", "cancel", "error"):
+    if event in ("stop", "cancel", "error", "finish"):
         last_id = report.get("last_processed_message_id")
         lines.append(
             f"📍 <b>Last processed message ID:</b> <code>{escape(str(last_id))}</code>"

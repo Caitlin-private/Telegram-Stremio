@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired, MessageDeleteForbidden
 
 from Backend.logger import LOGGER
+from Backend.helper.scan_coordination import scan_coordinator
 from Backend.helper.encrypt import encode_string, decode_string
 from Backend.helper.file_sizes import collect_file_size, size_updates
 from Backend.helper.checker_workers import ordered_check_clients
@@ -173,7 +174,24 @@ class ScanManager:
 
         target = int(s.get("current_target_id", 0) or 0)
         cur = int(s.get("current_id", 0) or 0)
-        progress = max(0, min(100, round(cur / target * 100))) if target > 0 else 0
+        report = s.get("import_report") or {}
+        first = int(report.get("first_id", s.get("start_id") or 1))
+        total_ids = report.get("target")
+        has_progress = total_ids is not None and bool(report)
+        # The cursor is the NEXT uncommitted ID, not a processed count. Include
+        # completed parallel ranges and successful messages in partial batches.
+        ranges = report.get("completed_ranges", [])
+        scanned_ids = max(0, cur - first)
+        scanned_ids += sum(max(0, hi - max(lo, cur, first)) for lo, hi in ranges)
+        scanned_ids += sum(1 for mid in set(report.get("processed_message_ids", []))
+                           if mid >= max(cur, first) and not any(lo <= mid < hi for lo, hi in ranges))
+        if has_progress:
+            scanned_ids = min(scanned_ids, total_ids)
+        progress = (round(scanned_ids / total_ids * 100, 2) if total_ids else
+                    100 if has_progress and report.get("finished") else 0)
+
+        if has_progress and scanned_ids < total_ids:
+            progress = min(progress, 99.99)
 
         return {
             "status": s["status"],
@@ -198,11 +216,13 @@ class ScanManager:
             "current_id": cur,
             "current_target_id": target,
             "progress": progress,
-            "has_progress": target > 0,
+            "has_progress": has_progress,
+            "scanned_ids": scanned_ids,
+            "total_ids": total_ids,
             "counters": dict(s["counters"]),
             "elapsed": _fmt_elapsed(elapsed),
             "elapsed_seconds": int(elapsed),
-            "messages_per_second": round(s["counters"].get("processed", 0) / elapsed, 2) if elapsed > 0 else 0.0,
+            "messages_per_second": round(max(0, s["counters"].get("processed", 0) - getattr(self, "_run_processed_baseline", 0)) / elapsed, 2) if elapsed > 0 else 0.0,
             "error": s["error"],
         }
 
@@ -225,6 +245,7 @@ class ScanManager:
                     return True
         return False
 
+    @scan_coordinator.exclusive_start("channel")
     async def start(self, client, channels: List[str], mode: str = "scan", worker_limit=None, pause_for_playback=None, start_id=None, end_id=None) -> Dict[str, Any]:
         async with self._lock:
             if self.state["status"] == "running" or (self._task and not self._task.done()):
@@ -278,6 +299,9 @@ class ScanManager:
                     self.state["pending"] = list(channels)
                     self.state["counters"] = self._blank_counters()
 
+            self._run_processed_baseline = self.state["counters"].get("processed", 0)
+            self.state["current_id"] = self.state["cursors"].get(self.state["pending"][0], self.state.get("start_id") or 1)
+            self.state["current_target_id"] = 0
             self.state["mode"] = mode
             self.state["status"] = "running"
             self.state["error"] = None
@@ -376,7 +400,7 @@ class ScanManager:
                 if report.get('channel') != ch or report.get('finished'):
                     report = {'baseline': dict(self.state['counters']), 'elapsed': 0}
                 report.update(channel=ch, name=ch, mode=report.get('mode', self.state['mode']),
-                              cursor=self.state['cursors'].get(ch, 1), target=0, run_started=_now())
+                              cursor=self.state['cursors'].get(ch, 1), target=None, run_started=_now())
                 self.state['import_report'] = report
                 completed = await self._scan_channel(client, ch_id, ch)
                 if self._cancel:
@@ -482,6 +506,11 @@ class ScanManager:
             LOGGER.warning(f"[ScanManager] Could not resolve channel name for {chat_id}: {e}")
 
         s["current_channel"] = ch_key
+        s["current_id"] = int(s["cursors"].get(ch_key, s.get("start_id") or 1))
+        s["current_target_id"] = 0
+        if s.get("last_processed_channel") != ch_key:
+            s["last_processed_message_id"] = None
+            s["last_processed_channel"] = None
 
         last_id = await self._probe_last_message_id(client, chat_id, scan_retry=True)
         last_id = max(0, last_id - 1) if last_id is not None else None
@@ -533,9 +562,12 @@ class ScanManager:
         commit_lock = asyncio.Lock()
         sem = asyncio.Semaphore(process_limit)
         empty_streak = 0
+        processed_ids = set(report.get('processed_message_ids', []))
 
         async def process(worker, msg):
             async with worker_slots[id(worker)], sem:
+                if msg.id in processed_ids:
+                    return  # Already completed in a partial batch before Stop.
                 if self._cancel:
                     raise _ScanStopped()
                 token = self._worker_context.set(worker)
@@ -546,6 +578,8 @@ class ScanManager:
                     LOGGER.warning(f'[Scan] Cannot delete {chat_id}/{msg.id}; leaving the original and skipping this file.')
                 finally:
                     self._worker_context.reset(token)
+                processed_ids.add(msg.id)
+                report['processed_message_ids'] = sorted(processed_ids)
                 s['counters']['processed'] += 1
                 s['last_processed_message_id'] = msg.id
                 s['last_processed_channel'] = ch_key
@@ -603,6 +637,10 @@ class ScanManager:
                         completed[:] = merged
                         s['cursors'][str(ch_key)] = current
                         s['current_id'] = current
+                        report['cursor'] = current
+                        processed_ids.difference_update({mid for mid in processed_ids
+                            if mid < current or any(lo <= mid < hi for lo, hi in completed)})
+                        report['processed_message_ids'] = sorted(processed_ids)
                         s['counters']['total_found'] += len(messages)
                         detected = sum(1 for m in messages if m.id > report.get('detected_through', 0) and (m.video or m.document))
                         s['counters']['media_detected'] = s['counters'].get('media_detected', 0) + detected
@@ -936,9 +974,10 @@ class DbCheckManager:
         return check_history.automatic
 
     #----- ── Control ───────────────────────────────────────────────────────────────
+    @scan_coordinator.exclusive_start("DB")
     async def start(self, client) -> Dict[str, Any]:
         async with self._lock:
-            if self.state["status"] == "running":
+            if self.state["status"] == "running" or (self._task and not self._task.done()):
                 return {"ok": False, "message": "A DB check is already running."}
             self.state = self._blank_state()
             from Backend.helper.check_coordination import manual_check_started
@@ -998,6 +1037,9 @@ class DbCheckManager:
         try:
             msg = await get_check_message(client, chat_id, msg_id, source="DbCheck")
             if msg is None or msg.empty:
+                return False
+            from Backend.helper.pyro import is_media
+            if not is_media(msg):
                 return False
             collect_file_size(msg, chat_id, int(msg_id), sizes)
             return True

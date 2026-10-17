@@ -925,25 +925,25 @@ function renderScan(s) {
 
     if (s.is_running) {
         const name = s.current_channel_name || s.current_channel || '';
-        if (s.has_progress && s.current_target_id) {
+        if (s.has_progress) {
             bar.classList.remove('indeterminate');
             bar.style.width = (s.progress || 0) + '%';
             document.getElementById('scan-current').textContent =
-                `Scanning ${name} · ${s.current_id}/${s.current_target_id} (${s.progress || 0}%)`;
+                `Scanning ${name} · ${s.scanned_ids}/${s.total_ids} message IDs checked (${s.progress || 0}%)`;
         } else {
             bar.classList.add('indeterminate');
             document.getElementById('scan-current').textContent =
-                `Scanning ${name}` + (s.current_id ? ` · up to msg #${s.current_id}` : '');
+                `Scanning ${name}` + (s.current_id ? ` · next checkpoint msg #${s.current_id}` : '');
         }
         startBtn.disabled = true; rescanBtn.disabled = true; cancelBtn.disabled = false;
         if (s.playback_paused) {
-            document.getElementById('scan-current').textContent = `Scan paused for playback — resumes automatically after ${s.mode === 'quick' ? 10 : 60} idle seconds.`;
+            document.getElementById('scan-current').textContent += ` · Scan paused for playback — resumes automatically after ${s.mode === 'quick' ? 10 : 60} idle seconds.`;
         }
         if (s.flood_wait_seconds > 0 && !s.playback_paused) {
-            document.getElementById('scan-current').textContent = `Telegram cooldown: up to ${s.flood_wait_seconds}s. Other eligible workers can continue within the checkpoint window.`;
+            document.getElementById('scan-current').textContent += ` · Telegram cooldown: up to ${s.flood_wait_seconds}s. Other eligible workers can continue within the checkpoint window.`;
         }
         if (s.cancelling) {
-            document.getElementById('scan-current').textContent = 'Cancelling — waiting for in-flight work to finish safely…';
+            document.getElementById('scan-current').textContent += ' · Cancelling — waiting for in-flight work to finish safely…';
             cancelBtn.disabled = true;
         }
         errEl.style.display = 'none';
@@ -953,9 +953,10 @@ function renderScan(s) {
 
         if (s.resumable) {
             startLabel.textContent = scanResumeMode === 'quick' ? 'Resume Quick Scan' : 'Resume Scan';
-            bar.style.width = '60%';
+            bar.style.width = (s.has_progress ? s.progress || 0 : 0) + '%';
             document.getElementById('scan-current').textContent =
-                `Paused — ${ (s.pending||[]).length } channel(s) remaining. Resume to continue.`;
+                `Paused — ${ (s.pending||[]).length } channel(s) remaining.` +
+                (s.has_progress ? ` ${s.scanned_ids}/${s.total_ids} message IDs checked (${s.progress || 0}%).` : '') + ' Resume to continue.';
         } else {
             startLabel.textContent = 'Start Scan';
             bar.style.width = (status === 'completed') ? '100%' : '0%';
@@ -964,17 +965,17 @@ function renderScan(s) {
                 status === 'error' ? 'Scan failed.' : 'No scan running';
         }
 
-        if (['cancelled', 'paused', 'error', 'idle'].includes(status) && s.last_processed_message_id != null) {
-            document.getElementById('scan-current').textContent +=
-                ` Last processed message: #${s.last_processed_message_id} (channel ${s.last_processed_channel}).`;
-        } else if (['cancelled', 'paused', 'error'].includes(status)) {
-            document.getElementById('scan-current').textContent += ' No messages processed yet.';
-        }
         if (s.error) { errEl.style.display = ''; errEl.textContent = s.error; }
         else errEl.style.display = 'none';
 
         // Keep polling even when idle: background scans can start in another session.
 
+    }
+    if (s.last_processed_message_id != null) {
+        document.getElementById('scan-current').textContent +=
+            ` Last processed message: #${s.last_processed_message_id} (channel ${s.last_processed_channel}).`;
+    } else if (s.is_running || ['cancelled', 'paused', 'error'].includes(status)) {
+        document.getElementById('scan-current').textContent += ' No messages processed in this channel yet.';
     }
 }
 

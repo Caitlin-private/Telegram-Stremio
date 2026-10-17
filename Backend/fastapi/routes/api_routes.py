@@ -1802,6 +1802,8 @@ async def get_settings_api() -> dict:
 
 
 async def update_settings_api(payload: dict) -> dict:
+    if "db_scan_mode" in payload and payload["db_scan_mode"] not in ("auto", "manual"):
+        raise HTTPException(status_code=400, detail="db_scan_mode must be auto or manual")
 
     if 'pictorium_poster_enabled' in payload and not isinstance(payload['pictorium_poster_enabled'], bool):
         raise HTTPException(status_code=400, detail='Pictorium enabled must be true or false.')

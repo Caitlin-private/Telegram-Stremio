@@ -17,3 +17,8 @@ def manual_check_finished(successful: bool):
 def automatic_success():
     from Backend.helper.check_history import check_history
     return check_history.automatic
+
+
+async def scan_settings_changed():
+    if _checker is not None:
+        await _checker.settings_changed()
