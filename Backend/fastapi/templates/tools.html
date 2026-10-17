@@ -870,9 +870,14 @@ async function discardScan() {
 async function pollScan() {
     try {
         const res = await fetch('/api/admin/tools/scan/status');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        renderScan(data.data || {});
-    } catch (e) { /* ignore transient errors */ }
+        if (!data.data || typeof data.data.is_running !== 'boolean') throw new Error('Invalid scan status response');
+        renderScan(data.data);
+    } catch (e) {
+        const err = document.getElementById('scan-error');
+        if (err) { err.style.display = ''; err.textContent = `Cannot refresh scan status: ${e.message}. The scan may still be running.`; }
+    }
 }
 
 function renderScan(s) {
@@ -932,7 +937,7 @@ function renderScan(s) {
         }
         startBtn.disabled = true; rescanBtn.disabled = true; cancelBtn.disabled = false;
         if (s.playback_paused) {
-            document.getElementById('scan-current').textContent = 'Scan paused for playback — resumes automatically after 60 idle seconds.';
+            document.getElementById('scan-current').textContent = `Scan paused for playback — resumes automatically after ${s.mode === 'quick' ? 10 : 60} idle seconds.`;
         }
         if (s.flood_wait_seconds > 0 && !s.playback_paused) {
             document.getElementById('scan-current').textContent = `Telegram cooldown: up to ${s.flood_wait_seconds}s. Other eligible workers can continue within the checkpoint window.`;
@@ -968,9 +973,8 @@ function renderScan(s) {
         if (s.error) { errEl.style.display = ''; errEl.textContent = s.error; }
         else errEl.style.display = 'none';
 
-        if (scanTimer && ['completed','cancelled','error','paused','idle'].includes(status)) {
-            clearInterval(scanTimer); scanTimer = null;
-        }
+        // Keep polling even when idle: background scans can start in another session.
+
     }
 }
 
@@ -1550,10 +1554,7 @@ function escapeHtmlAttr(str) {
 /* ─────────────── Init ─────────────── */
 loadManualSession();
 loadChannels();
-pollScan().then(() => {
-    const pill = document.getElementById('scan-status-pill');
-    if (pill.classList.contains('status-running')) startScanPolling();
-});
+startScanPolling();
 pollDbc().then(() => {
     const pill = document.getElementById('dbc-status-pill');
     if (pill.classList.contains('status-running')) startDbcPolling();
