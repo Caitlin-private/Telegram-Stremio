@@ -448,6 +448,11 @@
                 <i class="fa-regular fa-clock"></i> <span id="dbc-elapsed">0s</span>
             </div>
         </div>
+        <details class="mb-3" id="dbc-info"><summary style="cursor:pointer;font-weight:600"><i class="fa-solid fa-circle-info"></i> Check history / Info</summary>
+            <div class="hint mt-2">Last successful manual check: <span id="dbc-manual-history">Not recorded</span></div>
+            <div class="hint">Last successful automatic check: <span id="dbc-auto-history">Not recorded</span></div>
+            <div class="hint">Automatic checks pause during worker-bot playback and resume after 10 seconds without playback.</div>
+        </details>
         <div class="progress-track mb-4">
             <div class="progress-fill" id="dbc-bar"></div>
         </div>
@@ -1006,6 +1011,9 @@ async function pollDbc() {
 }
 
 function renderDbc(s) {
+    const historyText = h => h && h.finished_at ? `${new Date(h.finished_at * 1000).toLocaleString()} · ${Math.round(h.duration_seconds)}s` : 'Not recorded';
+    setText('dbc-manual-history', historyText(s.last_manual_success));
+    setText('dbc-auto-history', historyText(s.last_auto_success));
     const pill = document.getElementById('dbc-status-pill');
     const status = s.status || 'idle';
     pill.className = 'status-pill status-' + status;

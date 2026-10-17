@@ -52,9 +52,14 @@ class DeadLinkChecker:
             generation = self._manual_generation
             try:
                 LOGGER.info("Starting Dead Link Checker scan...")
+                scan_started_at = time.time()
                 self._scan_task = asyncio.create_task(self._scan_all_media(generation))
                 completed = await self._scan_task
                 if completed and generation == self._manual_generation:
+                    from Backend.helper.check_history import check_history
+                    finished_at = time.time()
+                    await check_history.save_success("automatic", finished_at,
+                                                     finished_at - scan_started_at)
                     LOGGER.info("Dead Link Checker scan complete.")
                     self._next_check_at = time.monotonic() + self.check_interval_seconds
             except asyncio.CancelledError:

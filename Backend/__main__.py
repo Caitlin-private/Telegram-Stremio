@@ -38,6 +38,8 @@ async def start_services():
         await asyncio.sleep(0.5)
 
         await scan_manager.load(db)
+        from Backend.helper.check_history import check_history
+        await check_history.load(db)
         dbcheck_manager.bind_db(db)
         duplicate_manager.bind_db(db)
         await asyncio.sleep(0.3)

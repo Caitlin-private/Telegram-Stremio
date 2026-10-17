@@ -27,8 +27,8 @@ SCAN_PERSIST_EVERY = 1
 SCAN_PROBE_TEXT = "🔄"         
 SCAN_PROCESS_CONCURRENCY = 8   
 
-DBCHECK_CONCURRENCY = 5        
-DBCHECK_BATCH_DELAY = 0.3      
+DBCHECK_CONCURRENCY = 24        
+DBCHECK_BATCH_DELAY = 0.02      
 DBCHECK_PAGE_SIZE = 100        
 
 _STATE_COLLECTION = "scan_state"
@@ -204,6 +204,8 @@ class ScanManager:
             "elapsed_seconds": int(elapsed),
             "messages_per_second": round(s["counters"].get("processed", 0) / elapsed, 2) if elapsed > 0 else 0.0,
             "error": s["error"],
+            "last_manual_success": self.last_success,
+            "last_auto_success": self._auto_success(),
         }
 
     async def _stream_id_exists(self, channel: int, msg_id: int) -> bool:
@@ -883,6 +885,7 @@ class DbCheckManager:
         self._cancel = False
         self._lock = asyncio.Lock()
         self.state: Dict[str, Any] = self._blank_state()
+        self.last_success = None
 
     @staticmethod
     def _blank_state() -> Dict[str, Any]:
@@ -925,7 +928,13 @@ class DbCheckManager:
             "elapsed": _fmt_elapsed(elapsed),
             "elapsed_seconds": int(elapsed),
             "error": s["error"],
+            "last_manual_success": __import__("Backend.helper.check_history", fromlist=["check_history"]).check_history.manual,
+            "last_auto_success": self._auto_success(),
         }
+
+    def _auto_success(self):
+        from Backend.helper.check_history import check_history
+        return check_history.automatic
 
     #----- ── Control ───────────────────────────────────────────────────────────────
     async def start(self, client) -> Dict[str, Any]:
@@ -1119,6 +1128,10 @@ class DbCheckManager:
 
             s["status"] = "cancelled" if self._cancel else "completed"
             s["finished_at"] = _now()
+            if s["status"] == "completed":
+                from Backend.helper.check_history import check_history
+                await check_history.save_success("manual", s["finished_at"],
+                                                 s["finished_at"] - s["started_at"])
             LOGGER.info(f"[DbCheck] {s['status']} — checked {s['checked']}, dead {s['dead']}")
         except asyncio.CancelledError:
             s["status"] = "cancelled"
@@ -1170,6 +1183,7 @@ class DuplicateManager:
         self._cancel = False
         self._lock = asyncio.Lock()
         self.state: Dict[str, Any] = self._blank_state()
+        self.last_success = None
 
     @staticmethod
     def _blank_state() -> Dict[str, Any]:

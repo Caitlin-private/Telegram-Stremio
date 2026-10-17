@@ -12,3 +12,8 @@ def manual_check_started():
 def manual_check_finished(successful: bool):
     if _checker is not None:
         _checker.manual_finished(successful)
+
+
+def automatic_success():
+    from Backend.helper.check_history import check_history
+    return check_history.automatic
