@@ -1,3 +1,4 @@
+from Backend.helper.async_cache import TTLCache, cached_call
 import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
@@ -268,35 +269,13 @@ def classify_media_from_tmdb(doc: dict, details: dict, watch_data: dict, enabled
     }
 
 
-_TMDB_FIND_CACHE: dict = {}
-_TMDB_DETAILS_CACHE: dict = {}
-_TMDB_PROVIDERS_CACHE: dict = {}
-_TMDB_INFLIGHT: Dict[tuple, asyncio.Future] = {}
+_TMDB_FIND_CACHE: dict = TTLCache()
+_TMDB_DETAILS_CACHE: dict = TTLCache()
+_TMDB_PROVIDERS_CACHE: dict = TTLCache()
 
 
 #----- Cache TMDB responses and de-duplicate concurrent identical requests (mirrors metadata.py)
-async def _cached_call(store: dict, key, ns: str, producer):
-    if key in store:
-        return store[key]
-    flight_key = (ns, key)
-    fut = _TMDB_INFLIGHT.get(flight_key)
-    if fut is not None:
-        return await fut
-    fut = asyncio.get_running_loop().create_future()
-    _TMDB_INFLIGHT[flight_key] = fut
-    try:
-        result = await producer()
-    except Exception as e:
-        _TMDB_INFLIGHT.pop(flight_key, None)
-        if not fut.done():
-            fut.set_exception(e)
-            fut.exception()
-        raise
-    store[key] = result
-    _TMDB_INFLIGHT.pop(flight_key, None)
-    if not fut.done():
-        fut.set_result(result)
-    return result
+_cached_call = cached_call
 
 
 async def _fetch_tmdb_data(client: httpx.AsyncClient, doc: dict) -> tuple[dict, dict]:
@@ -403,6 +382,89 @@ async def _classify_one(db, client: httpx.AsyncClient, semaphore: asyncio.Semaph
         except Exception as e:
             LOGGER.warning(f"Auto catalog classification failed for {doc.get('title')} ({doc.get('tmdb_id')}): {e}")
             return doc, {"auto_tags": doc.get("auto_tags", []) or []}
+
+
+async def sync_scan_media(db, pending, playback_gate):
+    """Synchronize a bounded scan queue with shared HTTP/config and per-title ACKs."""
+    from Backend.pyrofork.plugins.receiver import db_lock
+    if _auto_sync_lock.locked():
+        return set()
+    settings = await get_auto_catalog_settings(db)
+    enabled = {CATALOG_BY_KEY[key]["name"] for key in settings['enabled_keys'] if key in CATALOG_BY_KEY}
+    if not settings['configured'] or not enabled:
+        return set(pending)
+    semaphore = asyncio.Semaphore(3)
+    catalog_items = {}
+    completed = set()
+
+    async def sync_one(client, key, item):
+        async with semaphore:
+            await playback_gate()
+            try:
+                tid = int(item.get('tmdb_id') or 0)
+                if not tid:
+                    completed.add(key)
+                    return
+                media_type = item['media_type']
+                located = await db.find_media_doc(media_type, tid)
+                if not located:
+                    completed.add(key)
+                    return
+                doc, index = located
+                doc.update(db_index=index, media_type=media_type)
+                details, providers = await asyncio.wait_for(_fetch_tmdb_data(client, doc), timeout=30)
+                # Empty provider responses are retried later rather than marking
+                # an incomplete remote classification as synchronized forever.
+                if tmdb_api_key() and (not details or not providers):
+                    return
+                await playback_gate()
+                async with db_lock:
+                    # A scan or live ingestion may have moved/updated this title
+                    # while HTTP was in flight. Use its current storage and data.
+                    located = await db.find_media_doc(media_type, tid)
+                    if not located:
+                        completed.add(key)
+                        return
+                    doc, index = located
+                    doc.update(db_index=index, media_type=media_type)
+                    classification = classify_media_from_tmdb(doc, details or {}, providers or {}, enabled)
+                    now = datetime.utcnow()
+                    update = {field: classification.get(field, []) for field in
+                              ('origin_country', 'production_countries', 'watch_providers', 'auto_tags')}
+                    update.update(original_language=classification.get('original_language'),
+                                  auto_tags_updated_at=now,
+                                  auto_catalog={'synced': True, 'synced_at': now,
+                                                'source_updated_on': doc.get('updated_on')})
+                    if not await db.update_document(media_type, tid, index, update):
+                        return
+                    # update_document may migrate a full storage database.
+                    located = await db.find_media_doc(media_type, tid)
+                    if not located:
+                        return
+                    doc, index = located
+                    doc.update(db_index=index, media_type=media_type)
+                if not doc.get('exclusive_catalog_id'):
+                    for tag in classification.get('auto_tags') or []:
+                        if tag in enabled:
+                            catalog_items.setdefault(tag, []).append(_doc_item(doc))
+                completed.add(key)
+            except (TypeError, ValueError):
+                LOGGER.warning(f'[Quick scan] Invalid catalog item retained: {key}')
+            except Exception as exc:
+                LOGGER.warning(f'[Quick scan] Catalog item retained: {key}: {exc}')
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(18.0, connect=10.0), follow_redirects=True) as client:
+        tasks = [asyncio.create_task(sync_one(client, key, item)) for key, item in pending.items()]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+    await playback_gate()
+    await _flush_quick_items(db, catalog_items)
+    return completed
 
 
 async def sync_single_media(db, *, tmdb_id, media_type: str) -> dict:

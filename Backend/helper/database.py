@@ -1255,9 +1255,9 @@ class Database:
     async def insert_media(
         self, metadata_info: dict,
         channel: int, msg_id: int, size: str, name: str, raw_size: int = 0,
-        status: Optional[dict] = None
-    ) -> Optional[ObjectId]:
-
+        status: Optional[dict] = None, prepare_only: bool = False
+    ) -> Optional[ObjectId] | MovieSchema | TVShowSchema:
+        """Validate a source; quick scan may prepare its model for a grouped write."""
         from Backend.helper.multipart_video import with_video_part
         metadata_info = with_video_part({**metadata_info, 'name': name})
         group_key = metadata_info.get("group_key")
@@ -1327,7 +1327,7 @@ class Database:
                 origin_country=metadata_info.get('origin_country', []) or [],
                 telegram=[quality_detail]
             )
-            return await self.update_movie(media, status)
+            return media if prepare_only else await self.update_movie(media, status)
         else:
             tv_show = TVShowSchema(
                 tmdb_id=metadata_info['tmdb_id'],
@@ -1364,9 +1364,14 @@ class Database:
                     )]
                 )]
             )
-            return await self.update_tv_show(tv_show, status)
+            return tv_show if prepare_only else await self.update_tv_show(tv_show, status)
 
     async def _delete_split_part(self, part: dict) -> None:
+        from Backend.helper.scan_batch import DEFERRED_DELETIONS
+        pending = DEFERRED_DELETIONS.get()
+        if pending is not None:
+            pending.append(("part", part.copy()))
+            return
         try:
             chat_id = int(f"-100{part['chat_id']}")
             msg_id = int(part["msg_id"])
@@ -1975,6 +1980,12 @@ class Database:
 
     #----- Queue deletion of the Telegram message(s) backing a quality (split or single)
     async def _queue_quality_deletion(self, quality: dict) -> None:
+        from Backend.helper.scan_batch import DEFERRED_DELETIONS
+        pending = DEFERRED_DELETIONS.get()
+        if pending is not None:
+            from copy import deepcopy
+            pending.append(("quality", deepcopy(quality)))
+            return
         parts = quality.get("parts")
         if parts:
             for part in parts:

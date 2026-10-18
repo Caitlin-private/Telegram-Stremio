@@ -269,60 +269,48 @@ async def movie_extended(tvdb_id: int) -> Optional[dict]:
     return await cached_call(TVDB_CACHE, cache_key, "tvdb_movie", _produce)
 
 
-async def episode_by_number(tvdb_id: int, season: int, episode: int) -> Optional[dict]:
-    cache_key = f"tvdb_ep::{tvdb_id}::{season}::{episode}"
-
-    async def _produce():
-        # Prefer seasons endpoint then filter
-        data = await _get(
-            f"/series/{tvdb_id}/episodes/default",
-            {"page": 0},
-        )
-        episodes = (data or {}).get("data") or {}
-        if isinstance(episodes, dict):
-            episodes = episodes.get("episodes") or []
-        for ep in episodes or []:
+async def _episode_page(tvdb_id: int, order: str, page: int):
+    async def produce():
+        data = await _get(f"/series/{tvdb_id}/episodes/{order}", {"page": page})
+        if not data:
+            return None
+        block = data.get("data") or {}
+        episodes = (block.get("episodes") or []) if isinstance(block, dict) else block
+        links = (block.get("links") or data.get("links") or {}) if isinstance(block, dict) else data.get("links") or {}
+        numbered = {}
+        for episode in episodes:
             try:
-                if int(ep.get("seasonNumber") or -1) == int(season) and int(ep.get("number") or -1) == int(episode):
-                    return ep
+                numbered[(int(episode.get("seasonNumber")), int(episode.get("number")))] = episode
             except (TypeError, ValueError):
-                continue
-        # Fallback: search endpoint
-        data = await _get(f"/series/{tvdb_id}/episodes/default", {"page": 0})
-        return None
+                pass
+        return {"episodes": episodes, "numbered": numbered, "next": bool(links.get("next"))}
+    return await cached_call(TVDB_CACHE, ("episode_page", tvdb_id, order, page), "tvdb_page", produce)
 
-    return await cached_call(TVDB_CACHE, cache_key, "tvdb_ep", _produce)
+
+async def episode_by_number(tvdb_id: int, season: int, episode: int) -> Optional[dict]:
+    key = (int(season), int(episode))
+    for page in range(40):
+        block = await _episode_page(tvdb_id, "default", page)
+        if not block:
+            return None
+        if key in block["numbered"]:
+            # Callers enrich translations; never mutate the shared page cache.
+            return dict(block["numbered"][key])
+        if not block["next"]:
+            break
+    return None
 
 
 async def _iter_series_episodes(tvdb_id: int, order: str = "default") -> list:
-    """Page through TVDB series episodes (default or absolute order)."""
-    all_eps: list = []
-    page = 0
-    while page < 40:  # hard safety cap
-        data = await _get(
-            f"/series/{tvdb_id}/episodes/{order}",
-            {"page": page},
-        )
-        if not data:
+    episodes = []
+    for page in range(40):
+        block = await _episode_page(tvdb_id, order, page)
+        if not block:
             break
-        block = (data.get("data") or {})
-        if isinstance(block, dict):
-            eps = block.get("episodes") or []
-            links = block.get("links") or (data.get("links") or {})
-        else:
-            eps = block if isinstance(block, list) else []
-            links = data.get("links") or {}
-        if not eps:
+        episodes.extend(block["episodes"])
+        if not block["next"]:
             break
-        all_eps.extend(eps)
-        # pagination: TVDB v4 uses links.next
-        next_url = None
-        if isinstance(links, dict):
-            next_url = links.get("next")
-        if not next_url:
-            break
-        page += 1
-    return all_eps
+    return episodes
 
 
 async def episode_translation(

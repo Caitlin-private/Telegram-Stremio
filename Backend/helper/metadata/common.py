@@ -10,6 +10,7 @@ from urllib.parse import quote
 from rapidfuzz import fuzz
 
 from Backend.logger import LOGGER
+from Backend.helper.async_cache import TTLCache, cached_call
 
 # Match thresholds
 CINEMETA_THRESHOLD = 0.60
@@ -28,43 +29,19 @@ GRADIENT_COVER_BASE = "https://gradient-cover-api.vercel.app"
 API_SEMAPHORE = asyncio.Semaphore(12)
 
 # Shared caches (provider modules may also keep their own)
-IMDB_CACHE: dict = {}
-TMDB_SEARCH_CACHE: dict = {}
-TMDB_DETAILS_CACHE: dict = {}
-EPISODE_CACHE: dict = {}
-ALT_TITLES_CACHE: dict = {}
-TVDB_CACHE: dict = {}
-KITSU_CACHE: dict = {}
+IMDB_CACHE = TTLCache()
+TMDB_SEARCH_CACHE = TTLCache()
+TMDB_DETAILS_CACHE = TTLCache()
+EPISODE_CACHE = TTLCache()
+ALT_TITLES_CACHE = TTLCache()
+TVDB_CACHE = TTLCache()
+KITSU_CACHE = TTLCache()
 
-_INFLIGHT: Dict[tuple, asyncio.Future] = {}
 
 _APOSTROPHE_RE = re.compile(r"['\u2018\u2019`\u00B4]")
 _SYMBOL_STRIP_RE = re.compile(r"[&.\-:]+")
 _HTML_RE = re.compile(r"<[^>]+>")
 
-
-async def cached_call(store: dict, key, ns: str, producer):
-    if key in store:
-        return store[key]
-    flight_key = (ns, key)
-    fut = _INFLIGHT.get(flight_key)
-    if fut is not None:
-        return await fut
-    fut = asyncio.get_running_loop().create_future()
-    _INFLIGHT[flight_key] = fut
-    try:
-        result = await producer()
-    except Exception as e:
-        _INFLIGHT.pop(flight_key, None)
-        if not fut.done():
-            fut.set_exception(e)
-            fut.exception()
-        raise
-    store[key] = result
-    _INFLIGHT.pop(flight_key, None)
-    if not fut.done():
-        fut.set_result(result)
-    return result
 
 
 def strip_html(text: str) -> str:

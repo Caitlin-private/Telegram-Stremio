@@ -914,7 +914,7 @@ function renderScan(s) {
     document.getElementById('scan-start-id').disabled = !!s.is_running || !!s.resumable;
     document.getElementById('scan-end-id').disabled = !!s.is_running || !!s.resumable;
     const timing = s.timings || {};
-    setText('scan-resources', `${s.active_workers || 0} eligible worker(s) · accumulated work time: Telegram ${timing.telegram_seconds || 0}s · metadata ${timing.metadata_seconds || 0}s · DB ${timing.db_seconds || 0}s · DB lock ${timing.db_lock_seconds || 0}s`);
+    setText('scan-resources', `${s.active_workers || 0} eligible worker(s) · accumulated work time: Telegram ${timing.telegram_seconds || 0}s · metadata ${timing.metadata_seconds || 0}s · DB ${timing.db_seconds || 0}s · DB lock ${timing.db_lock_seconds || 0}s · duplicate lookup ${timing.duplicate_seconds || 0}s · catalog ${timing.catalog_seconds || 0}s · ${s.catalog_pending_count || 0} catalog updates pending${!s.is_running && s.catalog_pending_count ? " (retry on next scan)" : ""}`);
 
     const bar = document.getElementById('scan-bar');
     const startBtn = document.getElementById('scan-start-btn');

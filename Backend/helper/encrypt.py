@@ -46,6 +46,17 @@ async def encode_string(data):
     return await _run(base62_encode, compressed_data)
 
 
+def _encode_source_ids(args):
+    channel, message_ids = args
+    return {base62_encode(compress_data(json.dumps({"chat_id": channel, "msg_id": mid}))): mid
+            for mid in message_ids}
+
+
+async def encode_source_ids(channel, message_ids):
+    """Encode a scan batch in one executor job, preserving existing stream IDs."""
+    return await _run(_encode_source_ids, (channel, tuple(message_ids)))
+
+
 #----- Decode a base62 string back into the original value
 async def decode_string(encoded_data):
     compressed_data = await _run(base62_decode, encoded_data)
