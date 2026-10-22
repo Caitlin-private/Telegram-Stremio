@@ -754,6 +754,174 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
     }
 
 
+def _sports_collection() -> dict:
+    """Nuvio collection definition for Sports Streams (community.sports.fly)."""
+    return {
+        "id": "sports-highfly-collection",
+        "title": "Live Sports 🏟️",
+        "pinToTop": True,
+        "viewMode": "TABBED_GRID",
+        "showAllTab": True,
+        "focusGlowEnabled": True,
+        "folders": [
+            {
+                "id": "sports-folder-live-now",
+                "title": "Live Now 🔴",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_live"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_live"}]
+            },
+            {
+                "id": "sports-folder-today",
+                "title": "Today's Matches 📅",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1522778119026-d647f0596c20?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1522778119026-d647f0596c20?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_today"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_today"}]
+            },
+            {
+                "id": "sports-folder-football",
+                "title": "Football / Soccer ⚽",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1574629810360-7efbbe195018?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1574629810360-7efbbe195018?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_football"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_football"}]
+            },
+            {
+                "id": "sports-folder-cricket",
+                "title": "Cricket 🏏",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1531415074968-036ba1b575da?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1531415074968-036ba1b575da?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_cricket"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_cricket"}]
+            },
+            {
+                "id": "sports-folder-basketball",
+                "title": "Basketball 🏀",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1574623452334-1e0ac2b3ccb4?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1574623452334-1e0ac2b3ccb4?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_basketball"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_basketball"}]
+            },
+            {
+                "id": "sports-folder-fight",
+                "title": "Fight (UFC / Boxing) 🥊",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1517438322307-e67111335449?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1517438322307-e67111335449?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_fight"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_fight"}]
+            },
+            {
+                "id": "sports-folder-motor-sports",
+                "title": "Motor Sports (F1 / MotoGP) 🏎️",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_motor_sports"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_motor_sports"}]
+            },
+            {
+                "id": "sports-folder-tennis",
+                "title": "Tennis 🎾",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1622279457486-62dcc4a431d6?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1622279457486-62dcc4a431d6?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_tennis"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_tennis"}]
+            },
+            {
+                "id": "sports-folder-american-football",
+                "title": "American Football (NFL) 🏈",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1587280501635-68a0e82cd5ff?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1587280501635-68a0e82cd5ff?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_american_football"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_american_football"}]
+            },
+            {
+                "id": "sports-folder-hockey",
+                "title": "Hockey 🏒",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1588497859490-85d1c17db96d?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1588497859490-85d1c17db96d?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_hockey"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_hockey"}]
+            },
+            {
+                "id": "sports-folder-baseball",
+                "title": "Baseball (MLB) ⚾",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1593784991095-a205069470b6?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1593784991095-a205069470b6?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_baseball"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_baseball"}]
+            },
+            {
+                "id": "sports-folder-rugby",
+                "title": "Rugby 🏉",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1544698310-74ea9d1c8258?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1544698310-74ea9d1c8258?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_rugby"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_rugby"}]
+            },
+            {
+                "id": "sports-folder-golf",
+                "title": "Golf ⛳",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1535131749006-b7f58c99034b?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1535131749006-b7f58c99034b?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_golf"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_golf"}]
+            },
+            {
+                "id": "sports-folder-darts",
+                "title": "Darts 🎯",
+                "tileShape": "landscape",
+                "hideTitle": False,
+                "focusGifEnabled": False,
+                "coverImageUrl": "https://images.unsplash.com/photo-1614036417651-efe5912149d8?q=80&w=1280&auto=format&fit=crop",
+                "heroBackdropUrl": "https://images.unsplash.com/photo-1614036417651-efe5912149d8?q=80&w=1920&auto=format&fit=crop",
+                "sources": [{"type": "sport", "addonId": "community.sports.fly", "provider": "addon", "catalogId": "sports_darts"}],
+                "catalogSources": [{"type": "sport", "addonId": "community.sports.fly", "catalogId": "sports_darts"}]
+            }
+        ]
+    }
+
+
 async def build_nuvio_collection_data(token: str, collection_type: str = "full", token_data: Optional[dict] = None) -> list:
     addon_id = f"telegram.media.{token[:8]}"
 
@@ -1390,6 +1558,8 @@ async def build_nuvio_collection_data(token: str, collection_type: str = "full",
         return [ott_collection]
     elif collection_type == "explore":
         return [explore_collection]
+    elif collection_type in {"sports", "sports_only"}:
+        return [_sports_collection()]
 
     library_groups = await _build_library_collection_groups(token_data)
     library_folders = [_library_collection_folder(group, addon_id) for group in library_groups]
@@ -1405,6 +1575,12 @@ async def build_nuvio_collection_data(token: str, collection_type: str = "full",
 
     if collection_type in {"library", "local"}:
         return [library_collection] if library_folders else []
+
+    if collection_type in {"full_sports", "collections_sports", "sports_full"}:
+        collections = [ott_collection, explore_collection, _sports_collection()]
+        if library_folders:
+            collections.append(library_collection)
+        return collections
     
     collections = [ott_collection, explore_collection]
     if library_folders:
@@ -1432,6 +1608,19 @@ async def get_nuvio_explore_collection(token: str, token_data: dict = Depends(ve
 @router.get("/{token}/nuvio-library-collections.json")
 async def get_nuvio_library_collections(token: str, token_data: dict = Depends(verify_token)):
     return await build_nuvio_collection_data(token, "library", token_data)
+
+
+@router.get("/{token}/nuvio-sports-collection.json")
+@router.get("/{token}/nuvio-sport-collection.json")
+async def get_nuvio_sports_collection(token: str, token_data: dict = Depends(verify_token)):
+    return await build_nuvio_collection_data(token, "sports", token_data)
+
+
+@router.get("/{token}/nuvio-ott-sports-collection.json")
+@router.get("/{token}/nuvio-collections-sports.json")
+@router.get("/{token}/nuvio-collection-sports.json")
+async def get_nuvio_ott_sports_collection(token: str, token_data: dict = Depends(verify_token)):
+    return await build_nuvio_collection_data(token, "full_sports", token_data)
 
 
 #----- Catalog listing (latest/popular/custom, with genre/search/skip)

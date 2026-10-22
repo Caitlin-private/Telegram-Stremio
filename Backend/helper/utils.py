@@ -13,7 +13,9 @@ def addon_links_text(token: str) -> str:
         "🧩 <b>Addon Manifest URL (Stremio & Nuvio):</b>\n"
         f"<code>{base}/manifest.json</code>\n\n"
         "📱 <b>Nuvio Collection URLs (Optional):</b>\n"
-        f'• <a href="{base}/nuvio-collection.json">Full Collection</a>\n'
+        f'• <a href="{base}/nuvio-collection.json">Full Collection (Movies & Series)</a>\n'
+        f'• <a href="{base}/nuvio-ott-sports-collection.json">OTT Platforms + Live Sports 🏟️</a>\n'
+        f'• <a href="{base}/nuvio-sports-collection.json">Live Sports Only ⚽</a>\n'
         f'• <a href="{base}/nuvio-ott-collection.json">OTT Platforms Only</a>\n'
         f'• <a href="{base}/nuvio-explore-collection.json">TMDb Franchises Only</a>\n\n'
         "• Add the <b>Addon Manifest URL</b> into Stremio or Nuvio under Addons.\n"
