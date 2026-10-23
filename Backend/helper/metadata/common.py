@@ -29,13 +29,13 @@ GRADIENT_COVER_BASE = "https://gradient-cover-api.vercel.app"
 API_SEMAPHORE = asyncio.Semaphore(12)
 
 # Shared caches (provider modules may also keep their own)
-IMDB_CACHE = TTLCache()
-TMDB_SEARCH_CACHE = TTLCache()
-TMDB_DETAILS_CACHE = TTLCache()
-EPISODE_CACHE = TTLCache()
-ALT_TITLES_CACHE = TTLCache()
-TVDB_CACHE = TTLCache()
-KITSU_CACHE = TTLCache()
+IMDB_CACHE = TTLCache(maxsize=300)
+TMDB_SEARCH_CACHE = TTLCache(maxsize=300)
+TMDB_DETAILS_CACHE = TTLCache(maxsize=300)
+EPISODE_CACHE = TTLCache(maxsize=500)
+ALT_TITLES_CACHE = TTLCache(maxsize=300)
+TVDB_CACHE = TTLCache(maxsize=300)
+KITSU_CACHE = TTLCache(maxsize=300)
 
 
 _APOSTROPHE_RE = re.compile(r"['\u2018\u2019`\u00B4]")

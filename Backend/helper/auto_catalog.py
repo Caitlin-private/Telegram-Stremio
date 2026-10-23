@@ -269,9 +269,9 @@ def classify_media_from_tmdb(doc: dict, details: dict, watch_data: dict, enabled
     }
 
 
-_TMDB_FIND_CACHE: dict = TTLCache()
-_TMDB_DETAILS_CACHE: dict = TTLCache()
-_TMDB_PROVIDERS_CACHE: dict = TTLCache()
+_TMDB_FIND_CACHE = TTLCache(maxsize=500)
+_TMDB_DETAILS_CACHE = TTLCache(maxsize=300)
+_TMDB_PROVIDERS_CACHE = TTLCache(maxsize=300)
 
 
 #----- Cache TMDB responses and de-duplicate concurrent identical requests (mirrors metadata.py)

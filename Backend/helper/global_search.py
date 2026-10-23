@@ -16,6 +16,7 @@ from pyrogram.errors import (
     RPCError,
 )
 
+from Backend.helper.bounded import BoundedDict
 from Backend.logger import LOGGER
 from Backend.helper.settings_manager import SettingsManager
 from Backend.helper.encrypt import encode_string
@@ -31,13 +32,13 @@ MAX_CONCURRENT_CHANNELS = 5
 MIN_TITLE_SCORE = 0.7
 RESULT_CACHE_SECONDS = 60
 
-_last_search_ts: Dict[str, float] = {}
+_last_search_ts = BoundedDict(500)
 _inflight_tasks: Dict[str, asyncio.Task] = {}
-_result_cache: Dict[str, tuple] = {} 
+_result_cache = BoundedDict(200)
 _search_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SEARCHES)
 _channel_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHANNELS)
 _userbot_session_dead = False
-_chat_title_cache: Dict[int, str] = {}
+_chat_title_cache = BoundedDict(500)
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _MULTIPART_RE = re.compile(r"(?:part|cd|disc|disk)[s._-]*\d+(?=\.\w+$)", re.IGNORECASE)
