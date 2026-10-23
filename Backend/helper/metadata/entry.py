@@ -98,9 +98,6 @@ async def metadata(
     year = parsed.get("year")
     quality = quality_hint or parsed.get("quality")
 
-    if season_hint is not None and episode and not season and not isinstance(episode, list):
-        season = season_hint
-
     # GuessIt sometimes yields season=0 for absolute anime releases — treat as no season
     try:
         if season is not None and int(season) == 0:
@@ -146,6 +143,12 @@ async def metadata(
             absolute = True
             parsed["episode"] = abs_ep
 
+    # Apply hints after recovering bare episode numbers as well as parsed E01.
+    # A supplied season takes precedence over absolute anime numbering.
+    if season_hint is not None and episode and not season:
+        season = season_hint
+        absolute = False
+
     from Backend.helper.resolution_policy import rejection_reason
     reason = rejection_reason(quality)
     if reason:
@@ -182,8 +185,9 @@ async def metadata(
     anime_channel = _is_anime_channel(channel)
 
     try:
-        # TV path: classic SxxExx, or absolute/orphan episode on anime channels
-        is_tv = bool(season and episode) or (absolute and episode and anime_channel)
+        # Seasonless episode numbers also identify regular single-season series.
+        # Anime retains its absolute mapping; other series fall back to season 1.
+        is_tv = bool(season and episode) or bool(absolute and episode)
         if is_tv:
             if absolute:
                 LOGGER.info(f"Fetching TV metadata (absolute): {title} E{int(episode)} (year={year})")

@@ -224,14 +224,14 @@ def clean_anime_search_title(title: str, absolute_ep: int | None = None) -> str:
     if absolute_ep is not None:
         # Remove trailing " - 1172" / " 1172" / " E1172" matching this absolute
         t = re.sub(
-            rf"(?i)\s*[-–—]?\s*(?:e|ep|episode)?\s*0*{int(absolute_ep)}\s*$",
+            rf"(?i)(?:\s*[-–—]\s*|\s+)(?:episode|ep|e)?\s*0*{int(absolute_ep)}\s*$",
             "",
             t,
         ).strip()
     # Generic trailing absolute-looking number (2–4 digits, optional E-prefix)
     # when no SxxExx
     if not _SEASON_EP_RE.search(t):
-        t2 = re.sub(r"(?i)\s*[-–—]?\s*(?:e|ep|episode)?\s*0*\d{2,4}\s*$", "", t).strip()
+        t2 = re.sub(r"(?i)(?:\s*[-–—]\s*|\s+)(?:episode|ep|e)?\s*0*\d{2,4}\s*$", "", t).strip()
         if t2:
             t = t2
     return t or (title or "").strip()
