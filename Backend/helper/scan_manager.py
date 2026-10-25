@@ -15,7 +15,8 @@ from Backend.helper.encrypt import encode_string, decode_string
 from Backend.helper.file_sizes import collect_file_size, size_updates
 from Backend.helper.checker_workers import ordered_check_clients
 from Backend.helper.checker_requests import CHECK_TIMEOUT, CheckUnavailable, check_reference, get_check_message
-from Backend.helper.metadata import metadata, extract_default_id
+from Backend.helper.manual_add import stamp_caption_with_id
+from Backend.helper.metadata import caption_with_links, extract_default_id, has_raw_ref, metadata
 from Backend.helper.pyro import apply_video_thumb_to_metadata, clean_filename, finalize_media_name, get_readable_file_size
 from Backend.helper.skip_channel import is_skip_channel, route_to_skip_channel
 from Backend.helper.split_files import parse_split_info
@@ -913,7 +914,7 @@ class ScanManager:
             metadata_started = time.monotonic()
             metadata_info = await metadata(
                 clean_filename(title), channel_int, msg_id,
-                override_id=extract_default_id(message.caption or ""),
+                override_id=extract_default_id(caption_with_links(message)),
                 quality_hint=source_resolution(message.caption, file.file_name),
                 raise_errors=True,
             )
@@ -986,6 +987,8 @@ class ScanManager:
                     self.state.setdefault('catalog_pending', {})[f'{item["media_type"]}:{item["tmdb_id"]}'] = item
                     if not quick:
                         announce_new_media(metadata_info)
+                    if has_raw_ref(message.caption):
+                        await stamp_caption_with_id(message, metadata_info)
             else:
                 s["counters"]["skipped_meta"] += 1
         except (FloodWait, _ScanStopped, MessageDeleteForbidden):

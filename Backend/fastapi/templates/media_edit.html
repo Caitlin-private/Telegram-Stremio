@@ -420,7 +420,10 @@
                     Use this only when the auto-detected {{ media_type }} is mismatched. Existing Telegram files will stay safe.
                 </p>
             </div>
-            <span class="pill">IMDb / TMDb re-match</span>
+            <div class="flex items-center gap-2">
+                <span class="pill">IMDb / TMDb re-match</span>
+                <button type="button" class="btn-ui btn-ghost" onclick="tagMediaFiles()" title="Add the IMDB link to every file's caption">🏷️ Tag files</button>
+            </div>
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-[1fr_auto] gap-3">
@@ -1043,6 +1046,17 @@
             console.error('Rescan search failed:', error);
             setRescanState('', false);
             showErrorMessage('Failed to search matches. Please try again.');
+        }
+    }
+
+    async function tagMediaFiles() {
+        try {
+            const response = await fetch(`/api/media/tag?tmdb_id=${tmdbId}&db_index=${dbIndex}&media_type=${mediaType}`, { method: 'POST' });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) return showErrorMessage(data.detail || 'Failed to tag files.');
+            showSuccessMessage(data.message);
+        } catch (error) {
+            showErrorMessage('Failed to tag files. Please try again.');
         }
     }
 

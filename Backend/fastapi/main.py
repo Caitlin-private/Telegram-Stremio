@@ -109,6 +109,7 @@ from Backend.fastapi.routes.api_routes import (
     search_catalog_media_api,
     set_media_visibility_api,
     search_media_rescan_api,
+    tag_media_api,
     speed_test_api,
     speed_test_stream_api,
     start_dbcheck_api,
@@ -576,6 +577,10 @@ async def apply_media_rescan(
     _: bool = Depends(require_auth)
 ):
     return await apply_media_rescan_api(request, tmdb_id, db_index, media_type)
+
+@app.post("/api/media/tag")
+async def tag_media(tmdb_id: int, db_index: int, media_type: str, _: bool = Depends(require_auth)):
+    return await tag_media_api(tmdb_id, db_index, media_type)
 
 
 #----- Manual add (custom movie/tv/season/episode/stream)

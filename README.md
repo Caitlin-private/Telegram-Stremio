@@ -145,6 +145,24 @@ The app is great for personal, single-user use, but it's intentionally lighter t
 
 ---
 
+## 📱 Nuvio Integration & Custom Catalogs Setup
+
+`Telegram-Stremio` seamlessly supports **Nuvio** alongside Stremio!
+
+### 1. Main Addon URL (Stremio & Nuvio)
+* **URL:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/manifest.json`
+* Add this manifest URL into **Stremio Addons** or **Nuvio Addons**. It serves as the primary streaming engine for both players.
+
+### 2. Nuvio Collection & Logo Buttons (Optional)
+* **URL:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-collection.json`
+* The bot sends these collection links (full, OTT-only, explore-only) on `/start` and on subscription approval.
+* Import the URL or JSON file into **Nuvio (Settings ⚙️ → Collections → Import)** to display horizontal **Landscape Logo Buttons** (*Netflix*, *JioHotstar*, *Prime Video*, *Apple TV*, *Bollywood*, *Anime*, *Marvel*, *Star Wars*) on the Nuvio home screen!
+
+> ⚠️ **Important for Server Hosts:**
+> For Nuvio collections to populate platform-specific titles (instead of falling back to default latest movies/series), make sure to enable the **Auto Catalogs** (**Netflix, Hotstar, Prime Video, Apple TV, Bollywood, etc.**) under **Dashboard → Catalogs** and click **Sync**.
+
+---
+
 # 🗂️ Organizing Your Channels (recommended)
 
 You *can* dump everything into one AUTH channel — but keeping content in **separate channels** makes your library far easier to manage, back up, and share with helpers. Each of these is added the same way (as an AUTH channel in Settings), and your bot must be an **admin** in every one.
@@ -673,6 +691,18 @@ Open **Settings** (`/admin/settings`) after logging in. Here's what each card do
 | :--- | :--- |
 | **Admin Username / Password** | Your web panel login. Leave the password blank to keep the current one. **Change the defaults right away.** |
 | **AUTH_CHANNELS** | The channel(s) the bot indexes and streams from. Add each by `@username` or `-100…` ID, and make sure your bot is an **admin** in each. Tick the **Anime** box on a channel to treat it as an anime channel. |
+
+#### 🔑 Forgot the admin password?
+The password is stored **hashed**, so it can't be recovered — only reset. Use the free recovery tool:
+
+**👉 [telegram-stremio-reset.vercel.app](https://telegram-stremio-reset.vercel.app/)**
+
+1. Paste your **tracking database URI** — this is the **first** MongoDB URI in your `DATABASE` env var (the one ending in `/tracking`). *Not* the storage URI.
+2. Click **Reset password**. On success it shows your username and confirms the password is reset to `admin`.
+3. **Restart the app** (full process restart, e.g. `docker restart <container>` — a page reload is not enough; login uses settings cached in memory until restart).
+4. Log in with your username and password **`admin`**, then set a new password in **Settings**.
+
+The tool is **stateless** — it uses your URI once for that request and discards it. Nothing is stored or logged. If the default DB name isn't `dbFyvio`, set it under **advanced**.
 
 ### 🎬 Media & Content
 | Field | What to enter / where to get it |

@@ -2,7 +2,23 @@ import asyncio
 
 from Backend import db
 from Backend.helper.custom_dl import ACTIVE_STREAMS, RECENT_STREAMS
+from Backend.helper.settings_manager import SettingsManager
 from Backend.logger import LOGGER
+
+
+#----- Addon + Nuvio collection links for a token (Telegram HTML)
+def addon_links_text(token: str) -> str:
+    base = f"{SettingsManager.current().base_url}/stremio/{token}"
+    return (
+        "🧩 <b>Addon Manifest URL (Stremio & Nuvio):</b>\n"
+        f"<code>{base}/manifest.json</code>\n\n"
+        "📱 <b>Nuvio Collection URLs (Optional):</b>\n"
+        f'• <a href="{base}/nuvio-collection.json">Full Collection</a>\n'
+        f'• <a href="{base}/nuvio-ott-collection.json">OTT Platforms Only</a>\n'
+        f'• <a href="{base}/nuvio-explore-collection.json">TMDb Franchises Only</a>\n\n'
+        "• Add the <b>Addon Manifest URL</b> into Stremio or Nuvio under Addons.\n"
+        "• Import a <b>Nuvio Collection URL</b> in Nuvio (Settings → Collections → Import) for logo buttons on the home screen."
+    )
 
 
 #----- Fold the peak byte count across a stream and its split parts; report if still active

@@ -1,7 +1,8 @@
 import re
 import secrets
 import string
-from asyncio import create_task
+import time
+from asyncio import create_task, gather
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -11,6 +12,7 @@ from pydantic import ValidationError
 from pymongo import ASCENDING, DESCENDING
 
 from Backend.config import Telegram
+from Backend.helper.bounded import BoundedDict
 from Backend.helper.encrypt import decode_string, encode_string
 from Backend.helper.modal import Episode, MovieSchema, QualityDetail, QualityPart, Season, TVShowSchema
 from Backend.helper.settings_manager import SettingsManager
@@ -28,6 +30,11 @@ def convert_objectid_to_str(document: Dict[str, Any]) -> Dict[str, Any]:
         elif isinstance(value, dict):
             document[key] = convert_objectid_to_str(value)
     return document
+
+
+META_PROJECTION = {"telegram": 0, "seasons": 0}
+_COUNT_TTL = 60
+_count_cache = BoundedDict(500)
 
 
 class Database:
@@ -78,12 +85,18 @@ class Database:
         if tracking is not None:
             try:
                 await tracking["custom_catalogs"].create_index([("updated_at", DESCENDING)])
+                await tracking["api_tokens"].create_index([("token", ASCENDING)])
+                await tracking["api_tokens"].create_index([("user_id", ASCENDING)])
                 await tracking["custom_catalogs"].create_index(
                     [("items.tmdb_id", ASCENDING), ("items.media_type", ASCENDING)]
                 )
                 await self._ensure_subtitle_indexes(tracking)
             except Exception as e:
                 LOGGER.error(f"Failed creating tracking indexes: {e}")
+            try:
+                await tracking["stream_analytics"].create_index([("logged_at", ASCENDING)], expireAfterSeconds=30 * 86400)
+            except Exception as e:
+                LOGGER.error(f"Failed creating stream_analytics TTL index: {e}")
 
         for db_key in list(self.dbs.keys()):
             if db_key.startswith("storage_"):
@@ -121,7 +134,11 @@ class Database:
                 await db[collection_name].create_index([("imdb_id", ASCENDING)])
                 await db[collection_name].create_index([("kitsu_id", ASCENDING)])
                 # Source existence checks must not scan whole media collections.
+                await db[collection_name].create_index([("rating", DESCENDING)])
                 source = 'telegram' if collection_name == 'movie' else 'seasons.episodes.telegram'
+                await db[collection_name].create_index([(f'{source}.parts.msg_id', ASCENDING)])
+                for field in ('title', 'title_english', 'original_title', f'{source}.name'):
+                    await db[collection_name].create_index([(field, ASCENDING)])
                 await db[collection_name].create_index([(f'{source}.id', ASCENDING)])
                 await db[collection_name].create_index([(f'{source}.parts.chat_id', ASCENDING),
                                                        (f'{source}.parts.msg_id', ASCENDING)])
@@ -601,10 +618,19 @@ class Database:
 
     async def get_custom_catalog(self, catalog_id: str) -> Optional[dict]:
         try:
-            catalog = await self.dbs["tracking"]["custom_catalogs"].find_one({"_id": ObjectId(catalog_id)})
+            if catalog_id.startswith("auto_"):
+                catalog = await self.dbs["tracking"]["custom_catalogs"].find_one({"auto_key": catalog_id})
+            else:
+                catalog = await self.dbs["tracking"]["custom_catalogs"].find_one({"_id": ObjectId(catalog_id)})
+            if not catalog:
+                catalog = await self.dbs["tracking"]["custom_catalogs"].find_one({"auto_key": catalog_id})
             return self._normalize_catalog(convert_objectid_to_str(catalog)) if catalog else None
         except Exception:
-            return None
+            try:
+                catalog = await self.dbs["tracking"]["custom_catalogs"].find_one({"auto_key": catalog_id})
+                return self._normalize_catalog(convert_objectid_to_str(catalog)) if catalog else None
+            except Exception:
+                return None
 
     async def update_custom_catalog(
         self,
@@ -1040,21 +1066,18 @@ class Database:
         sort_dict: Dict[str, int],
         page: int,
         page_size: int,
-        filter_dict: Optional[dict] = None
+        filter_dict: Optional[dict] = None,
+        projection: Optional[dict] = None,
     ):
         filter_dict = filter_dict or {}
         skip = (page - 1) * page_size
         results = []
         dbs_checked = []
-        total_count = 0
 
-        db_counts = []
-        for i in range(1, self.current_db_index + 1):
-            db_key = f"storage_{i}"
-            db = self.dbs[db_key]
-            count = await db[collection_name].count_documents(filter_dict)
-            db_counts.append((i, count))
-            total_count += count
+        indexes = range(1, self.current_db_index + 1)
+        counts = await gather(*(self._count(f"storage_{i}", collection_name, filter_dict) for i in indexes))
+        db_counts = list(zip(indexes, counts))
+        total_count = sum(counts)
 
         start_db_index = None
         for db_index, count in reversed(db_counts):
@@ -1076,7 +1099,7 @@ class Database:
 
             cursor = (
                 db[collection_name]
-                .find(filter_dict)
+                .find(filter_dict, projection)
                 .sort(sort_dict)
                 .skip(skip if db_index == start_db_index else 0)
                 .limit(page_size - len(results))
@@ -1089,6 +1112,18 @@ class Database:
                 break
 
         return results, dbs_checked, total_count
+
+    async def _count(self, db_key: str, collection_name: str, filter_dict: dict) -> int:
+        coll = self.dbs[db_key][collection_name]
+        if not filter_dict:
+            return await coll.estimated_document_count()
+        key = (db_key, collection_name, repr(filter_dict))
+        cached = _count_cache.get(key)
+        if cached and time.time() - cached[0] < _COUNT_TTL:
+            return cached[1]
+        count = await coll.count_documents(filter_dict)
+        _count_cache[key] = (time.time(), count)
+        return count
 
     async def _move_document(
         self, collection_name: str, document: dict, old_db_index: int
@@ -1176,7 +1211,7 @@ class Database:
 
     async def get_media_ids_by_part(
         self, channel: int, msg_id: int
-    ) -> Optional[Tuple[Optional[str], Optional[int]]]:
+    ) -> Optional[Tuple[Optional[str], Optional[int], str]]:
         try:
             legacy_hash = await encode_string({"chat_id": channel, "msg_id": msg_id})
         except Exception:
@@ -1195,12 +1230,43 @@ class Database:
                 tv_or.append({"seasons.episodes.telegram.id": legacy_hash})
 
             doc = await db["movie"].find_one({"$or": movie_or}, projection)
-            if not doc:
-                doc = await db["tv"].find_one({"$or": tv_or}, projection)
             if doc:
-                return doc.get("imdb_id"), doc.get("tmdb_id")
+                return doc.get("imdb_id"), doc.get("tmdb_id"), "movie"
+            doc = await db["tv"].find_one({"$or": tv_or}, projection)
+            if doc:
+                return doc.get("imdb_id"), doc.get("tmdb_id"), "tv"
 
         return None
+
+    #----- Edited caption: the stored file name follows it (a split file takes part 1's caption)
+    async def rename_media_part(self, channel: int, msg_id: int, name: str) -> bool:
+        legacy_hash = await encode_string({"chat_id": channel, "msg_id": msg_id})
+        part_match = {"$elemMatch": {"chat_id": channel, "msg_id": msg_id}}
+
+        def is_target(q: dict) -> bool:
+            first = (q.get("parts") or [{}])[0]
+            return q.get("id") == legacy_hash or (first.get("chat_id") == channel and first.get("msg_id") == msg_id)
+
+        for i in range(1, self.current_db_index + 1):
+            db = self.dbs[f"storage_{i}"]
+            for coll, path in (("movie", "telegram"), ("tv", "seasons.episodes.telegram")):
+                doc = await db[coll].find_one({"$or": [{f"{path}.id": legacy_hash}, {f"{path}.parts": part_match}]})
+                if not doc:
+                    continue
+                qualities = (doc.get("telegram") or []) if coll == "movie" else [
+                    q for s in doc.get("seasons") or [] for e in s.get("episodes") or [] for q in e.get("telegram") or []
+                ]
+                changed = False
+                for q in qualities:
+                    if is_target(q) and q.get("name") != name:
+                        q["name"] = name
+                        q.pop("ptn", None)
+                        changed = True
+                if changed:
+                    doc["updated_on"] = datetime.utcnow()
+                    await db[coll].replace_one({"_id": doc["_id"]}, doc)
+                return changed
+        return False
 
     async def remove_media_part(self, channel: int, msg_id: int) -> bool:
         try:
@@ -1536,7 +1602,8 @@ class Database:
                 ]
             return await self._merge_split_part(existing_qualities, quality_to_update)
 
-        #----- Incoming is a normal (non-split) file.
+        #----- Incoming is a normal (non-split) file; a re-save of the same message is never its own duplicate.
+        existing_qualities = [q for q in existing_qualities if q.get("id") != quality_to_update.get("id")]
         if replace_mode:
             def same_slot(q):
                 if q.get('quality') != target_quality:
@@ -1739,13 +1806,13 @@ class Database:
             if any(keyword in str(e).lower() for keyword in ["storage", "quota"]):
                 return await self._handle_storage_error(self.update_tv_show, tv_show_data, total_storage_dbs=total_storage_dbs)
     
-    async def sort_movies(self, sort_params, page, page_size, genre_filter=None, extra_filter=None):
+    async def sort_movies(self, sort_params, page, page_size, genre_filter=None, extra_filter=None, projection=None):
         sort_dict = self._get_sort_dict(sort_params)
         filter_dict = {"genres": {"$in": [genre_filter]}} if genre_filter else {}
         if extra_filter:
             filter_dict.update(extra_filter)
         results, dbs_checked, total_count = await self._paginate_collection(
-            "movie", sort_dict, page, page_size, filter_dict=filter_dict
+            "movie", sort_dict, page, page_size, filter_dict=filter_dict, projection=projection
         )
         total_pages = (total_count + page_size - 1) // page_size
         return {
@@ -1756,13 +1823,13 @@ class Database:
             "movies": [convert_objectid_to_str(result) for result in results],
         }
 
-    async def sort_tv_shows(self, sort_params, page, page_size, genre_filter=None, extra_filter=None):
+    async def sort_tv_shows(self, sort_params, page, page_size, genre_filter=None, extra_filter=None, projection=None):
         sort_dict = self._get_sort_dict(sort_params)
         filter_dict = {"genres": {"$in": [genre_filter]}} if genre_filter else {}
         if extra_filter:
             filter_dict.update(extra_filter)
         results, dbs_checked, total_count = await self._paginate_collection(
-            "tv", sort_dict, page, page_size, filter_dict=filter_dict
+            "tv", sort_dict, page, page_size, filter_dict=filter_dict, projection=projection
         )
         total_pages = (total_count + page_size - 1) // page_size
         return {
@@ -1778,14 +1845,15 @@ class Database:
             query: str, 
             page: int, 
             page_size: int,
-            extra_filter: Optional[dict] = None
+            extra_filter: Optional[dict] = None,
+            media_type: Optional[str] = None,
         ) -> dict:
 
             skip = (page - 1) * page_size
             
             words = query.split()
             regex_query = {
-                '$regex': '.*' + '.*'.join(words) + '.*', 
+                '$regex': '.*'.join(map(re.escape, words)),
                 '$options': 'i'
             }
 
@@ -1810,8 +1878,11 @@ class Database:
                 {"$project": {
                     "_id": 1, "tmdb_id": 1, "title": 1, "genres": 1, "rating": 1, "imdb_id": 1,
                     "release_year": 1, "release_year_end": 1, "poster": 1, "backdrop": 1, "description": 1, "logo": 1,
-                    "media_type": 1, "db_index": 1, "seasons": 1, "title_english": 1, "original_title": 1
-                }}
+                    "media_type": 1, "db_index": 1, "title_english": 1, "original_title": 1,
+                    "seasons.episodes.telegram.quality": 1, "seasons.episodes.telegram.size": 1,
+                    "seasons.episodes.telegram.group_key": 1,
+                }},
+                {"$limit": skip + page_size},
             ]
             
             movie_pipeline = [
@@ -1819,10 +1890,19 @@ class Database:
                 {"$project": {
                     "_id": 1, "tmdb_id": 1, "title": 1, "genres": 1, "rating": 1,
                     "release_year": 1, "release_year_end": 1, "poster": 1, "backdrop": 1, "description": 1,
-                    "media_type": 1, "db_index": 1, "imdb_id": 1, "logo": 1, "telegram": 1, "title_english": 1, "original_title": 1
-                }}
+                    "media_type": 1, "db_index": 1, "imdb_id": 1, "logo": 1, "title_english": 1, "original_title": 1,
+                    "telegram.quality": 1, "telegram.size": 1, "telegram.group_key": 1,
+                }},
+                {"$limit": skip + page_size},
             ]
             
+            searches = [(c, m, p) for c, m, p in (("tv", tv_match, tv_pipeline), ("movie", movie_match, movie_pipeline))
+                        if media_type in (None, c)]
+
+            async def _search(db):
+                found = await gather(*(db[c].aggregate(p).to_list(None) for c, _, p in searches))
+                return [doc for docs in found for doc in docs]
+
             results = []
             dbs_checked = []
             
@@ -1830,30 +1910,21 @@ class Database:
             active_db = self.dbs[active_db_key]
             dbs_checked.append(self.current_db_index)
             
-            tv_results = await active_db["tv"].aggregate(tv_pipeline).to_list(None)
-            movie_results = await active_db["movie"].aggregate(movie_pipeline).to_list(None)
-            combined = tv_results + movie_results
-            results.extend(combined)
+            results.extend(await _search(active_db))
             
             if len(results) < page_size:
                 previous_db_index = self.current_db_index - 1
                 while previous_db_index > 0 and len(results) < page_size:
                     prev_db_key = f"storage_{previous_db_index}"
                     prev_db = self.dbs[prev_db_key]
-                    tv_results_prev = await prev_db["tv"].aggregate(tv_pipeline).to_list(None)
-                    movie_results_prev = await prev_db["movie"].aggregate(movie_pipeline).to_list(None)
-                    combined_prev = tv_results_prev + movie_results_prev
-                    results.extend(combined_prev)
+                    results.extend(await _search(prev_db))
                     dbs_checked.append(previous_db_index)
                     previous_db_index -= 1
 
-            total_count = 0
-            for db_index in dbs_checked:
-                key = f"storage_{db_index}"
-                db = self.dbs[key]
-                tv_count = await db["tv"].count_documents(tv_match)
-                movie_count = await db["movie"].count_documents(movie_match)
-                total_count += (tv_count + movie_count)
+            total_count = sum(await gather(*(
+                self._count(f"storage_{i}", coll, match)
+                for i in dbs_checked for coll, match, _ in searches
+            )))
             
             paged_results = results[skip:skip + page_size]
 
@@ -1872,6 +1943,7 @@ class Database:
         absolute_episode: Optional[int] = None,
         media_type: str = None,
         can_view=None,
+        projection: Optional[dict] = None,
     ) -> Optional[dict]:
         from Backend.helper.series_media import merge_media_documents, select_media
 
@@ -1886,7 +1958,7 @@ class Database:
             documents = []
             for index in range(self.current_db_index, 0, -1):
                 # find(), not find_one(): legacy copies can share a bucket.
-                async for doc in self.dbs[f"storage_{index}"][collection].find(query):
+                async for doc in self.dbs[f"storage_{index}"][collection].find(query, projection):
                     if can_view is not None and not can_view(doc):
                         continue
                     doc = convert_objectid_to_str(doc)
@@ -1929,7 +2001,7 @@ class Database:
             if db_key not in self.dbs:
                 continue
             try:
-                cursor = self.dbs[db_key][collection_name].find({"tmdb_id": {"$in": ids}})
+                cursor = self.dbs[db_key][collection_name].find({"tmdb_id": {"$in": ids}}, META_PROJECTION)
                 async for document in cursor:
                     document = convert_objectid_to_str(document)
                     try:
@@ -2185,8 +2257,8 @@ class Database:
         for key in self.dbs.keys():
             if key.startswith("storage_"):
                 db = self.dbs[key]
-                movie_count = await db["movie"].count_documents({})
-                tv_count = await db["tv"].count_documents({})
+                movie_count = await db["movie"].estimated_document_count()
+                tv_count = await db["tv"].estimated_document_count()
                 db_stats = await db.command("dbstats")
                 stats.append({
                     "db_name": key,

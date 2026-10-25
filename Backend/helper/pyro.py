@@ -237,6 +237,7 @@ def remove_urls(text):
         return ""
 
     url_pattern = r'\b(?:(?:https?|ftp):\/\/|www\.)[^\s/$.?#].[^\s]*'
+    text = re.sub(r'\n\s*(?:IMDB|TMDB)\s*$', '', text, flags=re.I)
     text_without_urls = re.sub(url_pattern, '', text)
     cleaned_text = re.sub(r'\s+', ' ', text_without_urls).strip()
 

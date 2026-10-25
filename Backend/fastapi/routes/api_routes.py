@@ -29,7 +29,7 @@ from Backend.helper.backup import export_config, import_config
 from Backend.helper.custom_dl import ByteStreamer, _speed_test_single_client, run_speed_test
 from Backend.helper.encrypt import decode_string, encode_string
 from Backend.helper.health import run_health_checks
-from Backend.helper.manual_add import resolve_telegram_message, stamp_caption_by_ref
+from Backend.helper.manual_add import resolve_telegram_message, retag_media, stamp_caption_by_ref
 from Backend.helper.ingestion_rules import serialize_manual_ingestion
 from Backend.helper.pyro import resolve_video_thumb_url
 from Backend.helper.requests_manager import (
@@ -41,6 +41,7 @@ from Backend.helper.requests_manager import (
     submit_request,
 )
 from Backend.helper.metadata import (
+    build_id_link,
     extract_default_id,
     fetch_selected_movie_metadata,
     fetch_selected_tv_metadata,
@@ -149,6 +150,12 @@ def _resolve_covers(items) -> None:
                 item[key] = resolve_cover_url(item[key])
 
 
+_LIST_PROJECTION = {k: 0 for k in (
+    "description", "cast", "telegram.name", "seasons.episodes.title", "seasons.episodes.overview",
+    "seasons.episodes.episode_backdrop", "seasons.episodes.telegram.name",
+)}
+
+
 #----- Media management
 async def list_media_api(
     media_type: str = Query("all", regex="^(all|movie|tv)$"),
@@ -159,7 +166,7 @@ async def list_media_api(
 ):
     from Backend.helper.media_library import list_library
     try:
-        result = await list_library(db, media_type, page, page_size, search, custom)
+        result = await list_library(db, media_type, page, page_size, search, custom, projection=_LIST_PROJECTION)
         _resolve_covers(result["items"])
         return result
     except Exception as e:
@@ -980,6 +987,16 @@ async def search_media_rescan_api(media_type: str, query: str, year: int | None 
     return {"results": results}
 
 
+async def tag_media_api(tmdb_id: str | int, db_index: int, media_type: str):
+    doc = await db.get_document(media_type, _require_tmdb_id(tmdb_id), db_index)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Media not found.")
+    if not build_id_link(doc.get("imdb_id"), doc.get("tmdb_id"), media_type):
+        raise HTTPException(status_code=400, detail="This title has no IMDb or TMDB id to tag with.")
+    asyncio.create_task(retag_media(_scan_client(), media_type, doc))
+    return {"status": "success", "message": "Tagging files in the background."}
+
+
 async def apply_media_rescan_api(request: Request, tmdb_id: str | int, db_index: int, media_type: str):
     tmdb_id = _require_tmdb_id(tmdb_id)
     body = await request.json()
@@ -1011,6 +1028,7 @@ async def apply_media_rescan_api(request: Request, tmdb_id: str | int, db_index:
 
     if not updated_doc:
         raise HTTPException(status_code=500, detail="Failed to replace media metadata.")
+    asyncio.create_task(retag_media(_scan_client(), media_type, updated_doc))
 
     return {
         "success": True,
@@ -1562,8 +1580,8 @@ async def search_catalog_media_api(
         return {"results": [], "total_count": 0}
 
     try:
-        result = await db.search_documents(query, page, page_size)
         normalized_type = _normalize_media_type(media_type)
+        result = await db.search_documents(query, page, page_size, media_type=normalized_type)
         filtered = [item for item in result.get("results", []) if item.get("media_type") == normalized_type]
         return {"results": filtered, "total_count": len(filtered)}
     except Exception as e:
@@ -2053,8 +2071,8 @@ def _scan_client():
 async def get_tools_channels_api() -> dict:
     channels = list(SettingsManager.current().auth_channels)
     client = _scan_client()
-    result = []
-    for ch in channels:
+
+    async def _resolve(ch):
         name = str(ch)
         try:
             if client is not None:
@@ -2062,8 +2080,9 @@ async def get_tools_channels_api() -> dict:
                 name = getattr(chat, "title", None) or getattr(chat, "first_name", None) or str(ch)
         except Exception as e:
             LOGGER.warning(f"[Tools] Could not resolve channel {ch}: {e}")
-        result.append({"id": str(ch), "name": name})
-    return {"status": "success", "data": result}
+        return {"id": str(ch), "name": name}
+
+    return {"status": "success", "data": await asyncio.gather(*(_resolve(ch) for ch in channels))}
 
 
 #----- ── Manual upload session (web replacement for the /set bot command) ──

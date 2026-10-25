@@ -16,7 +16,7 @@ from Backend.helper.channel_auto_add import accepts_message, capture_message, ge
 from Backend.helper.encrypt import encode_string
 from Backend.helper.manual_add import resolve_telegram_message, stamp_caption_with_id
 from Backend.helper.requests_manager import auto_fulfill
-from Backend.helper.metadata import extract_default_id, metadata
+from Backend.helper.metadata import caption_with_links, extract_default_id, has_raw_ref, metadata
 from Backend.helper.pyro import apply_video_thumb_to_metadata, clean_filename, finalize_media_name, get_readable_file_size, resolve_video_thumb_url
 from Backend.helper.settings_manager import SettingsManager
 from Backend.helper.skip_channel import is_skip_channel, route_to_skip_channel
@@ -74,7 +74,7 @@ def _finalize_title(title: str, metadata_info: dict) -> str:
 #----- Serialize DB inserts from the queue and trigger catalog sync
 async def process_file():
     while True:
-        metadata_info, channel, msg_id, size, raw_size, title = await file_queue.get()
+        metadata_info, channel, msg_id, size, raw_size, title, stamp = await file_queue.get()
         try:
             with ingestion_status.write():
                 insert_status: dict = {}
@@ -89,6 +89,8 @@ async def process_file():
                     create_task(delete_message(int(f"-100{channel}"), msg_id))
                     continue
 
+                if stamp:
+                    create_task(stamp_caption_with_id(stamp, metadata_info))
                 start_single_media_catalog_sync(
                     db, tmdb_id=metadata_info.get("tmdb_id"),
                     media_type=metadata_info.get("media_type"),
@@ -278,7 +280,6 @@ async def process_channel_message(client: Client, message: Message, durable_cont
         if not (session and session.get("kind") == "real"):
             return
     elif str(message.chat.id) not in SettingsManager.current().auth_channels:
-        await message.reply_text("> Channel is not in AUTH_CHANNEL")
         return
 
     is_real_session = bool(session and session.get("kind") == "real")
@@ -297,7 +298,7 @@ async def process_channel_message(client: Client, message: Message, durable_cont
 
         _, title, msg_id, raw_size, size, channel = _extract_fields(message)
 
-        metadata_info = await metadata(clean_filename(title), int(channel), msg_id, override_id=override_id or extract_default_id(message.caption or ""), season_hint=season_hint, quality_hint=source_resolution(message.caption, (message.video or message.document).file_name))
+        metadata_info = await metadata(clean_filename(title), int(channel), msg_id, override_id=override_id or extract_default_id(caption_with_links(message)), season_hint=season_hint, quality_hint=source_resolution(message.caption, (message.video or message.document).file_name))
         if metadata_info is None:
             LOGGER.warning(f"Metadata failed for file: {title} (ID: {msg_id})")
             await route_to_skip_channel(client, message)
@@ -308,7 +309,8 @@ async def process_channel_message(client: Client, message: Message, durable_cont
         await apply_video_thumb_to_metadata(metadata_info, message, encoded, client)
 
         if durable_context is None:
-            await file_queue.put((metadata_info, int(channel), msg_id, size, raw_size, title))
+            await file_queue.put((metadata_info, int(channel), msg_id, size, raw_size, title,
+                                  message if is_real_session or has_raw_ref(message.caption) else None))
         else:
             insert_status = {}
             async with db_lock:
@@ -326,7 +328,7 @@ async def process_channel_message(client: Client, message: Message, durable_cont
                 announce_new_media(metadata_info)
                 create_task(auto_fulfill(tmdb_id=metadata_info.get('tmdb_id'), imdb_id=metadata_info.get('imdb_id'), media_type=metadata_info.get('media_type')))
 
-        if is_real_session:
+        if durable_context is not None and (is_real_session or has_raw_ref(message.caption)):
             create_task(stamp_caption_with_id(message, metadata_info))
     except FloodWait as e:
         if durable_context is not None:
@@ -349,7 +351,7 @@ def _override_matches_indexed(override_id: str, imdb_id, tmdb_id) -> bool:
     return False
 
 
-#----- Re-index an edited channel file only when it carries an override ID
+#----- Edited file: same title (or no id) renames it, another title's id re-indexes it
 @Client.on_edited_message(filters.channel & (filters.document | filters.video))
 async def file_edited_handler(client: Client, message: Message):
     if durable_ingestion.authorized(message.chat.id) and not is_skip_channel(message):
@@ -370,12 +372,16 @@ async def process_edited_message(client: Client, message: Message, durable_conte
             return
 
         _, title, msg_id, raw_size, size, channel = _extract_fields(message)
-        override_id = extract_default_id(message.caption) if message.caption else None
-        if not override_id:
+        override_id = extract_default_id(caption_with_links(message))
+        existing = await db.get_media_ids_by_part(int(channel), msg_id)
+        if existing and (not override_id or _override_matches_indexed(override_id, existing[0], existing[1])):
+            if title:
+                async with db_lock:
+                    await db.rename_media_part(int(channel), msg_id, finalize_media_name(title, bool(parse_split_info(clean_filename(title)))))
+            if has_raw_ref(message.caption):
+                await stamp_caption_with_id(message, {"imdb_id": existing[0], "tmdb_id": existing[1], "media_type": existing[2]})
             return
-
-        existing_ids = await db.get_media_ids_by_part(int(channel), msg_id)
-        if existing_ids and _override_matches_indexed(override_id, existing_ids[0], existing_ids[1]):
+        if not override_id:
             return
 
         LOGGER.info(f"Detected override ID '{override_id}' in edited message {msg_id}")
@@ -383,20 +389,20 @@ async def process_edited_message(client: Client, message: Message, durable_conte
         if metadata_info is None:
             LOGGER.warning(f"Metadata failed for edited file: {title} (ID: {msg_id})")
             return
-
         await db.remove_media_part(int(channel), msg_id)
 
         title = _finalize_title(title, metadata_info)
         encoded = metadata_info.get("encoded_string") or await encode_string({"chat_id": int(channel), "msg_id": msg_id})
         await apply_video_thumb_to_metadata(metadata_info, message, encoded, client)
         if durable_context is None:
-            await file_queue.put((metadata_info, int(channel), msg_id, size, raw_size, title))
+            await file_queue.put((metadata_info, int(channel), msg_id, size, raw_size, title, message))
         else:
             async with db_lock:
                 result = await db.insert_media(metadata_info, channel=int(channel), msg_id=msg_id,
                     size=size, raw_size=raw_size, name=title)
                 if not result:
                     raise RuntimeError('Could not save edited media.')
+            create_task(stamp_caption_with_id(message, metadata_info))
     except Exception as e:
         LOGGER.error(f"Error handling edited generic file {message.id}: {e}")
         if durable_context is not None:

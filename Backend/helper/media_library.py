@@ -67,7 +67,7 @@ def _sort_key(doc, index, media_type):
     return stamp, str(doc.get("_id", "")), index, media_type
 
 
-async def list_library(db, media_type="all", page=1, page_size=24, search="", custom=False):
+async def list_library(db, media_type="all", page=1, page_size=24, search="", custom=False, projection=None):
     if media_type not in ("all", "movie", "tv"):
         raise ValueError("Type must be all, movie or tv.")
     query = library_filter(search, custom)
@@ -84,7 +84,7 @@ async def list_library(db, media_type="all", page=1, page_size=24, search="", cu
     page = max(1, min(page, total_pages or 1))
     skip = (page - 1) * page_size
     cursors = [
-        collection.find(query).sort([("updated_on", -1), ("_id", -1)]).batch_size(page_size)
+        collection.find(query, projection).sort([("updated_on", -1), ("_id", -1)]).batch_size(page_size)
         for _, _, collection in sources
     ]
 
