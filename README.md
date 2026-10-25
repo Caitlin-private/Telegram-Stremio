@@ -973,3 +973,21 @@ that range. The Processed counter counts actual messages, so it can be lower.
 Live and paused views show the last completed message ID and channel. Parallel
 workers can complete IDs out of order. Resume retains successful messages from
 partial batches, and the rate measures only work done since the latest start.
+
+
+### Free access requests and approval messages
+
+In **Settings → Subscription**, enable **Allow Free Access Requests** to show a
+**Request Free Access** button alongside the bot's subscription plans (also works
+when no paid plans exist). Set **Free Access Duration (days)** to the duration to
+grant upon approval; the default is 30 days. This option is disabled by default.
+
+Requests notify the configured approvers, or the owner when no approvers are set,
+with a text-only message and Approve/Reject buttons. Users receive a confirmation
+that admins have been notified and must wait for approval before gaining access.
+A pending request cannot be resubmitted or replaced with a payment screenshot.
+
+Set **Custom Approval Message** to send optional welcome text or instructions after
+any paid or free request is approved through the bot. It is sent as a separate
+plain-text message, preserving the normal expiry, group invite, and addon link.
+Leave it blank to disable it (maximum 4000 characters).

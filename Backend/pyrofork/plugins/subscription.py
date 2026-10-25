@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from pyrogram import Client, filters
+from pyrogram import Client, enums, filters
 from pyrogram.types import (
     CallbackQuery,
     ForceReply,
@@ -46,15 +46,58 @@ def _plan_info_text(mention: str, username_str: str, user_id: int, duration, pri
 
 #----- Update the acting admin's caption plus every other admin's copy
 async def _apply_admin_captions(client: Client, callback_query: CallbackQuery, admin_messages: list, status_caption: str):
-    await callback_query.message.edit_caption(status_caption)
+    if callback_query.message.photo:
+        await callback_query.message.edit_caption(status_caption, reply_markup=None)
+    else:
+        await callback_query.message.edit_text(status_caption, reply_markup=None)
     acting_msg_id = callback_query.message.id
     for am in admin_messages:
-        if am["message_id"] == acting_msg_id:
+        if am["message_id"] == acting_msg_id and am["chat_id"] == callback_query.message.chat.id:
             continue
         try:
-            await client.edit_message_caption(chat_id=am["chat_id"], message_id=am["message_id"], caption=status_caption)
+            if am.get("is_text"):
+                await client.edit_message_text(chat_id=am["chat_id"], message_id=am["message_id"], text=status_caption, reply_markup=None)
+            else:
+                await client.edit_message_caption(chat_id=am["chat_id"], message_id=am["message_id"], caption=status_caption, reply_markup=None)
         except Exception:
             pass
+
+
+@Client.on_callback_query(filters.regex(r"^request_free_access$"))
+async def request_free_access(client: Client, callback_query: CallbackQuery):
+    settings = SettingsManager.current()
+    if not settings.subscription or not settings.free_access_requests:
+        return await callback_query.answer("Free access requests are not enabled.", show_alert=True)
+    user = callback_query.from_user
+    if not user:
+        return await callback_query.answer("Please request access from your personal account.", show_alert=True)
+    await db.update_user_interaction(user.id, user.first_name, user.username)
+    record = await db.get_user(user.id)
+    if db.is_subscription_active(record):
+        return await callback_query.answer("Your subscription is already active.", show_alert=True)
+    if not await db.create_free_access_request(user.id, settings.free_access_days):
+        return await callback_query.answer("You already have a pending request. Please await approval.", show_alert=True)
+    await callback_query.answer()
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user.id}"),
+    ]])
+    info = _plan_info_text(user.mention, f"@{user.username}" if user.username else "N/A",
+                           user.id, settings.free_access_days, 0)
+    text = f"<b>🎁 New Free Access Request</b>\n\n{info}\n\nPlease approve or reject this free access request."
+    notified = False
+    for approver_id in _approver_ids():
+        try:
+            sent = await client.send_message(approver_id, text, reply_markup=keyboard)
+            await db.add_free_access_admin_message(user.id, approver_id, sent.id)
+            notified = True
+        except Exception as exc:
+            LOGGER.error(f"Failed to notify approver {approver_id} of free access request: {exc}")
+    if notified:
+        await callback_query.message.reply_text("✅ Admins have been notified. Please await approval.")
+    else:
+        await db.reject_payment(user.id)
+        await callback_query.message.reply_text("⚠️ Could not notify the admins. Please try again later or contact the owner.")
 
 
 #----- Plan button pressed: compute expiry, DM payment instructions, set pending state
@@ -68,6 +111,11 @@ async def plan_selection(client: Client, callback_query: CallbackQuery):
     plan = next((p for p in plans if p["_id"] == plan_id), None)
     if not plan:
         return await callback_query.answer("Invalid plan.", show_alert=True)
+
+    requester_id = callback_query.from_user.id if callback_query.from_user else callback_query.message.chat.id
+    existing = await db.get_user(requester_id)
+    if existing and existing.get("pending_payment", {}).get("request_type") == "free":
+        return await callback_query.answer("Your free access request is pending. Please await approval.", show_alert=True)
 
     duration = plan["days"]
     await callback_query.answer()
@@ -153,6 +201,9 @@ async def handle_payment_screenshot(client: Client, message: Message):
             return
 
         pending = user["pending_payment"]
+        if pending.get("request_type") == "free":
+            await message.reply_text("Your free access request is pending. No payment screenshot is needed.")
+            return
         duration = pending.get("duration", "?")
         price = pending.get("price", "?")
         currency = pending.get("currency", "INR")
@@ -225,6 +276,12 @@ async def admin_review(client: Client, callback_query: CallbackQuery):
         return await callback_query.answer("This request has already been processed.", show_alert=True)
 
     admin_messages = user_pre["pending_payment"].get("admin_messages", [])
+    if not any(
+        am["chat_id"] == callback_query.message.chat.id and am["message_id"] == callback_query.message.id
+        for am in admin_messages
+    ):
+        return await callback_query.answer("This request is outdated. Use the latest request message.", show_alert=True)
+    is_free = user_pre["pending_payment"].get("request_type") == "free"
     duration = user_pre["pending_payment"].get("duration", "?")
     price = user_pre["pending_payment"].get("price", "?")
 
@@ -254,7 +311,7 @@ async def admin_review(client: Client, callback_query: CallbackQuery):
 
         expiry_str = user_data["subscription_expiry"].strftime("%Y-%m-%d")
         success_text = (
-            f"🎉 <b>Payment Approved!</b>\n\n"
+            f"🎉 <b>{'Free Access Approved!' if is_free else 'Payment Approved!'}</b>\n\n"
             f"Your subscription is now active until <b>{expiry_str}</b>."
             f"{invite_text}"
         )
@@ -265,6 +322,12 @@ async def admin_review(client: Client, callback_query: CallbackQuery):
                 f"Tap the link above → <b>Install</b> in Stremio to start watching!"
             )
         await client.send_message(target_user_id, success_text)
+        custom_message = SettingsManager.current().subscription_approval_message
+        if custom_message:
+            try:
+                await client.send_message(target_user_id, custom_message, parse_mode=enums.ParseMode.DISABLED)
+            except Exception as exc:
+                LOGGER.error(f"Could not send custom approval message to {target_user_id}: {exc}")
 
         mention, username_str = await _resolve_target_info(client, target_user_id)
         info_text = _plan_info_text(mention, username_str, target_user_id, duration, price)
@@ -276,7 +339,8 @@ async def admin_review(client: Client, callback_query: CallbackQuery):
 
         await client.send_message(
             target_user_id,
-            "❌ <b>Payment Rejected</b>\n\nYour recent payment submission was rejected by the admin. Please contact the admin or try submitting again."
+            ("❌ <b>Free Access Request Rejected</b>\n\nYour free access request was rejected by the admin. Please contact the admin for details."
+             if is_free else "❌ <b>Payment Rejected</b>\n\nYour recent payment submission was rejected by the admin. Please contact the admin or try submitting again.")
         )
         mention, username_str = await _resolve_target_info(client, target_user_id)
         info_text = _plan_info_text(mention, username_str, target_user_id, duration, price)

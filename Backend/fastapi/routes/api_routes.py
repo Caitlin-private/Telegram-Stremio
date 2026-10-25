@@ -1831,6 +1831,18 @@ async def update_settings_api(payload: dict) -> dict:
     if "session_secret" in payload and not str(payload["session_secret"]).strip():
         del payload["session_secret"]
 
+    if "free_access_requests" in payload and not isinstance(payload["free_access_requests"], bool):
+        raise HTTPException(status_code=400, detail="Free access requests must be true or false.")
+    if "free_access_days" in payload:
+        days = payload["free_access_days"]
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 36500:
+            raise HTTPException(status_code=400, detail="Free access duration must be 1 to 36500 whole days.")
+    if "subscription_approval_message" in payload:
+        message = payload["subscription_approval_message"]
+        if not isinstance(message, str) or len(message.encode("utf-16-le")) // 2 > 4000:
+            raise HTTPException(status_code=400, detail="Approval message must be text of at most 4000 characters.")
+        payload["subscription_approval_message"] = message.strip()
+
     #----- Type coercion and validation
     bool_keys = {"allow_multipart_video", "replace_mode", "duplicate_protection", "hide_catalog", "subscription", "show_proxy_and_non_proxy_both", "mediaflow_proxy", "announce_new_content", "delete_on_metadata_fail", "better_poster_enabled", "rpdb_enabled", "spatial_poster_enabled", "fanart_enabled", "fanart_shuffle", "fanart_low_res_poster"}
     for key in bool_keys:

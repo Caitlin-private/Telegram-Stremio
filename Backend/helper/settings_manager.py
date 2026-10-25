@@ -32,6 +32,9 @@ _DEFAULTS: Dict[str, Any] = {
     "subscription": False,
     "subscription_group_id": 0,
     "approver_ids": [],
+    "free_access_requests": False,
+    "free_access_days": 30,
+    "subscription_approval_message": "",
     "payment_instructions": "",
     "payment_qr_url": "",
     "http_proxy_url": "",
@@ -266,6 +269,18 @@ class Settings:
     @property
     def webdav_password(self) -> str:
         return str(self._d.get("webdav_password") or "")
+
+    @property
+    def free_access_requests(self) -> bool:
+        return bool(self._d.get("free_access_requests", False))
+
+    @property
+    def free_access_days(self) -> int:
+        return int(self._d.get("free_access_days", 30))
+
+    @property
+    def subscription_approval_message(self) -> str:
+        return str(self._d.get("subscription_approval_message") or "")
 
     @property
     def payment_instructions(self) -> str:
@@ -560,7 +575,8 @@ class SettingsManager:
                 results["subscription"] = f"error: {exc}"
         else:
             sub_keys = {"subscription_group_id", "approver_ids",
-                        "payment_instructions", "payment_qr_url"}
+                        "payment_instructions", "payment_qr_url", "free_access_requests",
+                        "free_access_days", "subscription_approval_message"}
             if any(old.get(k) != new.get(k) for k in sub_keys):
                 results["subscription"] = "settings reloaded in-memory"
 

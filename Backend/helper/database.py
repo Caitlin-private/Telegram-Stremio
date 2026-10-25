@@ -312,6 +312,25 @@ class Database:
             upsert=True
         )
 
+    async def create_free_access_request(self, user_id: int, days: int) -> bool:
+        # The user already exists after update_user_interaction. Claim only an empty slot.
+        result = await self.dbs["tracking"]["users"].update_one(
+            {"_id": user_id, "pending_payment": {"$exists": False}},
+            {"$set": {"pending_payment": {
+                "duration": days, "price": 0, "currency": "INR", "msg_id": 0,
+                "date": datetime.utcnow(), "request_type": "free", "admin_messages": [],
+            }}},
+        )
+        return result.modified_count > 0
+
+    async def add_free_access_admin_message(self, user_id: int, chat_id: int, message_id: int):
+        await self.dbs["tracking"]["users"].update_one(
+            {"_id": user_id, "pending_payment.request_type": "free"},
+            {"$push": {"pending_payment.admin_messages": {
+                "chat_id": chat_id, "message_id": message_id, "is_text": True,
+            }}},
+        )
+
     async def approve_payment(self, user_id: int) -> Optional[dict]:
         user = await self.get_user(user_id)
         if not user or "pending_payment" not in user:
@@ -327,14 +346,14 @@ class Database:
         else:
             new_expiry = now + timedelta(days=duration)
 
-        await self.dbs["tracking"]["users"].update_one(
-            {"_id": user_id},
+        result = await self.dbs["tracking"]["users"].update_one(
+            {"_id": user_id, "pending_payment": user["pending_payment"]},
             {
                 "$set": {"subscription_expiry": new_expiry, "subscription_status": "active"},
                 "$unset": {"pending_payment": ""}
             }
         )
-        return await self.get_user(user_id)
+        return await self.get_user(user_id) if result.modified_count else None
 
     async def reject_payment(self, user_id: int) -> bool:
         result = await self.dbs["tracking"]["users"].update_one(

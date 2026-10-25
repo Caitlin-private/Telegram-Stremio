@@ -695,6 +695,30 @@
                 </span>
             </div>
 
+            <label class="toggle-wrap" style="margin-bottom:1rem">
+                <input type="checkbox" class="toggle-input" id="free_access_requests"
+                    {% if settings.free_access_requests %}checked{% endif %}>
+                <span class="toggle-track"></span>
+                <span class="toggle-label"><strong>Allow Free Access Requests</strong>
+                    <span style="color:var(--text-sec);font-size:0.8rem;display:block">
+                        Show Request Free Access in the bot. Approvers (or the owner) must approve each request.
+                    </span>
+                </span>
+            </label>
+            <div style="margin-bottom:1rem">
+                <label class="s-label" for="free_access_days">Free Access Duration (days)</label>
+                <input type="number" id="free_access_days" class="s-input" min="1" max="36500" step="1"
+                    value="{{ settings.free_access_days }}">
+            </div>
+            <div style="margin-bottom:1rem">
+                <label class="s-label" for="subscription_approval_message">Custom Approval Message</label>
+                <textarea id="subscription_approval_message" class="s-input" rows="4" maxlength="4000"
+                    placeholder="Optional welcome message or instructions">{{ settings.subscription_approval_message }}</textarea>
+                <span style="color:var(--text-sec);font-size:0.78rem;display:block;margin-top:0.4rem">
+                    Sent as a separate plain-text bot message after paid or free access is approved. Leave blank to disable.
+                </span>
+            </div>
+
             <!-- Payment method -->
             <div style="margin-bottom:1rem">
                 <label class="s-label" for="payment_instructions">Payment Instructions
@@ -1786,6 +1810,9 @@ async function saveSettings() {
         anime_channels:                collectAnimeChannels(),
         subscription:                  document.getElementById('subscription').checked,
         subscription_group_id:         parseInt(document.getElementById('subscription_group_id').value || '0', 10),
+        free_access_requests:          document.getElementById('free_access_requests').checked,
+        free_access_days:              Number(document.getElementById('free_access_days').value),
+        subscription_approval_message: document.getElementById('subscription_approval_message').value.trim(),
         payment_instructions:          document.getElementById('payment_instructions').value.trim(),
         payment_qr_url:                document.getElementById('payment_qr_url').value.trim(),
         approver_ids:                  collectList('approver_ids').map(Number),
@@ -1956,6 +1983,9 @@ function renderSettings(s) {
     document.getElementById('upstream_repo').value = s.upstream_repo || '';
     document.getElementById('upstream_branch').value = s.upstream_branch || '';
     document.getElementById('subscription_group_id').value = s.subscription_group_id || 0;
+    document.getElementById('free_access_requests').checked = !!s.free_access_requests;
+    document.getElementById('free_access_days').value = s.free_access_days ?? 30;
+    document.getElementById('subscription_approval_message').value = s.subscription_approval_message || '';
     document.getElementById('http_proxy_url').value = s.http_proxy_url || '';
     document.getElementById('mediaflow_proxy').checked = !!s.mediaflow_proxy;
     document.getElementById('mediaflow_password').value = s.mediaflow_password || '';

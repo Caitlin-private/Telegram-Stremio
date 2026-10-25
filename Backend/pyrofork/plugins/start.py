@@ -69,22 +69,26 @@ async def send_start_message(client: Client, message: Message):
 
         if not is_active:
             plans = await db.get_subscription_plans()
-            if not plans:
+            allow_free = SettingsManager.current().free_access_requests
+            if not plans and not allow_free:
                 return await message.reply_text(
-                    '<b>Welcome to the Telegram Stremio Private Group!</b>\n\n'
+                    '<b>Welcome to the Caitlin Stream!</b>\n\n'
                     'Currently, no subscription plans are set up. Please contact the administrator.',
                     quote=True,
                     parse_mode=enums.ParseMode.HTML
                 )
 
-            keyboard = InlineKeyboardMarkup([
+            buttons = [
                 [InlineKeyboardButton(f"{plan['days']} Days - {_currency_symbol(plan.get('currency'))}{plan['price']}", callback_data=f"plan_{plan['_id']}")]
                 for plan in plans
-            ])
+            ]
+            if allow_free:
+                buttons.append([InlineKeyboardButton("Request Free Access", callback_data="request_free_access")])
+            keyboard = InlineKeyboardMarkup(buttons)
             return await message.reply_text(
-                '<b>Welcome to the Telegram Stremio Private Group!</b>\n\n'
+                '<b>Welcome to the Caitlin Stream!</b>\n\n'
                 'Access to this bot and the Stremio Addon requires an active subscription.\n'
-                'Please select a subscription plan below to continue:',
+                'Please select a subscription plan below or Request access to continue:',
                 reply_markup=keyboard,
                 quote=True,
                 parse_mode=enums.ParseMode.HTML
