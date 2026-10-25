@@ -330,9 +330,23 @@ class Database:
         )
 
     async def create_free_access_request(self, user_id: int, days: int) -> bool:
-        # The user already exists after update_user_interaction. Claim only an empty slot.
+        # Selecting a paid plan is only a draft until a screenshot is submitted.
+        # Allow switching that draft to free access, but keep submitted requests.
+        user = await self.get_user(user_id)
+        if not user:
+            return False
+        pending = user.get("pending_payment")
+        if pending is not None:
+            if not isinstance(pending, dict):
+                return False
+            if (pending.get("request_type") == "free"
+                    or pending.get("msg_id", 0) != 0
+                    or pending.get("admin_messages")):
+                return False
+        # Compare the exact snapshot so concurrent submissions cannot be replaced.
+        pending_filter = pending if "pending_payment" in user else {"$exists": False}
         result = await self.dbs["tracking"]["users"].update_one(
-            {"_id": user_id, "pending_payment": {"$exists": False}},
+            {"_id": user_id, "pending_payment": pending_filter},
             {"$set": {"pending_payment": {
                 "duration": days, "price": 0, "currency": "INR", "msg_id": 0,
                 "date": datetime.utcnow(), "request_type": "free", "admin_messages": [],
