@@ -56,6 +56,7 @@ _DEFAULTS: Dict[str, Any] = {
     "channel_titles": {},
     "announce_new_content": False,
     "announcement_channel": "",
+    "search_bot_username": "",
     "announcement_poster_provider": "same",
     "skip_channel": "",
     "delete_on_metadata_fail": False,
@@ -198,6 +199,10 @@ class Settings:
     def announcement_poster_provider(self) -> str:
         value = str(self._d.get("announcement_poster_provider") or "same").lower()
         return value if value in ("same", "pictorium", "better", "rpdb", "spatial", "fanart", "default") else "same"
+
+    @property
+    def search_bot_username(self) -> str:
+        return str(self._d.get("search_bot_username") or "").strip()
 
     @property
     def announcement_channel(self) -> str:

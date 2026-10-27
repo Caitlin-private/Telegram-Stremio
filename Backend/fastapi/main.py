@@ -6,7 +6,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from Backend import __version__
+from Backend import __version__, db
+from Backend.helper.digital_release_cleaner import DigitalReleaseCleaner
+
 from Backend.logger import LOGGER
 from Backend.fastapi.themes import DEFAULT_THEME, DEFAULT_STYLE, get_theme
 from Backend.fastapi.routes.api_routes import (
@@ -150,6 +152,8 @@ from Backend.fastapi.security.credentials import require_auth
 from Backend.pyrofork.bot import work_loads_summary
 
 templates = Jinja2Templates(directory="Backend/fastapi/templates")
+
+digital_release_cleaner = DigitalReleaseCleaner(db)
 
 app = FastAPI(
     title="Telegram Stremio Media Server",
@@ -944,3 +948,32 @@ async def auth_exception_handler(request: Request, exc):
             headers.update(exc.headers)
         return JSONResponse(status_code=401, content={"detail": detail}, headers=headers)
     return RedirectResponse(url="/login", status_code=302)
+
+
+@app.post("/api/admin/tools/digital-cleaner/start")
+async def digital_cleaner_start(_: bool = Depends(require_auth)):
+    try:
+        await digital_release_cleaner.start()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"ok": True}
+
+
+@app.post("/api/admin/tools/digital-cleaner/cancel")
+async def digital_cleaner_cancel(_: bool = Depends(require_auth)):
+    await digital_release_cleaner.cancel()
+    return {"ok": True}
+
+
+@app.get("/api/admin/tools/digital-cleaner/status")
+async def digital_cleaner_status(offset: int = Query(0, ge=0), _: bool = Depends(require_auth)):
+    return digital_release_cleaner.status(offset)
+
+
+@app.post("/api/admin/tools/digital-cleaner/purge")
+async def digital_cleaner_purge(payload: dict, _: bool = Depends(require_auth)):
+    try:
+        await digital_release_cleaner.purge(payload.get("scan_id"), payload.get("keys"), payload.get("delete_all", False))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True}

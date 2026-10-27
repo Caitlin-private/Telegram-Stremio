@@ -126,6 +126,7 @@ def _build_caption(info: dict) -> str:
 
 
 def _build_markup(info: dict, include_addon: bool = True):
+    from Backend.helper.search_bot_links import search_bot_link
     rows = []
     playback_buttons = []
     base = SettingsManager.current().base_url
@@ -133,6 +134,9 @@ def _build_markup(info: dict, include_addon: bool = True):
     stremio_type = "series" if info.get("media_type") == "tv" else "movie"
     if base and imdb_id:
         playback_buttons.append(InlineKeyboardButton("📱 Nuvio", url=f"{base}/open/nuvio/{stremio_type}/{imdb_id}"))
+    search_url = search_bot_link(SettingsManager.current().search_bot_username, info.get("title"))
+    if search_url:
+        playback_buttons.append(InlineKeyboardButton("📁 Get File", url=search_url))
     bot_url = get_streambot_url()
     if playback_buttons:
         rows.append(playback_buttons)

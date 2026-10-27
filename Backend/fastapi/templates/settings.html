@@ -1102,6 +1102,9 @@ document.addEventListener('DOMContentLoaded', sessLoadStatus);
                 <i class="fa-solid fa-xmark"></i>
             </button>
         </div>
+        <label class="s-label" for="search_bot_username" style="margin-top:1rem">CAITLIN SEARCH BOT</label>
+        <input type="text" id="search_bot_username" class="s-input" value="{{ settings.search_bot_username }}" placeholder="@YourSearchBot or https://t.me/YourSearchBot">
+        <p class="hint">Adds Get File beside Nuvio in new announcements. Opens the search bot with the title ready to send. Leave blank to hide.</p>
         <label class="s-label" for="announcement_poster_provider" style="margin-top:1rem">POSTER PROVIDER FOR ANNOUNCEMENTS</label>
         <select id="announcement_poster_provider" class="s-input">
             {% for value, name in [('same', 'Same as Listing'), ('pictorium', 'Pictorium'), ('better', 'BetterPoster'), ('rpdb', 'RPDB'), ('spatial', 'SpatialPosters'), ('fanart', 'Fanart.tv'), ('default', 'Original / Default')] %}
@@ -1831,6 +1834,7 @@ async function saveSettings() {
         global_search_channels:        collectList('global_search_channels'),
         manual_channels:               collectList('manual_channels'),
         announce_new_content:          document.getElementById('announce_new_content').checked,
+        search_bot_username: document.getElementById('search_bot_username').value.trim(),
         announcement_poster_provider: document.getElementById('announcement_poster_provider').value,
         announcement_channel:          (function(){const el=document.getElementById('announcement_channel');return el.dataset.id||extractChannelId(el.value.trim());})(),
         skip_channel:                  (function(){const el=document.getElementById('skip_channel');return el.dataset.id||extractChannelId(el.value.trim());})(),
@@ -1949,6 +1953,7 @@ function renderSettings(s) {
     const dsEl = document.getElementById('default_streaming');
     if (dsEl) dsEl.checked = s.default_streaming === 'userbot';
     document.getElementById('announce_new_content').checked = !!s.announce_new_content;
+    document.getElementById('search_bot_username').value = s.search_bot_username || '';
     document.getElementById('announcement_poster_provider').value = s.announcement_poster_provider || 'same';
     document.getElementById('delete_on_metadata_fail').checked = !!s.delete_on_metadata_fail;
     toggleSubFields();

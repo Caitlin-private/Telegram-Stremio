@@ -1874,6 +1874,13 @@ async def update_settings_api(payload: dict) -> dict:
                 raise HTTPException(status_code=400, detail=f"'{key}' must be a list.")
             payload[key] = [str(v).strip() for v in payload[key] if str(v).strip()]
 
+    if "search_bot_username" in payload:
+        from Backend.helper.search_bot_links import normalize_search_bot
+        try:
+            payload["search_bot_username"] = normalize_search_bot(payload["search_bot_username"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     if "announcement_poster_provider" in payload:
         if payload["announcement_poster_provider"] not in ("same", "pictorium", "better", "rpdb", "spatial", "fanart", "default"):
             raise HTTPException(status_code=400, detail="Invalid announcement poster provider")

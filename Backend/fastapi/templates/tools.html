@@ -495,6 +495,26 @@
         </div>
     </div>
 
+    <!-- Digital release cleaner -->
+    <div class="tool-card">
+        <h2><i class="fa-solid fa-film"></i> Digital Release Cleaner</h2>
+        <p class="hint mb-3">Find CAMRip, TELESYNC, HDTC and HDTS movie files when a separate WEBRip, AMZN, BluRay, WEB or HDRip copy is indexed for the same movie. This uses filename tags, not official release dates or a live file check.</p>
+        <p class="hint mb-3">Review the theatrical files below. Deletion removes their database entries and queues the Telegram files for deletion, keeping digital copies.</p>
+        <div class="flex items-center gap-2 flex-wrap mb-3">
+            <button class="btn btn-primary" id="drc-start" onclick="drcAction('start')">Scan movies</button>
+            <button class="btn btn-danger" id="drc-stop" onclick="drcAction('cancel')" disabled>Stop scan</button>
+            <button class="btn btn-danger" id="drc-selected" onclick="drcDelete(false)" disabled>Delete selected</button>
+            <button class="btn btn-danger" id="drc-all" onclick="drcDelete(true)" disabled>Delete all listed</button>
+        </div>
+        <p id="drc-status" class="hint mb-3" role="status">Idle</p>
+        <div class="dead-list" id="drc-list"></div>
+        <div class="flex items-center gap-2 mt-3">
+            <button class="btn btn-ghost" id="drc-prev" onclick="drcPage(-1)" disabled>Previous</button>
+            <span id="drc-page" class="hint"></span>
+            <button class="btn btn-ghost" id="drc-next" onclick="drcPage(1)" disabled>Next</button>
+        </div>
+    </div>
+
     <!-- Duplicate check & cleanup -->
     <div class="tool-card">
         <div class="flex items-center justify-between flex-wrap gap-2">
@@ -1551,6 +1571,74 @@ function escapeHtml(str) {
 function escapeHtmlAttr(str) {
     return String(str || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;');
 }
+
+
+/* Digital Release Cleaner: selection survives polling and pagination. */
+let drcOffset = 0, drcState = null, drcTimer = null, drcBusy = false;
+const drcSelection = new Set();
+async function drcRequest(action, body) {
+    const response = await fetch('/api/admin/tools/digital-cleaner/' + action, body === undefined ? {} : {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || 'Cleaner request failed.');
+    return result;
+}
+function drcButtons() {
+    const active = drcBusy || ['running', 'deleting'].includes(drcState?.status);
+    document.getElementById('drc-start').disabled = active;
+    document.getElementById('drc-stop').disabled = drcBusy || drcState?.status !== 'running';
+    document.getElementById('drc-selected').disabled = active || !drcSelection.size;
+    document.getElementById('drc-all').disabled = active || !drcState?.count;
+}
+async function drcPoll() {
+    clearTimeout(drcTimer);
+    try {
+        const state = await drcRequest('status?offset=' + drcOffset);
+        if (drcState && drcState.scan_id !== state.scan_id) drcSelection.clear();
+        drcState = state;
+        if (drcOffset && drcOffset >= state.count) { drcOffset = 0; return await drcPoll(); }
+        setText('drc-status', `${state.status} · ${state.scanned} movies scanned · ${state.count} theatrical files listed · ${state.removed} removed · ${state.skipped} skipped · ${state.failed} failed` +
+            (state.status === 'deleting' ? ` · Deleting ${state.processed}/${state.total}` : '') +
+            (state.error ? ` · ${state.error}` : ''));
+        const list = document.getElementById('drc-list');
+        list.replaceChildren();
+        for (const entry of state.entries) {
+            const row = document.createElement('div'); row.className = 'mb-3';
+            const label = document.createElement('label');
+            const cb = document.createElement('input'); cb.type = 'checkbox';
+            cb.checked = drcSelection.has(entry.key);
+            cb.disabled = ['running', 'deleting'].includes(state.status);
+            cb.onchange = () => { cb.checked ? drcSelection.add(entry.key) : drcSelection.delete(entry.key); drcButtons(); };
+            label.append(cb, document.createTextNode(' ' + entry.title + (entry.year ? ` (${entry.year})` : '') + ' — ' + entry.name));
+            const proof = document.createElement('div'); proof.className = 'hint';
+            proof.textContent = 'Digital copies kept: ' + entry.replacements.join(' · ');
+            row.append(label, proof); list.append(row);
+        }
+        if (!state.entries.length) list.textContent = state.status === 'idle' ? 'Run a scan to find eligible theatrical copies.' : 'No eligible theatrical files listed.';
+        setText('drc-page', state.count ? `${drcOffset + 1}–${Math.min(drcOffset + 100, state.count)} of ${state.count}` : '');
+        document.getElementById('drc-prev').disabled = !drcOffset;
+        document.getElementById('drc-next').disabled = drcOffset + 100 >= state.count;
+        drcButtons();
+    } catch (error) { setText('drc-status', error.message + ' Retrying…'); }
+    drcTimer = setTimeout(drcPoll, 2500);
+}
+async function drcAction(action, body = {}) {
+    drcBusy = true; drcButtons();
+    try {
+        await drcRequest(action, body);
+        if (action !== 'cancel') { drcSelection.clear(); drcOffset = 0; }
+        await drcPoll();
+    } catch (error) { showToast(error.message, 'error', 'Digital Release Cleaner'); }
+    finally { drcBusy = false; drcButtons(); }
+}
+function drcDelete(all) {
+    const count = all ? drcState.count : drcSelection.size;
+    if (!confirm(`Remove ${count} theatrical file(s) from the database and queue their Telegram messages for deletion? Digital copies will be kept.`)) return;
+    drcAction('purge', {scan_id: drcState.scan_id, keys: [...drcSelection], delete_all: all});
+}
+function drcPage(direction) { drcOffset = Math.max(0, drcOffset + direction * 100); drcPoll(); }
+drcPoll();
 
 /* ─────────────── Init ─────────────── */
 loadManualSession();
