@@ -624,10 +624,15 @@ class Database:
         })
         return str(result.inserted_id)
 
-    async def get_custom_catalogs(self, visible_only: bool = False) -> List[dict]:
-        query = {"visible": True} if visible_only else {}
-        cursor = self.dbs["tracking"]["custom_catalogs"].find(query).sort("updated_at", DESCENDING)
-        catalogs = await cursor.to_list(None)
+    #----- slim=True keeps only distinct (media_type, visibility, allowed_tokens) per item
+    async def get_custom_catalogs(self, visible_only: bool = False, slim: bool = False) -> List[dict]:
+        pipeline = [{"$match": {"visible": True} if visible_only else {}}, {"$sort": {"updated_at": DESCENDING}}]
+        if slim:
+            pipeline.append({"$addFields": {"items": {"$setUnion": [{"$map": {
+                "input": {"$ifNull": ["$items", []]},
+                "in": {"media_type": "$$this.media_type", "visibility": "$$this.visibility", "allowed_tokens": "$$this.allowed_tokens"},
+            }}]}}})
+        catalogs = await self.dbs["tracking"]["custom_catalogs"].aggregate(pipeline).to_list(None)
         return [self._normalize_catalog(convert_objectid_to_str(catalog)) for catalog in catalogs]
 
     async def get_custom_catalog(self, catalog_id: str) -> Optional[dict]:

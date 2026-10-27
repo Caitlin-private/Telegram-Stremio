@@ -1459,7 +1459,7 @@ async def list_custom_catalogs_api(
 
 async def list_manual_add_catalogs_api():
     try:
-        catalogs = await db.get_custom_catalogs()
+        catalogs = await db.get_custom_catalogs(slim=True)
         filtered = [c for c in catalogs if not c.get("auto")]
         filtered.sort(key=lambda c: (0 if c.get("exclusive") else 1, (c.get("name") or "").lower()))
         return {"catalogs": [
@@ -1695,7 +1695,7 @@ _DEFAULT_CATALOG_ENTRIES = [
 
 async def get_catalog_order_api():
     try:
-        catalogs = await db.get_custom_catalogs()
+        catalogs = await db.get_custom_catalogs(slim=True)
         entries = [dict(e) for e in _DEFAULT_CATALOG_ENTRIES]
         for c in catalogs:
             items = c.get("items") or []

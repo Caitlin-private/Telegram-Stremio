@@ -638,7 +638,7 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
         ]
 
         try:
-            custom_catalogs = await db.get_custom_catalogs()
+            custom_catalogs = await db.get_custom_catalogs(slim=True)
             for catalog in custom_catalogs:
                 visible_items = [
                     i for i in (catalog.get("items") or [])
@@ -938,7 +938,7 @@ async def build_nuvio_collection_data(token: str, collection_type: str = "full",
     auto_key_series_map = {}
 
     try:
-        custom_catalogs = await db.get_custom_catalogs()
+        custom_catalogs = await db.get_custom_catalogs(slim=True)
         for catalog in custom_catalogs:
             # Check visibility and items
             raw_items = catalog.get("items") or []
@@ -2483,7 +2483,7 @@ async def _addon_catalogs_for_token(token_data: dict) -> list:
         {"id": "trending_series", "name": "Trending Series", "type": "series"},
     ]
     try:
-        for c in await db.get_custom_catalogs():
+        for c in await db.get_custom_catalogs(slim=True):
             items = [i for i in (c.get("items") or []) if _token_can_view(*_effective_visibility(c, i), token_data)]
             if not items:
                 continue
