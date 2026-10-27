@@ -25,11 +25,11 @@ from Backend.helper.subtitles import ingest_subtitle, is_subtitle_file
 SCAN_BATCH_SIZE = 200          
 SCAN_MAX_EMPTY_BATCHES = 10    
 SCAN_MAX_ID_CAP = 1_000_000    
-SCAN_BATCH_DELAY = 0.5         
 SCAN_PERSIST_EVERY = 1         
 SCAN_PROBE_TEXT = "🔄"         
 QUICK_SCAN_CONCURRENCY = max(1, min(64, _int_env("QUICK_SCAN_CONCURRENCY", 16)))
-SCAN_PROCESS_CONCURRENCY = 8   
+# All channel scan modes share quick scan's bounded worker budget.
+SCAN_PROCESS_CONCURRENCY = QUICK_SCAN_CONCURRENCY   
 
 DBCHECK_CONCURRENCY = 24        
 DBCHECK_BATCH_DELAY = 0.02      
@@ -318,7 +318,7 @@ class ScanManager:
             from Backend.helper.scan_resources import PlaybackPriority
             self.state['worker_limit'] = worker_limit if worker_limit is not None else self.state.get('worker_limit', 0)
             self.state['pause_for_playback'] = pause_for_playback if pause_for_playback is not None else self.state.get('pause_for_playback', True)
-            self._priority = PlaybackPriority(self._stop_event, self.state['pause_for_playback'], grace=10 if mode == 'quick' else 60)
+            self._priority = PlaybackPriority(self._stop_event, self.state['pause_for_playback'], grace=10)
             self._worker_waits = {k: v for k, v in self.state.get('worker_waits', {}).items() if v > _now()}
             self.state['worker_waits'] = self._worker_waits
             self._metrics = dict.fromkeys(self._metrics, 0.0)
@@ -382,15 +382,13 @@ class ScanManager:
             except FloodWait as exc:
                 self._worker_waits[key] = _now() + max(1, exc.value) + 1
                 self.state['flood_wait_until'] = max(self._worker_waits.values())
-                if self.state.get('mode') == 'quick':
-                    self._fetch_delays[key] = min(2.0, max(0.1, self._fetch_delays.get(key, 0.02) * 2))
+                self._fetch_delays[key] = min(2.0, max(0.1, self._fetch_delays.get(key, 0.02) * 2))
                 LOGGER.warning(f'[ScanManager] Telegram FloodWait: {exc.value}s; retaining current message/batch for retry.')
                 await self._persist()
 
     async def _run(self, client) -> None:
         catalog_done = asyncio.Event()
-        catalog_task = (asyncio.create_task(self._quick_catalog_loop(catalog_done))
-                        if self.state['mode'] == 'quick' else None)
+        catalog_task = asyncio.create_task(self._scan_catalog_loop(catalog_done))
         try:
             while self.state["pending"] and not self._cancel:
                 ch = self.state["pending"][0]
@@ -407,8 +405,6 @@ class ScanManager:
                     await self._purge_channel_entries(int(str(ch).removeprefix('-100')))
                     self.state['purge_pending'].remove(ch)
                     await self._persist()
-                if self.state['mode'] != 'quick':
-                    await self._flush_scan_catalogs()
                 report = self.state.get('import_report') or {}
                 if report.get('channel') != ch or report.get('finished'):
                     report = {'baseline': dict(self.state['counters']), 'elapsed': 0}
@@ -518,7 +514,7 @@ class ScanManager:
                 pending.setdefault(key, item)
         await self._persist()
 
-    async def _quick_catalog_loop(self, done):
+    async def _scan_catalog_loop(self, done):
         from Backend.helper.auto_catalog import sync_scan_media
         while not self._cancel:
             pending = self.state.setdefault('catalog_pending', {})
@@ -535,7 +531,7 @@ class ScanManager:
                 except _ScanStopped:
                     return
                 except Exception as exc:
-                    LOGGER.warning(f'[Quick scan] Catalog queue retained for retry: {exc}')
+                    LOGGER.warning(f'[Scan] Catalog queue retained for retry: {exc}')
                     completed = set()
                 finally:
                     self._metrics['catalog_seconds'] += time.monotonic() - started
@@ -634,7 +630,7 @@ class ScanManager:
         workers = await select_scan_clients(client, chat_id, s.get('worker_limit', 0),
                                             s.get('mode') == 'quick', self._telegram_call, stopped_error=_ScanStopped)
         s['active_workers'] = len(workers)
-        process_limit = QUICK_SCAN_CONCURRENCY if s['mode'] == 'quick' else SCAN_PROCESS_CONCURRENCY
+        process_limit = SCAN_PROCESS_CONCURRENCY
         worker_slots = {id(c): asyncio.Semaphore(max(1, process_limit // len(workers))) for c in workers}
         LOGGER.info(
             f"[ScanManager] Scanning {s['current_channel_name']} ({chat_id}) from id {current}"
@@ -714,17 +710,15 @@ class ScanManager:
             return lo, hi
 
         async def fetch(worker, bounds):
-            if s['mode'] == 'quick':
-                key = str(getattr(getattr(worker, 'me', None), 'id', None) or getattr(worker, 'name', None) or id(worker))
-                delay = self._fetch_delays.get(key, 0.02)
-                try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
-                    raise _ScanStopped()
-                except asyncio.TimeoutError:
-                    pass
+            key = str(getattr(getattr(worker, 'me', None), 'id', None) or getattr(worker, 'name', None) or id(worker))
+            delay = self._fetch_delays.get(key, 0.02)
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
+                raise _ScanStopped()
+            except asyncio.TimeoutError:
+                pass
             messages = await self._telegram_call(worker.get_messages, chat_id, list(range(*bounds)), scan_client=worker)
-            if s['mode'] == 'quick':
-                self._fetch_delays[key] = max(0.02, self._fetch_delays.get(key, 0.02) * 0.9)
+            self._fetch_delays[key] = max(0.02, self._fetch_delays.get(key, 0.02) * 0.9)
             return [m for m in (messages if isinstance(messages, list) else [messages]) if m and not m.empty]
 
         async def serial_batches(worker):
@@ -738,13 +732,11 @@ class ScanManager:
             nonlocal current, empty_streak
             from Backend.helper.scan_pipeline import prefetch
             batches = (prefetch(reserve, lambda bounds: fetch(worker, bounds))
-                       if s['mode'] == 'quick' and use_probe else serial_batches(worker))
+                       if use_probe else serial_batches(worker))
             try:
                 async for (lo, hi), messages in batches:
-                    known = None
-                    if s['mode'] == 'quick':
-                        known = await self._quick_existing_sources(int(str(chat_id).removeprefix('-100')),
-                            [m.id for m in messages if m.video or m.document])
+                    known = await self._quick_existing_sources(int(str(chat_id).removeprefix('-100')),
+                        [m.id for m in messages if m.video or m.document])
                     tasks = [asyncio.create_task(process(worker, msg, known)) for msg in messages]
                     rows = []
                     try:
@@ -794,12 +786,7 @@ class ScanManager:
                             empty_streak = 0 if messages else empty_streak + 1
                             condition.notify_all()
                         await self._persist()
-                        if s['mode'] != 'quick':
-                            await self._flush_scan_catalogs()
-                        else:
-                            self._catalog_wakeup.set()
-                    if s['mode'] != 'quick':
-                        await asyncio.sleep(SCAN_BATCH_DELAY)
+                        self._catalog_wakeup.set()
             finally:
                 await batches.aclose()
 
