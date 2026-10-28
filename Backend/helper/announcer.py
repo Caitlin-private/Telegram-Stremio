@@ -8,9 +8,9 @@ from PIL import Image, ImageOps
 from datetime import datetime
 from html import escape
 
-from pyrogram.enums import ParseMode
-from pyrogram.errors import FloodWait, MessageDeleteForbidden, MessageIdInvalid
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from wzgram.enums import ParseMode
+from wzgram.errors import FloodWait, MessageDeleteForbidden, MessageIdInvalid
+from wzgram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from Backend import db
 from Backend.helper.settings_manager import SettingsManager

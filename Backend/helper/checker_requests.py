@@ -4,7 +4,7 @@ import hashlib
 import time
 from weakref import WeakKeyDictionary
 
-from pyrogram.errors import FloodWait
+from wzgram.errors import FloodWait
 
 from Backend.logger import LOGGER
 

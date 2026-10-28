@@ -1,7 +1,7 @@
 [project]
 name = "Telegram-Stremio"
 version = "6.1.0"
-description = "A powerful, self-hosted Telegram Stremio Media Server built with FastAPI, MongoDB, and PyroFork seamlessly integrated with Stremio for automated media streaming and discovery."
+description = "A powerful, self-hosted Telegram Stremio Media Server built with FastAPI, MongoDB, and WZGram seamlessly integrated with Stremio for automated media streaming and discovery."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,13 +15,12 @@ dependencies = [
     "motor>=3.7.0",
     "parse-torrent-title>=2.8.1",
     "pillow>=11.3.0",
-    "pyrofork>=2.3.61",
+    "wzgram==3.1.5",
     "python-dotenv>=1.1.0",
     "python-multipart>=0.0.20",
     "pytz>=2025.2",
     "rapidfuzz>=3.14.5",
     "requests>=2.32.3",
-    "tgcrypto>=1.2.5",
     "themoviedb>=1.0.2",
     "uvicorn>=0.34.2",
     "uvloop>=0.22.1",

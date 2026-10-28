@@ -9,8 +9,8 @@ import PTN
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import JSONResponse
-from pyrogram.enums import ChatMemberStatus
-from pyrogram.errors import UserNotParticipant
+from wzgram.enums import ChatMemberStatus
+from wzgram.errors import UserNotParticipant
 
 import httpx
 

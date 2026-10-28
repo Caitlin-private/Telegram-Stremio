@@ -1,4 +1,4 @@
-from pyrogram.filters import create
+from wzgram.filters import create
 
 from Backend.config import Telegram
 

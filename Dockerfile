@@ -19,7 +19,6 @@ RUN apt-get update && \
 
 WORKDIR /app
 COPY . .
-RUN uv lock
-RUN uv sync --locked
+RUN uv sync --locked --no-dev
 RUN chmod +x start.sh
 CMD ["bash", "start.sh"]
