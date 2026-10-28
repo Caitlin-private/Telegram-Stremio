@@ -1,9 +1,9 @@
 from asyncio import sleep as asleep
 
-from pyrogram import Client
-from pyrogram.enums import ParseMode
-from pyrogram.errors import FloodWait
-from pyrogram.types import Message
+from wzgram import Client
+from wzgram.enums import ParseMode
+from wzgram.errors import FloodWait
+from wzgram.types import Message
 
 from Backend.helper.settings_manager import SettingsManager
 from Backend.logger import LOGGER

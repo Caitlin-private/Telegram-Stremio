@@ -3,8 +3,8 @@
 import asyncio
 from html import escape
 
-from pyrogram.enums import ParseMode
-from pyrogram.errors import FloodWait
+from wzgram.enums import ParseMode
+from wzgram.errors import FloodWait
 
 from Backend.config import Telegram
 from Backend.helper.settings_manager import SettingsManager

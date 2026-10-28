@@ -2,8 +2,8 @@ from html import escape
 from time import monotonic
 from urllib.parse import urlsplit
 
-from pyrogram import Client, filters, enums
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
+from wzgram import Client, filters, enums
+from wzgram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 
 from Backend import db
 from Backend.config import Telegram

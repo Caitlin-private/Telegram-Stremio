@@ -13,7 +13,7 @@ pinned: false
 </p>
 
 <p align="center">
-  A powerful, self-hosted <b>Telegram Stremio Media Server</b> built with <b>FastAPI</b>, <b>MongoDB</b>, and <b>PyroFork</b> — turn your Telegram channels into a private streaming library you watch in <b>Stremio</b> / <b>Nuvio</b>.
+  A powerful, self-hosted <b>Telegram Stremio Media Server</b> built with <b>FastAPI</b>, <b>MongoDB</b>, and <b>WZGram</b> — turn your Telegram channels into a private streaming library you watch in <b>Stremio</b> / <b>Nuvio</b>.
 </p>
 
 <p align="center">
@@ -25,7 +25,7 @@ pinned: false
   <img src="https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
   <img src="https://img.shields.io/badge/MongoDB-47A248?logo=mongodb&logoColor=white" alt="MongoDB" />
-  <img src="https://img.shields.io/badge/PyroFork-EE3A3A?logo=python&logoColor=white" alt="PyroFork" />
+  <img src="https://img.shields.io/badge/WZGram-EE3A3A?logo=python&logoColor=white" alt="WZGram" />
   <img src="https://img.shields.io/badge/Stremio-8D3DAF?logo=stremio&logoColor=white" alt="Stremio" />
   <img src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" alt="Docker" />
 </p>
