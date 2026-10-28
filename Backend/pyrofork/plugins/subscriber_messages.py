@@ -1,9 +1,9 @@
 import asyncio
 from time import monotonic
 
-from pyrogram import Client, filters, enums
-from pyrogram.errors import FloodWait
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
+from wzgram import Client, filters, enums
+from wzgram.errors import FloodWait
+from wzgram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 
 from Backend import db
 from Backend.config import Telegram

@@ -1,4 +1,4 @@
-from pyrogram import Client
+from wzgram import Client
 
 from Backend.config import Telegram
 

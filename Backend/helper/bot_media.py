@@ -46,8 +46,8 @@ async def registered_token(message):
 
 
 async def send_card(message, doc, token):
-    from pyrogram.enums import ParseMode
-    from pyrogram.errors import FloodWait
+    from wzgram.enums import ParseMode
+    from wzgram.errors import FloodWait
     from Backend.helper.announcer import _build_caption, _build_markup, announcement_image_url, announcement_photo
     from Backend.helper.settings_manager import SettingsManager
     base = SettingsManager.current().base_url

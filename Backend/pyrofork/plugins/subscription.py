@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
-from pyrogram import Client, enums, filters
-from pyrogram.types import (
+from wzgram import Client, enums, filters
+from wzgram.types import (
     CallbackQuery,
     ForceReply,
     InlineKeyboardButton,
