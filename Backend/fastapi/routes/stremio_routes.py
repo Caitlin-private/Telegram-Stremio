@@ -48,6 +48,26 @@ ADDON_NAME = "Caitlin Stream"
 ADDON_VERSION = __version__
 PAGE_SIZE = 15
 
+
+async def _manifest_stage(name: str, awaitable, timeout_seconds: float):
+    """Run optional manifest work with a hard timeout and useful timing logs."""
+    started = time.monotonic()
+    LOGGER.info(f"[Manifest] {name}: started (timeout={timeout_seconds:.1f}s)")
+    try:
+        result = await asyncio.wait_for(awaitable, timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        LOGGER.warning(
+            f"[Manifest] {name}: timed out after {time.monotonic() - started:.2f}s"
+        )
+        raise
+    except Exception as exc:
+        LOGGER.warning(
+            f"[Manifest] {name}: failed after {time.monotonic() - started:.2f}s: {exc}"
+        )
+        raise
+    LOGGER.info(f"[Manifest] {name}: completed in {time.monotonic() - started:.2f}s")
+    return result
+
 def build_proxy_url(original_url: str) -> str | None:
     settings = SettingsManager.current()
     base = settings.http_proxy_url
@@ -567,6 +587,8 @@ def stream_res_label(stream_name: str) -> str:
 #----- Manifest describing the addon's catalogs/resources for this token
 @router.get("/{token}/manifest.json")
 async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
+    manifest_started = time.monotonic()
+    LOGGER.info("[Manifest] Request started")
     if SettingsManager.current().hide_catalog:
         resources = ["stream", "subtitles"]
         catalogs = []
@@ -638,7 +660,7 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
         ]
 
         try:
-            custom_catalogs = await db.get_custom_catalogs(slim=True)
+            custom_catalogs = await _manifest_stage("custom catalogs", db.get_custom_catalogs(slim=True), 8.0)
             for catalog in custom_catalogs:
                 visible_items = [
                     i for i in (catalog.get("items") or [])
@@ -671,7 +693,7 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
 
         # Dynamic TMDB-franchise catalogs backed strictly by media available in this DB.
         try:
-            for group in await _build_library_collection_groups(token_data):
+            for group in await _manifest_stage("library collection scan", _build_library_collection_groups(token_data), 8.0):
                 catalogs.append({
                     "type": "movie",
                     "id": group["catalog_id"],
@@ -683,7 +705,7 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
             LOGGER.warning(f"[Library Collections] Could not add dynamic catalogs to manifest: {exc}")
 
         try:
-            order = await db.get_catalog_order()
+            order = await _manifest_stage("catalog order", db.get_catalog_order(), 4.0)
             token_order = (token_data.get("config") or {}).get("catalog_order") or []
             effective = token_order or order
             if effective:
@@ -714,7 +736,7 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
         if expiry_obj is None and SettingsManager.current().subscription:
             user_id = token_data.get("user_id")
             if user_id:
-                user = await db.get_user(int(user_id))
+                user = await _manifest_stage("subscription expiry lookup", db.get_user(int(user_id)), 3.0)
                 if user and user.get("subscription_status") == "active":
                     expiry_obj = user.get("subscription_expiry")
 
@@ -729,6 +751,10 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
     except Exception:
         pass
 
+    LOGGER.info(
+        f"[Manifest] Response ready in {time.monotonic() - manifest_started:.2f}s "
+        f"with {len(catalogs)} catalogs"
+    )
     return {
         "id": f"telegram.media.{token[:8]}",
         "version": addon_version,
