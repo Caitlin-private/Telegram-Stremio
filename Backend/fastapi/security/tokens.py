@@ -1,13 +1,10 @@
 from datetime import datetime, timezone
-import asyncio
-
 
 from fastapi import HTTPException
 
 from Backend import db
 from Backend.config import Telegram
 from Backend.helper.settings_manager import SettingsManager
-from Backend.logger import LOGGER
 
 DAILY_LIMIT_VIDEO = "https://bit.ly/3YZFKT5"
 MONTHLY_LIMIT_VIDEO = "https://bit.ly/4rfjtgd"
@@ -22,11 +19,7 @@ def can_stream_session(token_data: dict) -> bool:
 
 #----- Validate an API token and annotate it with subscription/limit status
 async def verify_token(token: str):
-    try:
-        token_data = await asyncio.wait_for(db.get_api_token(token), timeout=8.0)
-    except asyncio.TimeoutError:
-        LOGGER.error("[Manifest] Token lookup timed out after 8.0s")
-        raise HTTPException(status_code=503, detail="Token database lookup timed out; please retry")
+    token_data = await db.get_api_token(token)
     if not token_data:
         raise HTTPException(status_code=401, detail="Invalid or expired API token")
 
@@ -69,11 +62,7 @@ async def verify_token(token: str):
                 return token_data
         elif SettingsManager.current().subscription:
             user_id = token_data.get("user_id")
-            try:
-                user = await asyncio.wait_for(db.get_user(int(user_id)), timeout=4.0) if user_id else None
-            except asyncio.TimeoutError:
-                LOGGER.error("[Manifest] Subscription validation lookup timed out after 4.0s")
-                raise HTTPException(status_code=503, detail="Subscription database lookup timed out; please retry")
+            user = await db.get_user(int(user_id)) if user_id else None
             expiry = user.get("subscription_expiry") if user else None
             if (not user_id or not user
                     or user.get("subscription_status") != "active"
