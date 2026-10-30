@@ -2,10 +2,10 @@ from asyncio import Lock, Queue, create_task
 from asyncio import sleep as asleep
 from html import escape
 
-from wzgram import Client, filters
-from wzgram.enums.parse_mode import ParseMode
-from wzgram.errors import FloodWait
-from wzgram.types import Message
+from pyrogram import Client, filters
+from pyrogram.enums.parse_mode import ParseMode
+from pyrogram.errors import FloodWait
+from pyrogram.types import Message
 
 import Backend
 from Backend import db

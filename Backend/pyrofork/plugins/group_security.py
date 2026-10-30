@@ -1,6 +1,6 @@
-from wzgram import Client
-from wzgram.enums import ChatMemberStatus
-from wzgram.types import ChatMemberUpdated
+from pyrogram import Client
+from pyrogram.enums import ChatMemberStatus
+from pyrogram.types import ChatMemberUpdated
 
 from Backend import db
 from Backend.config import Telegram

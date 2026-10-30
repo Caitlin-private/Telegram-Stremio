@@ -1,4 +1,4 @@
-from wzgram.file_id import FileId
+from pyrogram.file_id import FileId
 from typing import Optional
 from Backend.logger import LOGGER
 from Backend import __version__, now, timezone
@@ -7,15 +7,15 @@ from Backend.helper.exceptions import FileNotFound
 from Backend.helper.split_files import strip_part_suffix
 from aiofiles import open as aiopen
 from aiofiles.os import path as aiopath, remove as aioremove
-from wzgram import Client
+from pyrogram import Client
 from Backend.pyrofork.bot import StreamBot
 import re
-from wzgram.types import BotCommand
-from wzgram import enums
+from pyrogram.types import BotCommand
+from pyrogram import enums
 import httpx
 import asyncio
 from time import monotonic
-from wzgram.errors import FloodWait
+from pyrogram.errors import FloodWait
 
 
 # Optional artwork shares a cooldown across live ingestion and channel scans.

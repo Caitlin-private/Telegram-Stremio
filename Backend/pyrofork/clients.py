@@ -1,6 +1,6 @@
 from asyncio import create_task, gather
 
-from wzgram import Client
+from pyrogram import Client
 
 from Backend.config import Telegram
 from Backend.fastapi.routes.stream_routes import _streamer_by_client

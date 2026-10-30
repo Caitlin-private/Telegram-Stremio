@@ -1,12 +1,10 @@
-from wzgram import Client
+from pyrogram import Client
 
 from Backend.config import Telegram
-from Backend.helper.session_storage import MigrationSafeSQLiteStorage
 
 #----- Primary bot client (loads plugins)
 StreamBot = Client(
     name='bot',
-    storage_engine=MigrationSafeSQLiteStorage('bot', workdir=Client.PARENT_DIR),
     api_id=Telegram.API_ID,
     api_hash=Telegram.API_HASH,
     bot_token=Telegram.BOT_TOKEN,

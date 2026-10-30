@@ -98,15 +98,6 @@ wheels = [
 ]
 
 [[package]]
-name = "aiosqlite"
-version = "0.22.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4e/8a/64761f4005f17809769d23e518d915db74e6310474e733e3593cfc854ef1/aiosqlite-0.22.1.tar.gz", hash = "sha256:043e0bd78d32888c0a9ca90fc788b38796843360c855a7262a532813133a0650", size = 14821, upload-time = "2025-12-23T19:25:43.997Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/00/b7/e3bf5133d697a08128598c8d0abc5e16377b51465a33756de24fa7dee953/aiosqlite-0.22.1-py3-none-any.whl", hash = "sha256:21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb", size = 17405, upload-time = "2025-12-23T19:25:42.139Z" },
-]
-
-[[package]]
 name = "annotated-types"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -820,6 +811,12 @@ wheels = [
 ]
 
 [[package]]
+name = "pyaes"
+version = "1.6.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/44/66/2c17bae31c906613795711fc78045c285048168919ace2220daa372c7d72/pyaes-1.6.1.tar.gz", hash = "sha256:02c1b1405c38d3c370b085fb952dd8bea3fadcee6411ad99f312cc129c536d8f", size = 28536, upload-time = "2017-09-20T21:17:54.23Z" }
+
+[[package]]
 name = "pydantic"
 version = "2.11.3"
 source = { registry = "https://pypi.org/simple" }
@@ -900,6 +897,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pymediainfo-pyrofork"
+version = "6.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/01/43/ebfd048e84bb264bb133d545312e35b49638bcd7d5ad973c023e0026a36b/pymediainfo_pyrofork-6.0.2.tar.gz", hash = "sha256:fce9402edfd1fa09aba7b3cac4c41ba7fcf6820e561b4db4f9c1a1a68c487c36", size = 446514, upload-time = "2024-10-08T14:31:39.531Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1d/16/7c2b2f969e84e5f196809c10da6c847c505fb722b9d636bf6f6bf8f2e919/pymediainfo_pyrofork-6.0.2-py2.py3-none-any.whl", hash = "sha256:674fa8e53de861635b9dc4f77c2ad712306a798bf28864952503bf328210c4c3", size = 9356, upload-time = "2024-10-08T14:31:37.054Z" },
+]
+
+[[package]]
 name = "pymongo"
 version = "4.12.0"
 source = { registry = "https://pypi.org/simple" }
@@ -947,6 +953,29 @@ wheels = [
 ]
 
 [[package]]
+name = "pyrofork"
+version = "2.3.61"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyaes" },
+    { name = "pymediainfo-pyrofork" },
+    { name = "pysocks" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0b/82/12f21c9c3beb4463297c7e752ca8adc60fe5fcb99ca9157f0375a6076754/pyrofork-2.3.61.tar.gz", hash = "sha256:2a963e70fee31ff6f10e91017a5b71f59df86f9a904164dae08a1e1c5fba1d06", size = 485491, upload-time = "2025-04-03T15:41:43.774Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ea/27/db15308027081b4094d8e1de02e9daa37a664f8131173217486c76044c4d/pyrofork-2.3.61-py3-none-any.whl", hash = "sha256:e9562a89d3bfe388919a13aa1fc7ae127b79e85008d75939c1826900f8bd984a", size = 4937772, upload-time = "2025-04-03T15:41:41.3Z" },
+]
+
+[[package]]
+name = "pysocks"
+version = "1.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/11/293dd436aea955d45fc4e8a35b6ae7270f5b8e00b53cf6c024c83b657a11/PySocks-1.7.1.tar.gz", hash = "sha256:3f8804571ebe159c380ac6de37643bb4685970655d3bba243530d6558b799aa0", size = 284429, upload-time = "2019-09-20T02:07:35.714Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/59/b4572118e098ac8e46e399a1dd0f2d85403ce8bbaad9ec79373ed6badaf9/PySocks-1.7.1-py3-none-any.whl", hash = "sha256:2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5", size = 16725, upload-time = "2019-09-20T02:06:22.938Z" },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -974,15 +1003,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f3/87/f44d7c9f274c7ee665a29b885ec97089ec5dc034c7f3fafa03da9e39a09e/python_multipart-0.0.20.tar.gz", hash = "sha256:8dd0cab45b8e23064ae09147625994d090fa46f5b0d1e13af944c331a7fa9d13", size = 37158, upload-time = "2024-12-16T19:45:46.972Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/45/58/38b5afbc1a800eeea951b9285d3912613f2603bdf897a4ab0f4bd7f405fc/python_multipart-0.0.20-py3-none-any.whl", hash = "sha256:8a62d3a8335e06589fe01f2a3e178cdcc632f3fbe0d492ad9ee0ec35aab1f104", size = 24546, upload-time = "2024-12-16T19:45:44.423Z" },
-]
-
-[[package]]
-name = "python-socks"
-version = "3.2.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5c/c8/1309971a28d94df88d90e308b2eaef09e209402606446dd9d88d75cc2158/python_socks-3.2.0.tar.gz", hash = "sha256:b1a0e372f33182f657d935c3171fa03623b6a65734323746d0de9f296bc537ea", size = 38773, upload-time = "2026-10-27T14:57:11.953Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/6e/c42bb2ed04ddb141dcba433662d21a92323ba25c2662f8b99f0a0de4a30a/python_socks-3.2.0-py3-none-any.whl", hash = "sha256:4cb349f43043eeeb12d10919cb992a7ce8671c2c5a836a47cb0c29d8def11d24", size = 49571, upload-time = "2026-10-27T14:57:10.422Z" },
 ]
 
 [[package]]
@@ -1154,15 +1174,16 @@ dependencies = [
     { name = "motor" },
     { name = "parse-torrent-title" },
     { name = "pillow" },
+    { name = "pyrofork" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "pytz" },
     { name = "rapidfuzz" },
     { name = "requests" },
+    { name = "tgcrypto" },
     { name = "themoviedb" },
     { name = "uvicorn" },
     { name = "uvloop" },
-    { name = "wzgram" },
     { name = "zstandard" },
 ]
 
@@ -1183,20 +1204,38 @@ requires-dist = [
     { name = "motor", specifier = ">=3.7.0" },
     { name = "parse-torrent-title", specifier = ">=2.8.1" },
     { name = "pillow", specifier = ">=11.3.0" },
+    { name = "pyrofork", specifier = ">=2.3.61" },
     { name = "python-dotenv", specifier = ">=1.1.0" },
     { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "pytz", specifier = ">=2025.2" },
     { name = "rapidfuzz", specifier = ">=3.14.5" },
     { name = "requests", specifier = ">=2.32.3" },
+    { name = "tgcrypto", specifier = ">=1.2.5" },
     { name = "themoviedb", specifier = ">=1.0.2" },
     { name = "uvicorn", specifier = ">=0.34.2" },
     { name = "uvloop", specifier = ">=0.22.1" },
-    { name = "wzgram", specifier = "==3.1.5" },
     { name = "zstandard", specifier = ">=0.25.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [{ name = "deptry", specifier = ">=0.23.1" }]
+
+[[package]]
+name = "tgcrypto"
+version = "1.2.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/59/7cf5ced989e3139a791d5452d58cb8994de589576b80f9267ba76d794f6c/TgCrypto-1.2.5.tar.gz", hash = "sha256:9bc2cac6fb9a12ef5b08f3dd500174fe374d89b660cce981f57e3138559cb682", size = 37280, upload-time = "2022-11-11T19:55:11.436Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/e6/07dc413e57f3677e0b887975b174d9cbc8170e92651dd35a784da9571d5f/TgCrypto-1.2.5-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:59597cdb1c87eb1184088563d20b42a8f2e431e9334fed64926079044ad2a4af", size = 58988, upload-time = "2022-11-11T19:51:41.686Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/fe/a418223ff6079184f50f5ad8c2dac37ec40adbb42b886c3ee44fdba2a540/TgCrypto-1.2.5-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:1283337ae75b02406dd700377b8b783e70033b548492517df6e6c4156b0ed69c", size = 43347, upload-time = "2022-11-11T19:51:43.662Z" },
+    { url = "https://files.pythonhosted.org/packages/39/0e/e861a9987c6d9d3ae04d156732311e018558f862490c466c369d73094807/TgCrypto-1.2.5-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:1735437df0023a40e5fdd95e6b09ce806ec8f2cd2f8879023818840dfae60cab", size = 43123, upload-time = "2022-11-11T19:51:45.094Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/ce/d60e249ac4d31d591f4c8ca76e7bd537f4c54f1947b400a14ac3a1678b09/TgCrypto-1.2.5-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:cfa17a20206532c6d2442c9d7a7f6434120bd75896ad9a3e9b9277477afa084f", size = 60713, upload-time = "2022-11-11T19:51:46.411Z" },
+    { url = "https://files.pythonhosted.org/packages/27/55/50f81b1a557bd8f9b73f7fcda2381f8826665858750968394ceec0b01282/TgCrypto-1.2.5-cp311-cp311-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:48da3674474839e5619e7430ff1f98aed9f55369f3cfaef7f65511852869572e", size = 60418, upload-time = "2022-11-11T19:51:47.872Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/55/7f5f5a024b71ef81b07c3fe15e79d03b634eb349b04bc79a62c8c3ed3376/TgCrypto-1.2.5-cp311-cp311-musllinux_1_1_i686.whl", hash = "sha256:b49e982e5b156be821a5235bd9102c00dc506a58607e2c8bd50ac872724a951f", size = 64397, upload-time = "2022-11-11T19:51:49.609Z" },
+    { url = "https://files.pythonhosted.org/packages/76/3e/8f059edce82de8ebbc1e513076c0f65a86fac95887fae21ae087440ef23a/TgCrypto-1.2.5-cp311-cp311-musllinux_1_1_x86_64.whl", hash = "sha256:9d9f13586065a6d86d05c16409054033a84be208acee29b49f6f194e27b08642", size = 64436, upload-time = "2022-11-11T19:51:51.414Z" },
+    { url = "https://files.pythonhosted.org/packages/eb/87/fe894eb7c4cce4b6f710223c24e0ca22f4107fe46f3f56091ceabd482de7/TgCrypto-1.2.5-cp311-cp311-win32.whl", hash = "sha256:10dd3870aecb1a783c6eafd3b164b2149dbc93a9ee13feb7e6f5c58f87c24cd0", size = 44723, upload-time = "2022-11-11T19:51:52.982Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/fc/b918235b19b70a45f4a596c773fad2c379d941d2ac5005293e2ee18bdc63/TgCrypto-1.2.5-cp311-cp311-win_amd64.whl", hash = "sha256:a1beec47d6af8b509af7cf266e30f7703208076076594714005b42d2c25225b3", size = 45073, upload-time = "2022-11-11T19:51:54.724Z" },
+]
 
 [[package]]
 name = "themoviedb"
@@ -1291,73 +1330,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/37/945b4ca0ac27e3dc4952642d4c900edd030b3da6c9634875af6e13ae80e5/uvloop-0.22.1-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b91328c72635f6f9e0282e4a57da7470c7350ab1c9f48546c0f2866205349d21", size = 4467065, upload-time = "2025-10-16T22:16:58.206Z" },
     { url = "https://files.pythonhosted.org/packages/97/cc/48d232f33d60e2e2e0b42f4e73455b146b76ebe216487e862700457fbf3c/uvloop-0.22.1-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:daf620c2995d193449393d6c62131b3fbd40a63bf7b307a1527856ace637fe88", size = 4328384, upload-time = "2025-10-16T22:16:59.36Z" },
     { url = "https://files.pythonhosted.org/packages/e4/16/c1fd27e9549f3c4baf1dc9c20c456cd2f822dbf8de9f463824b0c0357e06/uvloop-0.22.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:6cde23eeda1a25c75b2e07d39970f3374105d5eafbaab2a4482be82f272d5a5e", size = 4296730, upload-time = "2025-10-16T22:17:00.744Z" },
-]
-
-[[package]]
-name = "warpcrypto"
-version = "2.1.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/85/b1/44bd338229819f502f7a1f1b244b80eabe76215774a5b9cc603e93fd327a/warpcrypto-2.1.0.tar.gz", hash = "sha256:912a4b7fcc416c2cbb8b8814255019b8986e6f0b1c3f7a461062d154b31ea96a", size = 23478, upload-time = "2026-10-26T21:36:15.089Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2d/c5/e0fbd8ed74fe17e13b565c7e3fd955f41176e95ac54a81df13fc14d9fa55/warpcrypto-2.1.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:956547e1ae7de2f2b225707a10f46e51b1d8e5ac7ac5a63f23f8c416473410ce", size = 218971, upload-time = "2026-10-26T21:35:13.032Z" },
-    { url = "https://files.pythonhosted.org/packages/79/0c/88ddb99fab80e3a12011d5b4499252985b697a191483401d1f0f0696e102/warpcrypto-2.1.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0a2fa2cf3cd3db18ce6c55fd512cbb4078d1cb3b2ab2d5f91fc52419fb18a565", size = 226960, upload-time = "2026-10-26T21:35:14.402Z" },
-    { url = "https://files.pythonhosted.org/packages/f0/0c/35042de6afcfb375743e85a72af250355093368d6a545b3d84d3d127ea67/warpcrypto-2.1.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:af670405385778a25e3e7734691369ae3143eadeac22431fd45d5957b7e6d703", size = 397976, upload-time = "2026-10-26T21:35:15.734Z" },
-    { url = "https://files.pythonhosted.org/packages/b0/b6/cfde2851fb1021ee44c7603396b38014a292038c2c53596cd6f9434b89be/warpcrypto-2.1.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:880a5ebd1d1893a237da5899756c4629d4712a6c3106388f7f9301288ef5dad4", size = 438837, upload-time = "2026-10-26T21:35:17.229Z" },
-    { url = "https://files.pythonhosted.org/packages/31/35/3a810e3c2cc7c137a497639aa8def832f099a3fcaaa5562ef4ed7938ff8a/warpcrypto-2.1.0-cp311-cp311-win_amd64.whl", hash = "sha256:e7d1947cf81929e4ffe91b16a01c5207399f3d3eb97d258c2051b7525059618d", size = 143584, upload-time = "2026-10-26T21:35:18.228Z" },
-    { url = "https://files.pythonhosted.org/packages/99/49/7743e9362ee93b20af896b66a880a10e329e970be0a835aa23ab133f11dc/warpcrypto-2.1.0-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:b633bce1a3325e054daaf6c01b019a022ea558d766231573369d3d6f45f5a8b8", size = 222490, upload-time = "2026-10-26T21:35:19.359Z" },
-    { url = "https://files.pythonhosted.org/packages/67/ad/4f9f33c96018c5f5a6227f8a68811a498bad99285f4a017803d20c12b24b/warpcrypto-2.1.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:38a4020a765325452f80feefb41822596162b783bfbc063b3d04b275cb9ad0c5", size = 200526, upload-time = "2026-10-26T21:35:20.324Z" },
-    { url = "https://files.pythonhosted.org/packages/af/17/6ecaa313caaea3e9329ee56bb39920a74e4e09a49ec3af6a4805273bdc6a/warpcrypto-2.1.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:9922ca7d6db5055e8e73132d5c47af226cffe24d400cdfeb6a3e287fb5d9506c", size = 217920, upload-time = "2026-10-26T21:35:21.39Z" },
-    { url = "https://files.pythonhosted.org/packages/73/d2/7b4f65ef54472213a4f93ddc6f79c2802f3096428bc912f89f7f4a74bb4d/warpcrypto-2.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e449bd1132cb5e1afac1c1d63260043e1afdb4dd0ca208d9a5121024cee0c71a", size = 226473, upload-time = "2026-10-26T21:35:22.527Z" },
-    { url = "https://files.pythonhosted.org/packages/d7/2b/2fcf244c620a7372e75ea4054151afc549acb58b51dc6c809667559838dc/warpcrypto-2.1.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:3546b126de793c6b77f49fcb69b0e1d2ab23d978ac436bca5ecea6b68a216566", size = 396888, upload-time = "2026-10-26T21:35:23.627Z" },
-    { url = "https://files.pythonhosted.org/packages/80/af/7559ae4b751c4832445298603d9e0402de3852544defa4c9066a565595ae/warpcrypto-2.1.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:d24e431ead6860c01e96e76aed0225b3a0a278b479203aca4ead204b0d4d6d24", size = 438335, upload-time = "2026-10-26T21:35:25.027Z" },
-    { url = "https://files.pythonhosted.org/packages/97/47/c75dd0dafdfa85ecdc59d50603ac9107ea150a8f39c7ba646eaeb4bfe3a6/warpcrypto-2.1.0-cp312-cp312-win_amd64.whl", hash = "sha256:fda26eaf7a3bdd62df9f9d9e611a147ed391d23a4f8b35f999a4306544723bf5", size = 141540, upload-time = "2026-10-26T21:35:26.083Z" },
-    { url = "https://files.pythonhosted.org/packages/e8/93/3604c7a065155bac76b11d80bf982b71045337b1b94a08ef1ed5489ce0a7/warpcrypto-2.1.0-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:7a9556ce4513c1c9b61bb346741f842ff06db7603bf9675f193d816fe8b069e0", size = 222383, upload-time = "2026-10-26T21:35:27.106Z" },
-    { url = "https://files.pythonhosted.org/packages/3e/10/52bb7538d458f0eede3372fe1b92aa9d361918613d710ae5bec5c7898f82/warpcrypto-2.1.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:a73dde131a7f94b220c43e42e68bc804538cfa8934ce913e02c6aba08333f5b3", size = 200449, upload-time = "2026-10-26T21:35:28.186Z" },
-    { url = "https://files.pythonhosted.org/packages/44/eb/f70a474cf51a0dc59c7c2a2a9345f5fc8340b8423d6f35ea2b58966a89b8/warpcrypto-2.1.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:387ca5b5e0930235c0ff9f7974c2f2069993d1825676e8297dadb8e42e152cdf", size = 217843, upload-time = "2026-10-26T21:35:29.35Z" },
-    { url = "https://files.pythonhosted.org/packages/5e/b9/459365a37d76760fccc66ecda9dc3bf21c51a4b49211b0016938bb08176c/warpcrypto-2.1.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e6a10dc24d61e04e6acce92479aa9222f2511b915671cdf7ff78deeea8e5ab88", size = 226198, upload-time = "2026-10-26T21:35:30.484Z" },
-    { url = "https://files.pythonhosted.org/packages/3c/df/bae43816e92006afc2ae8a3c4374e7ceff8608e1649dabda289babaf9c2a/warpcrypto-2.1.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:70f647f78ff7056aa3d476e79291b256c5b47985607f3f6d66968eac0b57abce", size = 396799, upload-time = "2026-10-26T21:35:31.613Z" },
-    { url = "https://files.pythonhosted.org/packages/f6/2f/fd4d22bc414eaaeae59b3e3cf381c477c767d7f4e42c89716ed8c211cfa8/warpcrypto-2.1.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:624548baa47e82da9230bdecab983d2798ff124cee5e11e57871979374f97294", size = 438196, upload-time = "2026-10-26T21:35:32.68Z" },
-    { url = "https://files.pythonhosted.org/packages/a9/b0/10e055f7ec8a21dd1a8fa5049d2dab60cbefd7bc8caca0787a475025d514/warpcrypto-2.1.0-cp313-cp313-win_amd64.whl", hash = "sha256:074b3f0be6a4e0396b09325383400f5de89c6f7e8d3d42f858778477a63cce46", size = 141512, upload-time = "2026-10-26T21:35:33.689Z" },
-    { url = "https://files.pythonhosted.org/packages/bb/f9/ba63bfe97e5c651b74a81b14fb70c8852616235380739809999d82530da8/warpcrypto-2.1.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:74c07342e8c11de344d54f4792d028509d157c2f35b55935a98ac406946c7ddb", size = 218383, upload-time = "2026-10-26T21:35:34.717Z" },
-    { url = "https://files.pythonhosted.org/packages/af/ae/d2108e5b73cc93311927ef3898caab6903bba85ce7a8377d8320417982aa/warpcrypto-2.1.0-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b4ec22f781caf0a958acc6ad31a08b1678369aac28d1386d817a12173aebcb6e", size = 226813, upload-time = "2026-10-26T21:35:35.755Z" },
-    { url = "https://files.pythonhosted.org/packages/20/3a/0ab451cd160e0b42a5ded6865f98856425f5c60e83f7a73051e31e12df14/warpcrypto-2.1.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:0f0b22c36c0bd3cd6fba3eefa53848ab97c4a881af1708dd92280c478ec43ed1", size = 397275, upload-time = "2026-10-26T21:35:37.219Z" },
-    { url = "https://files.pythonhosted.org/packages/7a/2a/40a41f70b904f73a877125b58b8299c2eb7cf2a9b9c6c573f45c172ab273/warpcrypto-2.1.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:fd4ce64690074ae6231d42f00c6433f989275cfa4f7af9faa472e14c2656eaf2", size = 438750, upload-time = "2026-10-26T21:35:38.977Z" },
-    { url = "https://files.pythonhosted.org/packages/ca/9a/ea0b64a843cd29fc6e16919dd56c50879364e0cb246718148aafa51e34fa/warpcrypto-2.1.0-cp314-cp314t-macosx_10_12_x86_64.whl", hash = "sha256:140180630fd177876739af67424cbf683b847c7a512e3d36b33d523a270c1140", size = 221882, upload-time = "2026-10-26T21:35:40.109Z" },
-    { url = "https://files.pythonhosted.org/packages/01/57/cbc1e6607b54c23f738ba7f8fdff51c7faeaa9188626c132887950ced5a5/warpcrypto-2.1.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:3c5fb35af711cd5c28c5bc6cea298f7b580cfedcab3701dd124bd0b0bf65d953", size = 200001, upload-time = "2026-10-26T21:35:41.082Z" },
-    { url = "https://files.pythonhosted.org/packages/d7/fe/6b1fef606c06e0b01781251055bd6b88b43c8aaab75c4d9c5cafdefaed8d/warpcrypto-2.1.0-cp314-cp314t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:2147446208281e5fd7f96c49173d389365cfb7cd9f8fe619efdcda441d5a7641", size = 217497, upload-time = "2026-10-26T21:35:42.124Z" },
-    { url = "https://files.pythonhosted.org/packages/34/f8/d72e13f56bb8a5bd3f2b67e7dd87e5831ba74124850d8f52431aacce078b/warpcrypto-2.1.0-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:546c26c101face67dd0c9b268e12f16cf0d0cb1f7308f84013ba1abb45fffb78", size = 226040, upload-time = "2026-10-26T21:35:43.383Z" },
-    { url = "https://files.pythonhosted.org/packages/21/3e/cd283f508a6c0254376f5df91b3c3fe42614fef6bfaf3a5dbd90dbcb4499/warpcrypto-2.1.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:f55f5b43ea84a7f18250475aae926662bfdd387a78ac2c551cab3b52e005b593", size = 396331, upload-time = "2026-10-26T21:35:44.501Z" },
-    { url = "https://files.pythonhosted.org/packages/6f/35/6e7706e159578dec20685ad65b82e1007dbacbe71f2c429f31e0482bd857/warpcrypto-2.1.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:4bdd7a6715dc7d1b2b37f3a8cfaaa2a28aa064edfc17144c989a314fd9e6d564", size = 438017, upload-time = "2026-10-26T21:35:45.595Z" },
-    { url = "https://files.pythonhosted.org/packages/df/a4/0d761e8095adcef39057df085921bca8f714294d3de73f9a00114f1fcfc6/warpcrypto-2.1.0-cp314-cp314t-win_amd64.whl", hash = "sha256:9d98e367dba991d99542965ae4b6949572bca3ae4d6de252bd81ec79254b4294", size = 142093, upload-time = "2026-10-26T21:35:46.639Z" },
-    { url = "https://files.pythonhosted.org/packages/12/72/e74fba57a372595d19b9cd2d6e68042f661d1a64eb0b913747d367ed3a4b/warpcrypto-2.1.0-cp315-cp315-macosx_10_12_x86_64.whl", hash = "sha256:77e8c711b143da18853b9fc882c0b77f7f4990a293ebe50ef2f805c79ae49777", size = 222924, upload-time = "2026-10-26T21:35:47.683Z" },
-    { url = "https://files.pythonhosted.org/packages/fd/42/57876a7dc30a8592168e8a8d898bdb72b8b481eb0d225b203ce05c1c418f/warpcrypto-2.1.0-cp315-cp315-macosx_11_0_arm64.whl", hash = "sha256:3ef7a20c8a9312a0078bd8e629f07ed04bdeacfd9eb5815c28b19e5525c57b84", size = 200964, upload-time = "2026-10-26T21:35:48.706Z" },
-    { url = "https://files.pythonhosted.org/packages/9b/61/fe416929da943083666324e52aa1f04e5eef2b9499f533580c67f1b0afde/warpcrypto-2.1.0-cp315-cp315-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:814a3b83598038efc7dbdf3a9dace0c9dd5849a04199f9c08e296aa417d8f785", size = 218466, upload-time = "2026-10-26T21:35:49.793Z" },
-    { url = "https://files.pythonhosted.org/packages/fb/bf/3b8c75cdc11c97bf0ef83a56a411505e6e6b4f4d9f562f73d832ecb0276e/warpcrypto-2.1.0-cp315-cp315-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0c76372f2841cc8b152c0140f8bf9485e3dc22c4299b989575f608faf9360e69", size = 226923, upload-time = "2026-10-26T21:35:51.154Z" },
-    { url = "https://files.pythonhosted.org/packages/cf/c5/fb556cf52cae1be3cfa671d4a4f0b26647f4a6d8c59d4ef5d5b4699c8988/warpcrypto-2.1.0-cp315-cp315-win_amd64.whl", hash = "sha256:f4d85b68a31c7311527895cfca6c1a2660e66a07094ecb4f16a8a38153f1fcb2", size = 141814, upload-time = "2026-10-26T21:35:52.201Z" },
-    { url = "https://files.pythonhosted.org/packages/53/c3/1527bf9a2644183aa93a5015ea2ebe6565fbdef4127cec4cd31ca050f832/warpcrypto-2.1.0-cp315-cp315t-macosx_10_12_x86_64.whl", hash = "sha256:7920c36175aea0c59f0521e754a0ee5d5537129ae346ad7ca41d448f26ef5754", size = 221964, upload-time = "2026-10-26T21:35:53.393Z" },
-    { url = "https://files.pythonhosted.org/packages/e7/60/99b33b4bdebbdc7d7591dc71ffdea179f702b45aac3335fbcad3811f83a0/warpcrypto-2.1.0-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:a89e1f877ae81bfb02cc14bce8ae1931710cd48473a794d1fe0722bcce4b3063", size = 200091, upload-time = "2026-10-26T21:35:54.365Z" },
-    { url = "https://files.pythonhosted.org/packages/81/ec/c29bb7c8b1790b8c5627ef8162a41cffd6d9a14c2fbae2ce48ee506adc72/warpcrypto-2.1.0-cp315-cp315t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6465713f1354e82c447bd963eba73f0df3fb11d98207cd924f6f396f39c458dc", size = 217629, upload-time = "2026-10-26T21:35:55.444Z" },
-    { url = "https://files.pythonhosted.org/packages/92/42/d0f091b63b39b0d2b61fb1573226703eafed0f63123f8b5d6427111ed87d/warpcrypto-2.1.0-cp315-cp315t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0a1f71cb93b37af36a2375e79467bb32f39c62f34700e6d2bffc9a23f1ba67d6", size = 226126, upload-time = "2026-10-26T21:35:56.593Z" },
-    { url = "https://files.pythonhosted.org/packages/83/56/c897ed58576a1ced49128048d862316b976837c0677a2dba017e5676500c/warpcrypto-2.1.0-pp311-pypy311_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:9bfc82da217a5daa0fe8a4c8c4d07e95ce651ad413b0e3068c3230f83cf62f92", size = 220305, upload-time = "2026-10-26T21:36:08.462Z" },
-    { url = "https://files.pythonhosted.org/packages/79/f6/0b61ed6225c31d55c28020398778fe113b344ffdae096d068febb9572362/warpcrypto-2.1.0-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:34af2af7c0aeb301af92ed2c0a105106a7be7c3324d4bc17a215470d2f91eb60", size = 228272, upload-time = "2026-10-26T21:36:09.573Z" },
-    { url = "https://files.pythonhosted.org/packages/f3/b0/7a46143ebd1b4355a511d9262b43954a4767f44d36f5bb1b39e965bc69a6/warpcrypto-2.1.0-pp311-pypy311_pp73-musllinux_1_2_aarch64.whl", hash = "sha256:baf17cdf21e6ac7321a83be7a3aff49f8b013bc617e15f5b57b021750fec52aa", size = 399156, upload-time = "2026-10-26T21:36:10.653Z" },
-    { url = "https://files.pythonhosted.org/packages/c7/0d/a5c79c7c2a865add4343c7c242b941170be18d0cc443c73fa246b2c5407e/warpcrypto-2.1.0-pp311-pypy311_pp73-musllinux_1_2_x86_64.whl", hash = "sha256:c9862343f8209171ecd8aeb32a898d838863bd9e6580025768d1d3dcf0023ccf", size = 440067, upload-time = "2026-10-26T21:36:12.073Z" },
-    { url = "https://files.pythonhosted.org/packages/26/65/5fa89e58a1ae4dcc8e010f30bc5fa181579931386420e3fc5ced445dcb18/warpcrypto-2.1.0-pp311-pypy311_pp80-macosx_10_12_x86_64.whl", hash = "sha256:a81e6b7562aa59b08ccfe5c91e43745e30c6b8355da4418b6a182eac76e2d02f", size = 223642, upload-time = "2026-10-26T21:36:13.139Z" },
-    { url = "https://files.pythonhosted.org/packages/a7/22/0800e5095fe87a34e6daacf1f7c4361664e9fefdc1b96df841baccf8d718/warpcrypto-2.1.0-pp311-pypy311_pp80-macosx_11_0_arm64.whl", hash = "sha256:9b52eac86a1587f30f794a500ff0cc8dec3753230e7d50fb28256ab8b1512362", size = 203438, upload-time = "2026-10-26T21:36:14.171Z" },
-]
-
-[[package]]
-name = "wzgram"
-version = "3.1.5"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiosqlite" },
-    { name = "python-socks" },
-    { name = "warpcrypto" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/fa/87/c7eb939a2a0cea4318f5f723851839f57d8539d896b9bbb0b0079a050b81/wzgram-3.1.5.tar.gz", hash = "sha256:2be12de6a29b3bae065104aa0cb7e180fdeac68a7230166d7e53a02eba8992ac", size = 1075114, upload-time = "2026-10-09T06:32:15.982Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/de/49/3bc101512ca99fdc8bee208cf61e789199389ac54940cf5c6096d4100b90/wzgram-3.1.5-py3-none-any.whl", hash = "sha256:1e5e7714217e8f101ae146a4275a2efd3c1a5def4c420d0e147e950b103cfb55", size = 6302149, upload-time = "2026-10-09T06:32:13.519Z" },
 ]
 
 [[package]]

@@ -9,9 +9,9 @@ from time import time
 
 from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
-from wzgram.enums import ChatMemberStatus, ChatMembersFilter
-from wzgram.errors import FloodWait
-from wzgram.types import ChatPrivileges
+from pyrogram.enums import ChatMemberStatus, ChatMembersFilter
+from pyrogram.errors import FloodWait
+from pyrogram.types import ChatPrivileges
 
 import Backend
 from Backend import StartTime, __version__, db

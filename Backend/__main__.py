@@ -3,7 +3,7 @@ import logging
 import secrets
 from traceback import format_exc
 
-from wzgram import idle
+from pyrogram import idle
 from starlette.middleware.sessions import SessionMiddleware
 
 from Backend import __version__, db

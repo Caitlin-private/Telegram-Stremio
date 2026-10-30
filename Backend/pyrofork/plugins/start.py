@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from wzgram import Client, enums, filters
-from wzgram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from pyrogram import Client, enums, filters
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from Backend import db
 from Backend.helper.bot_media import show_link

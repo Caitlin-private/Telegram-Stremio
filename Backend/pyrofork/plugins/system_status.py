@@ -1,4 +1,4 @@
-from wzgram import Client, filters, enums
+from pyrogram import Client, filters, enums
 
 from Backend import db
 from Backend.config import Telegram

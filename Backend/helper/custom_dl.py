@@ -8,9 +8,10 @@ from collections import deque
 from typing import Dict, List, Optional, Tuple, Union
 
 from fastapi import Request
-from wzgram import Client, raw
-from wzgram.file_id import FileId
-from wzgram.session import Session
+from pyrogram import Client, raw
+from pyrogram.errors import AuthBytesInvalid
+from pyrogram.file_id import FileId
+from pyrogram.session import Auth, Session
 
 from Backend import db
 from Backend.helper.exceptions import FileNotFound
@@ -62,12 +63,6 @@ def _ensure_stale_cleaner():
 
 
 #----- Telegram file byte streamer with prefetch, multi-client parallelism, and telemetry
-async def _request_file(session: Session, request):
-    # Use WZGram's media semaphore and activity tracking. The surrounding
-    # streamer retains ownership of retries and FloodWait handling.
-    return await session.invoke(request, retries=1, timeout=15, sleep_threshold=0)
-
-
 class ByteStreamer:
     CHUNK_SIZE = 1024 * 1024
     CLEAN_INTERVAL = 30 * 60
@@ -77,6 +72,7 @@ class ByteStreamer:
         self.client = client
         self.client_index = client_index
         self._file_id_cache = BoundedDict(2000)
+        self._session_lock = asyncio.Lock()
         if client_index >= 0:
             ByteStreamer._instances[client_index] = self
         asyncio.create_task(self._clean_cache())
@@ -84,16 +80,38 @@ class ByteStreamer:
         _ensure_stale_cleaner()
 
     async def _prewarm_sessions(self):
-        # WZGram owns DC authorization, creation locks and idle-session cleanup.
-        # Sharing its session registry prevents duplicate cross-DC exports.
+        common_dcs = [1, 2, 4, 5]
+        test_mode = await self.client.storage.test_mode()
         current_dc = await self.client.storage.dc_id()
-        for dc in (1, 2, 4, 5):
-            if dc == current_dc:
+        for dc in common_dcs:
+            if dc in self.client.media_sessions or dc == current_dc:
                 continue
             try:
-                await self.client.get_session(dc, is_media=True)
-            except Exception as exc:
-                LOGGER.debug("Media session prewarm for DC%s deferred: %s", dc, exc)
+                auth_key = await Auth(self.client, dc, test_mode).create()
+                session = Session(self.client, dc, auth_key, test_mode, is_media=True)
+                session.no_updates = True
+                session.timeout = 30
+                session.sleep_threshold = 60
+                await session.start()
+                imported = False
+                for _ in range(6):
+                    try:
+                        exported = await self.client.invoke(raw.functions.auth.ExportAuthorization(dc_id=dc))
+                        await session.send(raw.functions.auth.ImportAuthorization(id=exported.id,bytes=exported.bytes,))
+                        imported = True
+                        break
+                    except AuthBytesInvalid:
+                        await asyncio.sleep(0.5)
+                    except OSError:
+                        await asyncio.sleep(1)
+                    except Exception:
+                        break
+                if imported:
+                    self.client.media_sessions[dc] = session
+                else:
+                    await session.stop()
+            except Exception:
+                continue
 
     #----- Fetch (and cache) Telegram FileId properties for a message
     async def get_file_properties(self, chat_id: int, message_id: int) -> FileId:
@@ -197,7 +215,7 @@ class ByteStreamer:
             while tries < 3 and flood_tries < 5 and not stop_event.is_set():
                 try:
                     r = await asyncio.wait_for(
-                        _request_file(c_session,
+                        c_session.send(
                             raw.functions.upload.GetFile(
                                 location=c_loc_box[0], offset=off, limit=chunk_size
                             )
@@ -478,9 +496,45 @@ class ByteStreamer:
         return consumer_generator()
 
     async def _get_media_session(self, file_id: FileId) -> Session:
-        # Refreshes last_used and coordinates with WZGram's own session locks,
-        # rather than keeping a separate authorization/cache implementation.
-        return await self.client.get_session(file_id.dc_id, is_media=True)
+        dc = file_id.dc_id
+        media_session = self.client.media_sessions.get(dc)
+
+        if media_session:
+            return media_session
+
+        async with self._session_lock:
+            media_session = self.client.media_sessions.get(dc)
+            if media_session:
+                return media_session
+
+            test_mode = await self.client.storage.test_mode()
+            current_dc = await self.client.storage.dc_id()
+
+            if dc != current_dc:
+                auth_key = await Auth(self.client, dc, test_mode).create()
+            else:
+                auth_key = await self.client.storage.auth_key()
+
+            session = Session(self.client, dc, auth_key, test_mode, is_media=True)
+            session.no_updates = True
+            session.timeout = 30 
+            session.sleep_threshold = 60 
+
+            await session.start()
+
+            if dc != current_dc:
+                for _ in range(6):
+                    try:
+                        exported = await self.client.invoke(raw.functions.auth.ExportAuthorization(dc_id=dc))
+                        await session.send(raw.functions.auth.ImportAuthorization(id=exported.id, bytes=exported.bytes))
+                        break
+                    except AuthBytesInvalid:
+                        await asyncio.sleep(0.5)
+                    except OSError:
+                        await asyncio.sleep(1)
+
+            self.client.media_sessions[dc] = session
+            return session
 
     @staticmethod
     async def _get_location(file_id: FileId) -> Union[
@@ -529,7 +583,7 @@ async def _speed_test_single_client(
         media_session = await streamer._get_media_session(file_id)
         location = await ByteStreamer._get_location(file_id)
         ping_start = time.perf_counter()
-        tiny = await _request_file(media_session,
+        tiny = await media_session.send(
             raw.functions.upload.GetFile(location=location, offset=0, limit=4096)
         )
         ping_end = time.perf_counter()
@@ -557,7 +611,7 @@ async def _speed_test_single_client(
                 fetch_size = min(chunk_size, TEST_CHUNK_SIZE - offset)
                 try:
                     r = await asyncio.wait_for(
-                        _request_file(media_session,
+                        media_session.send(
                             raw.functions.upload.GetFile(
                                 location=location, offset=offset, limit=fetch_size
                             )

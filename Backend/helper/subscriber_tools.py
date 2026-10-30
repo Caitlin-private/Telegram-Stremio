@@ -1,4 +1,4 @@
-from wzgram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from Backend import db
 

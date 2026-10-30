@@ -1,4 +1,4 @@
-from wzgram import Client, filters
+from pyrogram import Client, filters
 from Backend import db
 from Backend.helper.bot_media import registered_token, search_titles, send_card
 from Backend.logger import LOGGER

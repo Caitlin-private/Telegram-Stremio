@@ -7,7 +7,7 @@ from copy import deepcopy
 from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
-from wzgram.errors import FloodWait, ChannelPrivate, ChatAdminRequired, MessageDeleteForbidden
+from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired, MessageDeleteForbidden
 
 from Backend.logger import LOGGER
 from Backend.helper.scan_coordination import scan_coordinator

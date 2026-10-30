@@ -23,8 +23,7 @@ stream_handler.setFormatter(formatter)
 basicConfig(handlers=[file_handler, stream_handler], level=INFO)
 
 getLogger("httpx").setLevel(ERROR)
-getLogger("pyrogram").setLevel(ERROR)  # WZGram compatibility namespace
-getLogger("wzgram").setLevel(ERROR)
+getLogger("pyrogram").setLevel(ERROR)
 getLogger("fastapi").setLevel(ERROR)
 
 LOGGER = getLogger(__name__)

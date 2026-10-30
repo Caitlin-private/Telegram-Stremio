@@ -1,7 +1,7 @@
 import asyncio
 from typing import Optional
 
-from wzgram import Client
+from pyrogram import Client
 
 from Backend import db
 from Backend.helper.settings_manager import SettingsManager

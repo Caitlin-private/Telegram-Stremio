@@ -4,8 +4,8 @@ import time
 from typing import Dict, List, Optional
 
 import PTN
-from wzgram import enums
-from wzgram.errors import (
+from pyrogram import enums
+from pyrogram.errors import (
     FloodWait,
     ChatAdminRequired,
     ChannelPrivate,
