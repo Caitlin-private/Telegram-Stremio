@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import re
 import traceback
 from typing import Optional
 
@@ -17,6 +18,14 @@ from Backend.helper.metadata.common import (
     format_tmdb_image,
     resolve_cover_url,
     split_default_id,
+)
+from Backend.helper.metadata.common import title_similarity
+from Backend.helper.metadata.classify import (
+    find_year,
+    has_explicit_tv_marker,
+    has_season_marker,
+    looks_like_movie,
+    year_tokens,
 )
 from Backend.helper.metadata.parse import (
     analyze_metadata_failure,
@@ -60,6 +69,59 @@ def _resolve_default_id(override_id, filename) -> str | None:
     return None
 
 
+_SERIES_CONFIRM_SCORE = 0.92
+
+
+def _series_confirms(result: dict | None, query_title: str, year) -> bool:
+    """A series match found from a weak episode hint must agree on title and year."""
+    if not result:
+        return False
+    if title_similarity(query_title, result.get("title") or "") < _SERIES_CONFIRM_SCORE:
+        return False
+    try:
+        ry, qy = int(result.get("year") or 0), int(year or 0)
+    except (TypeError, ValueError):
+        return True
+    # the show must have premiered no later than ~the file's year
+    return not (ry and qy) or ry <= qy + 1
+
+
+async def _series_fallback(
+    raw_title, hint_season, hint_episode, encoded_string, *, year, quality, anime_channel
+):
+    """Movie lookup failed for a year-bearing file that has a season/episode hint.
+
+    Look for a *series* whose title and year both match; if one does, the hint
+    confirms it is an episode.  Anything weaker is rejected rather than filed
+    under a similarly named show.  Uses Kitsu on anime channels, else TVDB/TMDB.
+    """
+    ep = int(hint_episode)
+    series_title = clean_anime_search_title(raw_title, ep)
+    season = int(hint_season) if hint_season else None
+    result = None
+    if anime_channel:
+        result = await resolve_anime_tv(
+            series_title, season, ep, encoded_string,
+            year=year, quality=quality, absolute=season is None,
+        )
+        if result is not None and not _series_confirms(result, series_title, year):
+            result = None
+    if result is None:
+        result = await resolve_series(
+            series_title, season or 1, ep, encoded_string, year=year, quality=quality,
+        )
+        if result is not None and not _series_confirms(result, series_title, year):
+            result = None
+    if result is not None:
+        LOGGER.info(
+            f"[CLASSIFY] no movie match for '{raw_title}' ({year}); series "
+            f"'{result.get('title')}' matches title+year and episode hint {ep} -> series"
+        )
+        if season is None:
+            result["absolute_episode"] = ep
+    return result
+
+
 async def metadata(
     filename: str,
     channel: int,
@@ -100,12 +162,58 @@ async def metadata(
     year = parsed.get("year")
     quality = quality_hint or parsed.get("quality")
 
+    anime_channel_early = _is_anime_channel(channel)
+
     # GuessIt sometimes yields season=0 for absolute anime releases — treat as no season
     try:
         if season is not None and int(season) == 0:
             season = None
     except (TypeError, ValueError):
         pass
+
+    # ── Classify first: does the *text* give evidence of an episode? ─────────
+    # A release year (or "Movie") with no SxxExx / Season N / E12 / Ep 12 /
+    # E01-E04 wording (and, on anime channels, no "Title - 1172") is a movie,
+    # whatever PTN/GuessIt guessed from stray digits ("Apollo 13", "Toy Story 3").
+    movie_evidence = looks_like_movie(
+        parse_target, parsed.get("year"), anime=anime_channel_early
+    ) and not combined
+    # Weak (non-textual) season/episode guesses are remembered: if the movie
+    # lookup fails they may still confirm a series, but only on a strong
+    # title + year match (see _series_fallback).
+    hint_season = hint_episode = None
+    hint_from_number = False
+    title_year_extras: list = []
+    if movie_evidence:
+        if isinstance(season, int) and season > 0:
+            hint_season = season
+        if isinstance(episode, int):
+            hint_episode = episode
+        elif episode is None and hint_season is None:
+            hint_episode = extract_absolute_episode(filename, parsed, allow_bare=True)
+        hint_from_number = hint_episode is not None
+        if hint_season is not None and hint_episode is None:
+            hint_episode = 1
+    if movie_evidence:
+        if season is not None or episode is not None:
+            LOGGER.info(
+                f"[CLASSIFY] {filename}: year/movie evidence and no TV marker -> "
+                f"movie (ignoring parser season={season} episode={episode})"
+            )
+        season, episode, combined = None, None, None
+        parsed["season"] = parsed["episode"] = None
+        yrs = year_tokens(parse_target)
+        if yrs:
+            # release year = last year-like token; earlier ones are part of the title
+            year = yrs[-1]
+            title_year_extras = yrs[:-1]
+        elif year is not None and find_year("", year) is None:
+            year = None  # parser produced an implausible year
+    elif season is not None and not combined and not has_season_marker(parse_target):
+        # The parser invented a season (e.g. from a stray number) but the name
+        # never says "S02" / "Season 2": do not build a season pack from it.
+        LOGGER.info(f"[CLASSIFY] {filename}: ignoring parser season={season} (no season marker in name)")
+        season = None
 
     if combined:
         season, episode = combined["season"], combined["start"] or 1
@@ -117,33 +225,25 @@ async def metadata(
         episode = 1
 
     # Absolute / orphan episode (e.g. "One Piece 1223 720.mkv",
-    # "Naruto Shippuden - 016 480p ...", "[Judas] One Piece - 1172.mkv")
+    # "Naruto Shippuden - 016 480p ...", "[Judas] One Piece - 1172.mkv").
+    # Skipped entirely for movie-looking files.  Outside anime channels a bare
+    # trailing number is only an episode when the text says so (E12 / Ep 12 /
+    # "Title - 12"); otherwise it is ambiguous and verified against movies below.
     absolute = False
-    if episode is None and not season:
-        abs_ep = extract_absolute_episode(filename, parsed)
-        if abs_ep is not None:
-            episode = abs_ep
+    ambiguous_bare = False
+    if not movie_evidence:
+        textual_ep = has_explicit_tv_marker(parse_target, anime=True)
+        if episode is None and not season:
+            abs_ep = extract_absolute_episode(filename, parsed, allow_bare=True)
+            if abs_ep is not None:
+                episode = abs_ep
+                absolute = True
+                parsed["episode"] = abs_ep
+        elif is_absolute_episode(parsed, filename):
             absolute = True
-            parsed["episode"] = abs_ep
-    elif is_absolute_episode(parsed, filename):
-        absolute = True
-        if episode is None:
-            episode = extract_absolute_episode(filename, parsed)
-
-    # On anime channels, recover absolute from the raw filename when
-    # PTN/GuessIt treated a numbered release as a movie (no season/episode).
-    anime_channel_early = _is_anime_channel(channel)
-    if (
-        anime_channel_early
-        and not season
-        and not absolute
-        and episode is None
-    ):
-        abs_ep = extract_absolute_episode(filename, parsed)
-        if abs_ep is not None:
-            episode = abs_ep
-            absolute = True
-            parsed["episode"] = abs_ep
+            if episode is None:
+                episode = extract_absolute_episode(filename, parsed)
+        ambiguous_bare = bool(absolute and not anime_channel_early and not textual_ep)
 
     # Apply hints after recovering bare episode numbers as well as parsed E01.
     # A supplied season takes precedence over absolute anime numbering.
@@ -163,10 +263,13 @@ async def metadata(
 
     # Strip absolute episode / release-group noise from the search title so
     # "One Piece - 1172" does not match "One Piece Egghead Arc Recap".
+    # A trailing number is only removed once it is confirmed as the episode;
+    # for movies it belongs to the title ("Apollo 13", "Blade Runner 2049").
+    orig_title = title
     if absolute and episode is not None:
         title = clean_anime_search_title(title, int(episode))
     else:
-        title = clean_anime_search_title(title, None)
+        title = clean_anime_search_title(title, None, strip_trailing_number=False)
 
     default_id = _resolve_default_id(override_id, filename)
 
@@ -187,9 +290,23 @@ async def metadata(
     anime_channel = _is_anime_channel(channel)
 
     try:
+        # Ambiguous bare number outside anime channels and with no year
+        # ("Apollo 13 1080p"): try a strict full-title movie match before
+        # assuming it is episode 13 of a series.
+        movie_first = None
+        if ambiguous_bare and not default_id and episode is not None:
+            ep_txt = str(int(episode))
+            guess = orig_title if re.search(rf"(?<!\d)0*{ep_txt}\s*$", orig_title or "") else f"{orig_title} {ep_txt}"
+            movie_first = await resolve_movie(
+                clean_anime_search_title(guess, None, strip_trailing_number=False),
+                encoded_string, year=None, quality=quality, strict=True,
+            )
+            if movie_first:
+                LOGGER.info(f"[CLASSIFY] {filename}: strict movie match for '{guess}' -> treating as movie")
+
         # Seasonless episode numbers also identify regular single-season series.
         # Anime retains its absolute mapping; other series fall back to season 1.
-        is_tv = bool(season and episode) or bool(absolute and episode)
+        is_tv = (bool(season and episode) or bool(absolute and episode)) and movie_first is None
         if is_tv:
             if absolute:
                 LOGGER.info(f"Fetching TV metadata (absolute): {title} E{int(episode)} (year={year})")
@@ -217,16 +334,37 @@ async def metadata(
                     result["episode_number"] = int(episode)
             if result is not None and combined:
                 apply_combined_override(result, combined)
+        elif movie_first is not None:
+            result = movie_first
         else:
             LOGGER.info(f"Fetching Movie metadata: {title} (year={year})")
             result = None
-            if not default_id and anime_channel:
-                result = await resolve_anime_movie(
-                    title, encoded_string, year=year, quality=quality
-                )
-            if result is None:
-                result = await resolve_movie(
-                    title, encoded_string, year=year, quality=quality, default_id=default_id
+            # The parser may have split a title number off as an "episode"
+            # ("Apollo 13" -> title "Apollo", episode 13): try the full title first.
+            movie_titles = [title]
+            if movie_evidence:
+                extras = []
+                if hint_from_number and hint_episode is not None:
+                    extras.append(int(hint_episode))
+                extras.extend(title_year_extras)  # "Blade Runner" + 2049 (+ year 2017)
+                for extra in extras:
+                    if not re.search(rf"(?<!\d)0*{extra}\s*$", title or ""):
+                        movie_titles.insert(0, f"{title} {extra}")
+            for movie_title in movie_titles:
+                if not default_id and anime_channel:
+                    result = await resolve_anime_movie(
+                        movie_title, encoded_string, year=year, quality=quality
+                    )
+                if result is None:
+                    result = await resolve_movie(
+                        movie_title, encoded_string, year=year, quality=quality, default_id=default_id
+                    )
+                if result is not None:
+                    break
+            if result is None and hint_episode is not None and not default_id:
+                result = await _series_fallback(
+                    orig_title, hint_season, hint_episode, encoded_string,
+                    year=year, quality=quality, anime_channel=anime_channel,
                 )
         if result is not None:
             if playable_part:

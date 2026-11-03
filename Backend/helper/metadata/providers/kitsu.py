@@ -59,8 +59,19 @@ def _fuzzy(a: str, b: str) -> float:
         return 0.0
 
 
-def _title_score(query: str, attrs: dict) -> float:
-    """Score against every Kitsu title variant + abbreviations (alias-aware)."""
+def _start_year(attrs: dict) -> int:
+    try:
+        return int(str(attrs.get("startDate") or "")[:4])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _title_score(query: str, attrs: dict, query_year: Optional[int] = None, movie: bool = False) -> float:
+    """Score against every Kitsu title variant + abbreviations (alias-aware).
+
+    The filename year matters: movies must agree with Kitsu's startDate
+    (within 2 years); series only need to have premiered on/before that year.
+    """
     from Backend.helper.metadata.common import score_candidate_aliases
     titles = attrs.get("titles") or {}
     primary = (
@@ -77,12 +88,16 @@ def _title_score(query: str, attrs: dict) -> float:
     slug = attrs.get("slug")
     if slug:
         aliases.append(str(slug).replace("-", " "))
-    return score_candidate_aliases(
-        query, None, primary, 0,
+    row_year = _start_year(attrs)
+    score = score_candidate_aliases(
+        query, query_year, primary, row_year,
         aliases=aliases,
-        year_reliable=False,
-        year_lower_bound=True,
+        year_reliable=movie,
+        year_lower_bound=not movie,
     )
+    if movie and query_year and row_year and abs(int(query_year) - row_year) > 2:
+        score = min(score, KITSU_THRESHOLD - 0.01)
+    return score
 
 
 def _season_queries(title: str, season: Optional[int]) -> List[str]:
@@ -107,8 +122,10 @@ async def _kitsu_search(query: str, subtype: Optional[str] = None) -> Optional[d
         return None
 
 
-async def search_anime(title: str, season: Optional[int] = None, movie: bool = False) -> Optional[dict]:
-    cache_key = f"kitsu::{'movie' if movie else 'tv'}::{title}::{season}"
+async def search_anime(
+    title: str, season: Optional[int] = None, movie: bool = False, year: Optional[int] = None
+) -> Optional[dict]:
+    cache_key = f"kitsu::{'movie' if movie else 'tv'}::{title}::{season}::{year}"
 
     async def _produce():
         best = None
@@ -125,7 +142,7 @@ async def search_anime(title: str, season: Optional[int] = None, movie: bool = F
                     # still allow movie subtype primarily
                     if attrs.get("subtype") not in ("movie",):
                         continue
-                score = _title_score(title, attrs)
+                score = _title_score(title, attrs, year, movie)
                 if score > best_score:
                     best_score = score
                     best = row
@@ -814,7 +831,7 @@ async def fetch_anime_tv(
     absolute: bool = False,
 ) -> dict | None:
     is_abs = bool(absolute)
-    row = await search_anime(title, movie=False)
+    row = await search_anime(title, movie=False, year=year)
     if not row:
         return None
 
@@ -990,10 +1007,10 @@ async def fetch_anime_tv(
 
 
 async def fetch_anime_movie(title, encoded_string, year=None, quality=None) -> Optional[dict]:
-    row = await search_anime(title, movie=True)
+    row = await search_anime(title, movie=True, year=year)
     if not row:
         # also try without subtype filter
-        row = await search_anime(title, movie=False)
+        row = await search_anime(title, movie=False, year=year)
         if row:
             subtype = ((row.get("attributes") or {}).get("subtype") or "").lower()
             if subtype not in ("movie", "special", "ova", "ona", ""):

@@ -47,10 +47,10 @@ def parse_split_info(filename: str) -> Optional[Tuple[str, int]]:
 
 
 _COMBINED_EPISODES_RE = re.compile(
-    r"E(?:P|PISODE)?[\s._-]*0*(\d{1,4})[\s._-]*(?:-|–|~|\+|&|,|to)+[\s._-]*(?:E(?:P|PISODE)?[\s._-]*)?0*(\d{1,4})(?=\D|$)",
+    r"(?<![A-Za-z])E(?:P|PISODE)?[\s._-]*0*(\d{1,4})[\s._-]*(?:-|–|~|\+|&|,|to)+[\s._-]*(?:E(?:P|PISODE)?[\s._-]*)?0*(\d{1,4})(?=\D|$)",
     re.IGNORECASE,
 )
-_COMBINED_SEASON_RE = re.compile(r"S(?:EASON)?[\s._-]*0*(\d{1,3})", re.IGNORECASE)
+_COMBINED_SEASON_RE = re.compile(r"(?<![A-Za-z])S(?:EASON)?[\s._-]*0*(\d{1,3})(?!\d)", re.IGNORECASE)
 _COMBINED_KEYWORD_RE = re.compile(r"\bcombined\b", re.IGNORECASE)
 
 

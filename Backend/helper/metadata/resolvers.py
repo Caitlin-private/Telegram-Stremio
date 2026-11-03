@@ -8,12 +8,29 @@ from __future__ import annotations
 
 from typing import Optional
 
-from Backend.helper.metadata.common import split_default_id, title_similarity, CINEMETA_THRESHOLD
+from Backend.helper.metadata.common import (
+    CINEMETA_THRESHOLD,
+    split_default_id,
+    title_similarity,
+    year_from_str,
+)
 from Backend.helper.metadata.providers import cinemeta, kitsu, tmdb, tvdb
 from Backend.logger import LOGGER
 
 
 # ── Movies: TMDB > Cinemeta ──────────────────────────────────────────────────
+
+STRICT_MOVIE_SCORE = 0.92
+
+
+def _movie_year_ok(query_year, result_year) -> bool:
+    """A filename year must agree with the matched movie (within 2 years)."""
+    try:
+        q, r = int(query_year or 0), int(year_from_str(result_year) or 0)
+    except (TypeError, ValueError):
+        return True
+    return not (q and r) or abs(q - r) <= 2
+
 
 async def resolve_movie(
     title: str,
@@ -21,7 +38,13 @@ async def resolve_movie(
     year=None,
     quality=None,
     default_id=None,
+    strict: bool = False,
 ) -> Optional[dict]:
+    """TMDB > Cinemeta movie lookup.
+
+    ``strict=True`` only accepts a near-exact title match; used to check
+    whether an ambiguous "Title 13" really is a movie before calling it an episode.
+    """
     imdb_id, tmdb_id, explicit_imdb, force_tmdb = split_default_id(default_id)
 
     # Explicit TMDB id
@@ -41,7 +64,9 @@ async def resolve_movie(
 
     # 1) TMDB first
     if not tmdb_id:
-        hit = await tmdb.safe_search(title, "movie", year)
+        hit = await tmdb.safe_search(
+            title, "movie", year, min_score=STRICT_MOVIE_SCORE if strict else None
+        )
         if hit:
             tmdb_id = hit.id
     if tmdb_id:
@@ -59,12 +84,20 @@ async def resolve_movie(
             detail = await cinemeta.cached_detail(imdb_id, "movie")
             if detail:
                 sim = title_similarity(title, detail.get("title", ""))
-                if sim >= CINEMETA_THRESHOLD or explicit_imdb:
+                min_sim = STRICT_MOVIE_SCORE if strict else CINEMETA_THRESHOLD
+                detail_year = (detail.get("releaseDetailed") or {}).get("year") or detail.get("year")
+                if not explicit_imdb and not _movie_year_ok(year, detail_year):
+                    LOGGER.info(
+                        f"[MOVIE] Cinemeta year mismatch for '{title}' ({year}): "
+                        f"got '{detail.get('title')}' ({detail_year})"
+                    )
+                elif sim >= min_sim or explicit_imdb:
                     return cinemeta.build_movie_payload(detail, imdb_id, title, quality, encoded_string)
-                LOGGER.info(
-                    f"[MOVIE] Cinemeta title mismatch for '{title}': "
-                    f"got '{detail.get('title')}' (sim={sim:.2f})"
-                )
+                else:
+                    LOGGER.info(
+                        f"[MOVIE] Cinemeta title mismatch for '{title}': "
+                        f"got '{detail.get('title')}' (sim={sim:.2f})"
+                    )
         except Exception as e:
             LOGGER.warning(f"Cinemeta movie fetch failed [{title}]: {e}")
 
@@ -114,8 +147,23 @@ async def resolve_series(
     except Exception as e:
         LOGGER.warning(f"[SERIES] TVDB error for '{title}': {e}")
 
-    # 2) Cinemeta
-    LOGGER.info(f"[SERIES] TVDB miss for '{title}' -> Cinemeta")
+    # 2) TMDB TV (year-aware) before falling back to Cinemeta
+    LOGGER.info(f"[SERIES] TVDB miss for '{title}' -> TMDB")
+    try:
+        if not tmdb_id:
+            hit = await tmdb.safe_search(title, "tv", year)
+            tmdb_id = hit.id if hit else None
+        if tmdb_id:
+            tv = await tmdb.details("tv", tmdb_id)
+            if tv:
+                ep = await tmdb.episode_details(tmdb_id, season, episode)
+                LOGGER.info(f"[SERIES] TMDB hit for '{title}' S{season:02d}E{episode:02d}")
+                return tmdb.build_tv_payload(tv, ep, season, episode, quality, encoded_string)
+    except Exception as e:
+        LOGGER.warning(f"[SERIES] TMDB error for '{title}': {e}")
+
+    # 3) Cinemeta
+    LOGGER.info(f"[SERIES] TMDB miss for '{title}' -> Cinemeta")
     if not imdb_id:
         imdb_id = await cinemeta.safe_search(title, "tvSeries", year)
     if imdb_id:

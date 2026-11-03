@@ -18,6 +18,8 @@ TMDB_THRESHOLD = 0.55
 TVDB_THRESHOLD = 0.55
 KITSU_THRESHOLD = 0.55
 STRONG_MATCH = 0.92
+# Movie accept threshold once the filename carries a release year
+MOVIE_YEAR_THRESHOLD = 0.75
 ALT_TITLE_LOOKUPS = 5
 
 # Combined-file constants (Specials season)
@@ -112,6 +114,9 @@ def score_candidate(
         if year_lower_bound:
             if int(query_year) >= result_year and score >= 0.80:
                 score += 0.15 / (1 + (int(query_year) - result_year) * 0.1)
+            elif int(query_year) < result_year - 1:
+                # The show premiered after the file's year: it cannot be this show
+                score = max(0.0, score - 0.10 * (result_year - int(query_year) - 1))
             return score
         diff = abs(int(query_year) - result_year)
         if year_reliable:

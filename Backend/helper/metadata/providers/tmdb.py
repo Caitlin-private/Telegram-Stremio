@@ -13,6 +13,7 @@ from Backend.helper.metadata.common import (
     ALT_TITLE_LOOKUPS,
     ALT_TITLES_CACHE,
     API_SEMAPHORE,
+    MOVIE_YEAR_THRESHOLD,
     EPISODE_CACHE,
     STRONG_MATCH,
     TMDB_DETAILS_CACHE,
@@ -21,8 +22,10 @@ from Backend.helper.metadata.common import (
     cached_call,
     format_runtime,
     format_tmdb_image,
+    normalize_title,
     score_candidate,
     score_candidate_aliases,
+    title_similarity,
 )
 from Backend.helper.settings_manager import SettingsManager
 from Backend.logger import LOGGER
@@ -127,11 +130,59 @@ async def _tmdb_alternative_titles(media_type: str, tmdb_id) -> list:
     return await cached_call(ALT_TITLES_CACHE, cache_key, "alt_titles", _produce)
 
 
-async def pick_best(results, query_title: str, query_year: Optional[int], media_type: str):
+def _movie_adjust(score: float, query_title: str, query_year, titles: list, r_year) -> float:
+    """Movie-only guard rails on top of the fuzzy score.
+
+    * year gate: with a filename year, a candidate more than 2 years away can
+      never pass, and exactly 2 years away only passes on a near-exact title;
+    * a tiny bonus for an exact normalized-title match (used for tie-breaks).
+    """
+    qnorm = normalize_title(query_title)
+    exact = any(t and normalize_title(t) == qnorm for t in titles)
+    near_exact = exact or any(t and title_similarity(query_title, t) >= 0.95 for t in titles)
+    try:
+        qy, ry = int(query_year or 0), int(r_year or 0)
+    except (TypeError, ValueError):
+        qy = ry = 0
+    if qy and ry:
+        diff = abs(qy - ry)
+        if diff > 2 or (diff == 2 and not near_exact):
+            return min(score, TMDB_THRESHOLD - 0.01)
+    if exact:
+        score = min(1.0, score + 0.02)
+    return score
+
+
+def _top_candidate(scored: list):
+    """Highest score; candidates within 0.03 of it are decided by popularity."""
+    if not scored:
+        return None, 0.0
+    top = max(sc for sc, _, _ in scored)
+    close = [(sc, it) for sc, it, _ in scored if sc >= top - 0.03]
+
+    def _pop(entry):
+        sc, it = entry
+        return (
+            float(getattr(it, "popularity", 0) or 0),
+            float(getattr(it, "vote_count", 0) or 0),
+            sc,
+        )
+
+    sc, it = max(close, key=_pop)
+    return it, sc
+
+
+async def pick_best(results, query_title: str, query_year: Optional[int], media_type: str, min_score: Optional[float] = None):
     if not results:
         return None
-    year_reliable = media_type == "movie"
+    is_movie = media_type == "movie"
+    year_reliable = is_movie
     year_lower_bound = not year_reliable
+    threshold = TMDB_THRESHOLD
+    if is_movie and query_year:
+        threshold = max(threshold, MOVIE_YEAR_THRESHOLD)
+    if min_score is not None:
+        threshold = max(threshold, min_score)
     scored = []
     best_item, best_score = None, 0.0
     for item in results:
@@ -143,11 +194,17 @@ async def pick_best(results, query_title: str, query_year: Optional[int], media_
             aliases=[orig] if orig and orig != r_title else None,
             year_reliable=year_reliable, year_lower_bound=year_lower_bound,
         )
+        if is_movie:
+            score = _movie_adjust(score, query_title, query_year, [r_title, orig], r_year)
         scored.append((score, item, r_year))
-        if score > best_score:
-            best_score, best_item = score, item
+    if is_movie:
+        best_item, best_score = _top_candidate(scored)
+    else:
+        for score, item, _ in scored:
+            if score > best_score:
+                best_score, best_item = score, item
 
-    if best_score >= STRONG_MATCH:
+    if best_score >= max(STRONG_MATCH, threshold):
         return best_item
 
     # Fetch official alternative titles for top candidates
@@ -164,23 +221,25 @@ async def pick_best(results, query_title: str, query_year: Optional[int], media_
             aliases=aliases,
             year_reliable=year_reliable, year_lower_bound=year_lower_bound,
         )
+        if is_movie:
+            alt_score = _movie_adjust(alt_score, query_title, query_year, [r_title, *aliases], r_year)
         if alt_score > best_score:
             best_score, best_item = alt_score, item
-            if best_score >= STRONG_MATCH:
+            if best_score >= max(STRONG_MATCH, threshold):
                 break
 
-    return best_item if best_score >= TMDB_THRESHOLD and best_item is not None else None
+    return best_item if best_score >= threshold and best_item is not None else None
 
 
-async def safe_search(title: str, type_: str, year: Optional[int] = None):
+async def safe_search(title: str, type_: str, year: Optional[int] = None, min_score: Optional[float] = None):
     is_tv = type_ != "movie"
     search_year = None if is_tv else year
-    cache_key = f"tmdb_search::{type_}::{title}::{year}"
+    cache_key = f"tmdb_search::{type_}::{title}::{year}::{min_score}"
 
     async def _produce():
         try:
             results = await raw_search(title, type_, search_year)
-            best = await pick_best(results, title, year, type_)
+            best = await pick_best(results, title, year, type_, min_score=min_score)
             if best is None and results:
                 top = results[0]
                 top_title = getattr(top, "title" if type_ == "movie" else "name", "?")

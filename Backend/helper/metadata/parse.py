@@ -7,6 +7,7 @@ import traceback
 import PTN
 from guessit import guessit as _guessit
 
+from Backend.helper.metadata.classify import has_dash_episode
 from Backend.helper.metadata.common import COMBINED_EPISODE_BASE, COMBINED_SEASON, first
 from Backend.helper.split_files import parse_combined_episodes, parse_split_info, strip_part_suffix
 from Backend.logger import LOGGER
@@ -137,8 +138,13 @@ _TITLE_ABS_EP_RE = re.compile(
 _YEAR_RE = re.compile(r"(?:^|[\s._\-(])((?:19|20)\d{2})(?:[\s._\-)]|$)")
 
 
-def extract_absolute_episode(filename: str, parsed: dict | None = None) -> int | None:
+def extract_absolute_episode(
+    filename: str, parsed: dict | None = None, allow_bare: bool = True
+) -> int | None:
     """Return absolute episode number when no season is present.
+
+    ``allow_bare=False`` only accepts textual evidence (``E12`` / ``Ep 12`` /
+    ``Title - 12``); a bare trailing number ("Apollo 13") is not an episode.
 
     Handles styles like:
       One Piece 1223 720.mkv
@@ -160,7 +166,7 @@ def extract_absolute_episode(filename: str, parsed: dict | None = None) -> int |
     ep = parsed.get("episode")
     if isinstance(ep, list):
         return None
-    if ep is not None:
+    if ep is not None and allow_bare:
         try:
             return int(ep)
         except (TypeError, ValueError):
@@ -187,6 +193,9 @@ def extract_absolute_episode(filename: str, parsed: dict | None = None) -> int |
     if prefixed:
         return int(prefixed[-1])
 
+    if not allow_bare and not has_dash_episode(name):
+        return None
+
     # Bare numbers left after stripping quality/year — prefer last 2–4 digit token
     # Include leading-zero forms like 016 (still 2–4 digit string length)
     bare = re.findall(r"(?:^|\s)(0*\d{1,4})(?:\s|$)", cleaned)
@@ -210,8 +219,14 @@ def extract_absolute_episode(filename: str, parsed: dict | None = None) -> int |
     return candidates[-1]
 
 
-def clean_anime_search_title(title: str, absolute_ep: int | None = None) -> str:
+def clean_anime_search_title(
+    title: str, absolute_ep: int | None = None, strip_trailing_number: bool = True
+) -> str:
     """Strip absolute episode / noise from a title used for provider search.
+
+    ``strip_trailing_number=False`` keeps numbers that belong to the title
+    ("Apollo 13", "Blade Runner 2049") - only use True once a number has been
+    confirmed as an episode.
 
     "One Piece - 1172" + abs=1172 → "One Piece"
     "[Judas] One Piece" → "One Piece"
@@ -230,7 +245,7 @@ def clean_anime_search_title(title: str, absolute_ep: int | None = None) -> str:
         ).strip()
     # Generic trailing absolute-looking number (2–4 digits, optional E-prefix)
     # when no SxxExx
-    if not _SEASON_EP_RE.search(t):
+    if strip_trailing_number and not _SEASON_EP_RE.search(t):
         t2 = re.sub(r"(?i)(?:\s*[-–—]\s*|\s+)(?:episode|ep|e)?\s*0*\d{2,4}\s*$", "", t).strip()
         if t2:
             t = t2
