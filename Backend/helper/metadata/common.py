@@ -83,6 +83,74 @@ def title_similarity(t1: str, t2: str) -> float:
     return fuzzy_ratio(n1, n2) if n1 and n2 else 0.0
 
 
+# ── Token-coverage guard ─────────────────────────────────────────────────────
+# Fuzzy ratios alone accept look-alikes: "Cobra Kai" ~ "Cobra" (alias of
+# "Space Adventure Cobra") = 0.71 and "Mysterious Nurse" ~ "Delicious Nursery"
+# = 0.67, both above the 0.55 accept threshold.  A candidate is only trusted
+# below STRONG_MATCH when it really contains the query's significant words.
+_NOISE_TOKENS = frozenset({
+    # articles / glue
+    "the", "a", "an", "of", "and", "in", "on", "to", "at", "for", "vs",
+    # brand prefixes that titles often drop ("Marvel's Agents of S.H.I.E.L.D.")
+    "marvel", "marvels", "dc", "disney", "disneys", "netflix", "hbo", "bbc",
+    "amazon", "apple", "pixar", "lucasfilm", "nickelodeon", "paramount",
+    # release noise
+    "original", "uncut", "extended", "remastered", "complete", "final",
+    "edition", "dubbed", "dub", "subbed", "sub",
+})
+_ROMAN_TOKENS = {
+    "ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6",
+    "vii": "7", "viii": "8", "ix": "9", "x": "10",
+}
+
+
+def _significant_tokens(normalized: str) -> list:
+    out = []
+    for tok in normalized.split():
+        tok = _ROMAN_TOKENS.get(tok, tok)
+        if tok in _NOISE_TOKENS or (len(tok) < 2 and not tok.isdigit()):
+            continue
+        out.append(tok)
+    return out
+
+
+def _tokens_close(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if len(a) < 4 or len(b) < 4 or a.isdigit() or b.isdigit():
+        return False
+    try:
+        # "nurse"/"nurses" pass (0.91); "nurse"/"nursery" (0.83) and
+        # "mysterious"/"delicious" (0.53) do not.
+        return fuzz.ratio(a, b) >= 85
+    except Exception:
+        return False
+
+
+def title_tokens_covered(query: str, candidate: str) -> bool:
+    """True when the candidate contains the query's significant words.
+
+    Titles of one or two significant words must be fully covered; longer
+    titles may miss a single word.
+    """
+    q = _significant_tokens(normalize_title(query))
+    c = _significant_tokens(normalize_title(candidate))
+    if not q or not c:
+        return True  # nothing meaningful to judge
+    cset = set(c)
+    missing = [t for t in q if t not in cset and not any(_tokens_close(t, x) for x in cset)]
+    return len(missing) <= (0 if len(q) <= 2 else 1)
+
+
+def guarded_title_similarity(query: str, candidate: str) -> float:
+    """title_similarity, capped below every accept threshold when the candidate
+    lacks words from the query (unless it is already a near-exact match)."""
+    score = title_similarity(query, candidate)
+    if score < STRONG_MATCH and not title_tokens_covered(query, candidate):
+        return min(score, 0.49)
+    return score
+
+
 def year_from_str(year_val) -> int:
     if not year_val:
         return 0
@@ -106,7 +174,7 @@ def score_candidate(
     year_reliable: bool = True,
     year_lower_bound: bool = False,
 ) -> float:
-    score = title_similarity(query_title, result_title)
+    score = guarded_title_similarity(query_title, result_title)
     if score < 0.5:
         return score
 

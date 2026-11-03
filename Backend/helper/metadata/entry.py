@@ -19,7 +19,7 @@ from Backend.helper.metadata.common import (
     resolve_cover_url,
     split_default_id,
 )
-from Backend.helper.metadata.common import title_similarity
+from Backend.helper.metadata.common import guarded_title_similarity
 from Backend.helper.metadata.classify import (
     find_year,
     has_explicit_tv_marker,
@@ -76,7 +76,7 @@ def _series_confirms(result: dict | None, query_title: str, year) -> bool:
     """A series match found from a weak episode hint must agree on title and year."""
     if not result:
         return False
-    if title_similarity(query_title, result.get("title") or "") < _SERIES_CONFIRM_SCORE:
+    if guarded_title_similarity(query_title, result.get("title") or "") < _SERIES_CONFIRM_SCORE:
         return False
     try:
         ry, qy = int(result.get("year") or 0), int(year or 0)

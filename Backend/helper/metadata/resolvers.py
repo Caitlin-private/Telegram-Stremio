@@ -10,8 +10,8 @@ from typing import Optional
 
 from Backend.helper.metadata.common import (
     CINEMETA_THRESHOLD,
+    guarded_title_similarity,
     split_default_id,
-    title_similarity,
     year_from_str,
 )
 from Backend.helper.metadata.providers import cinemeta, kitsu, tmdb, tvdb
@@ -83,7 +83,7 @@ async def resolve_movie(
         try:
             detail = await cinemeta.cached_detail(imdb_id, "movie")
             if detail:
-                sim = title_similarity(title, detail.get("title", ""))
+                sim = guarded_title_similarity(title, detail.get("title", ""))
                 min_sim = STRICT_MOVIE_SCORE if strict else CINEMETA_THRESHOLD
                 detail_year = (detail.get("releaseDetailed") or {}).get("year") or detail.get("year")
                 if not explicit_imdb and not _movie_year_ok(year, detail_year):
@@ -151,7 +151,7 @@ async def resolve_series(
     LOGGER.info(f"[SERIES] TVDB miss for '{title}' -> TMDB")
     try:
         if not tmdb_id:
-            hit = await tmdb.safe_search(title, "tv", year)
+            hit = await tmdb.safe_search(title, "tv", year, min_score=0.75)
             tmdb_id = hit.id if hit else None
         if tmdb_id:
             tv = await tmdb.details("tv", tmdb_id)
@@ -171,7 +171,7 @@ async def resolve_series(
             detail = await cinemeta.cached_detail(imdb_id, "tvSeries")
             ep = await cinemeta.cached_season(imdb_id, season, episode)
             if detail:
-                sim = title_similarity(title, detail.get("title", ""))
+                sim = guarded_title_similarity(title, detail.get("title", ""))
                 if sim >= CINEMETA_THRESHOLD or explicit_imdb:
                     return cinemeta.build_tv_payload(
                         detail, ep or {}, imdb_id, title, season, episode, quality, encoded_string
