@@ -85,6 +85,16 @@ def _strip_leading_at_token(value: str) -> str:
 def strip_uploader_prefix(name: str) -> str:
     """Remove leading uploader / promo / site / bracket tags (repeatedly) and return the release name."""
     value = normalize_unicode_text(name or "").strip()
+    value = _LEADING_JUNK_RE.sub("", value)
+    # Common Telegram filename form: "Join_@Uploader_Title..." (without an
+    # arrow). Remove only the call-to-action when it directly introduces a
+    # channel handle; never strip a legitimate title beginning with "Join".
+    value = re.sub(
+        r"(?i)^\s*(?:join|subscribe|follow)\s*[_\s-]+(?=@)",
+        "",
+        value,
+        count=1,
+    )
     value = _PROMO_ARROW_PREFIX_RE.sub("", value, count=1).strip()
     for _ in range(6):
         before = value
@@ -99,7 +109,9 @@ def strip_uploader_prefix(name: str) -> str:
 
 def strip_channel_tags(text: str) -> str:
     """``@Uploader`` tags anywhere in a name, each cut at the next space / ``_`` / ``-`` (never the whole name)."""
-    out = strip_uploader_prefix(text)
+    raw = _LEADING_JUNK_RE.sub("", normalize_unicode_text(text or "").strip())
+    had_leading_handle = bool(re.match(r"(?i)^(?:(?:join|subscribe|follow)[_\s-]+)?@", raw))
+    out = strip_uploader_prefix(raw)
 
     def _inline(match: re.Match) -> str:
         token = match.group(0)
@@ -110,6 +122,11 @@ def strip_channel_tags(text: str) -> str:
         return " "
 
     out = re.sub(r"(?<![\w.])@[^\s_\-\[\]()]+", _inline, out)
+    # Some uploaders concatenate their brand after the handle with an
+    # underscore: "@Akatsuki_MediaWonder_Woman". Once the handle is removed,
+    # discard that attached "Media" marker only in this handle-prefixed case.
+    if had_leading_handle:
+        out = re.sub(r"(?i)^\s*Media(?=[A-Z])", "", out, count=1)
     return re.sub(r"\s+", " ", out).strip()
 
 
@@ -205,7 +222,7 @@ def extract_identity(name: str, now_year: Optional[int] = None) -> Identity:
     """Title + release year of a release name / caption, independent of PTN and GuessIt."""
     raw = normalize_unicode_text(name or "")
     ident = Identity(promo=bool(_PROMO_ARROW_RE.search(raw)))
-    text = _EXT_RE.sub("", strip_uploader_prefix(raw))
+    text = _EXT_RE.sub("", strip_channel_tags(raw))
     if not text:
         return ident
     max_year = _max_year(now_year)
@@ -260,7 +277,9 @@ def _evidence(text: Optional[str]) -> tuple:
 
 def _release_like(text: Optional[str]) -> bool:
     has_title, year, tags, promo = _evidence(text)
-    return has_title and bool(year or tags) and not (promo and not year)
+    # Promo captions may contain a real-looking year and resolution after
+    # "Join @channel"; that does not make the promo text a release filename.
+    return has_title and bool(year or tags) and not promo
 
 
 def choose_media_title(caption: Optional[str], file_name: Optional[str]) -> Optional[str]:
