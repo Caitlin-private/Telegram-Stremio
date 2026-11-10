@@ -28,11 +28,6 @@ _EXPLICIT_SEASON_WORD_RE = re.compile(r"(?i)\b(?:season|series)\s*0*\d{1,2}\b")
 
 
 def parse_media_name(name: str) -> dict:
-    """Parse with the upstream Telegram-Stremio order: PTN first, GuessIt fallback.
-
-    The small explicit NxN recovery below is a Caitlin-only compatibility
-    fallback; GuessIt's unanchored numeric season/episode guesses stay rejected.
-    """
     try:
         ptn = PTN.parse(name) or {}
     except Exception as e:
