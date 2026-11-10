@@ -27,6 +27,7 @@ from Backend.config import _int_env
 from Backend.helper.checker_requests import CHECK_TIMEOUT, CheckUnavailable, check_reference, get_check_message
 from Backend.helper.encrypt import decode_string, encode_string
 from Backend.helper.metadata import caption_with_links, extract_default_id, metadata
+from Backend.helper.metadata_matcher import _number_signature
 from Backend.helper.metadata.common import collect_title_aliases, score_candidate
 from Backend.helper.metadata.name_identity import alternate_media_title, choose_media_title, extract_identity
 from Backend.helper.pyro import (
@@ -78,8 +79,18 @@ def _verify_score_candidate_aliases(
     year_reliable: bool = True,
     year_lower_bound: bool = False,
 ) -> float:
+    query_numbers = _number_signature(query_title)
+    primary_numbers = _number_signature(primary_title)
+    # Reuse the canonical metadata matcher's installment parser. An explicit
+    # Part I/II (or 1/2) conflict must not be rescued by fuzzy alias scoring.
+    if query_numbers and primary_numbers and query_numbers != primary_numbers:
+        return 0.0
+
     best = 0.0
     for candidate in collect_title_aliases(primary_title, aliases):
+        candidate_numbers = _number_signature(candidate)
+        if query_numbers and candidate_numbers and query_numbers != candidate_numbers:
+            continue
         score = score_candidate(
             query_title, query_year, candidate, result_year or 0,
             year_reliable=year_reliable,
@@ -527,7 +538,7 @@ class MediaVerifier:
                         _int_or_none(info.get("episode_number")) if tv else None)
         c["mismatched"] += 1
         if self.dry_run:
-            self._note("reassign", unit, to=target, name=out["title"], api=info.get("meta_source", "Unknown"))
+            self._note("reassign", unit, to=target, name=out["title"], api=info.get("meta_source") or info.get("source") or "Unknown")
             return
         try:
             prepared = []
@@ -564,7 +575,7 @@ class MediaVerifier:
                             announced = True
                 await self._remove_old(unit)
             c["duplicates" if duplicate else "reassigned"] += 1
-            self._note("duplicate" if duplicate else "reassign", unit, to=target, name=out["title"], api=info.get("meta_source", "Unknown"))
+            self._note("duplicate" if duplicate else "reassign", unit, to=target, name=out["title"], api=info.get("meta_source") or info.get("source") or "Unknown")
         except asyncio.CancelledError:
             raise
         except Exception as exc:

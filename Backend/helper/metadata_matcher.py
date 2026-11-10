@@ -397,10 +397,18 @@ def choose_best_candidate(intent: MatchIntent, candidates: list[MatchCandidate])
         year_bonus, year_reason = _year_score(intent.year, candidate.year)
         if year_reason:
             reason = year_reason
-        if intent_numbers and candidate_numbers and intent_numbers != candidate_numbers:
+        sequel_mismatch = bool(
+            intent_numbers and candidate_numbers and intent_numbers != candidate_numbers
+        )
+        if sequel_mismatch:
             reason = "metadata_sequel_mismatch"
 
         score = title_score + year_bonus + min(float(candidate.popularity or 0.0), 20.0) / 20.0
+        # An explicit installment conflict is a hard rejection, not merely a
+        # confidence penalty. Otherwise the conflicting candidate can still
+        # win when it is the only result and be reassigned by Verify Media.
+        if sequel_mismatch:
+            score = -1000.0
         if intent_numbers and candidate_numbers and intent_numbers == candidate_numbers:
             score += 8.0
         elif intent_numbers and not candidate_numbers:
@@ -426,6 +434,8 @@ def choose_best_candidate(intent: MatchIntent, candidates: list[MatchCandidate])
 
     if top.media_type != intent.media_type:
         return MatchDecision(False, top, top_score, "metadata_media_type_mismatch", public)
+    if top_reason == "metadata_sequel_mismatch":
+        return MatchDecision(False, top, top_score, "metadata_sequel_mismatch", public)
 
     min_title = 92.0 if generic else 86.0
     min_margin = 8.0 if intent.year else 12.0
