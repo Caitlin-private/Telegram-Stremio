@@ -52,8 +52,10 @@ _PROMO_ARROW_RE = re.compile(r"[➥➜➤➔⇨⟶]")
 _AT_TOKEN_RE = re.compile(r"@[^\s_\-]+")
 _LEADING_BRACKET_RE = re.compile(r"^\s*\[[^\]\r\n]{1,48}\]\s*")
 _LEADING_SITE_RE = re.compile(
-    r"(?i)^\s*(?:www\.)?[a-z0-9][a-z0-9-]*\.(?:com|net|org|in|biz|cc|xyz|me|to|tv|vip|lol|ws|pw|co|"
-    r"info|live|club|site|app|fun|top|cam|mobi|one|ink|run|art|work)\b"
+    r"(?i)^\s*(?:www\.[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,10}|"
+    r"[a-z0-9][a-z0-9-]*\.(?:com|net|org|in|biz|cc|xyz|me|to|tv|vip|lol|ws|pw|co|"
+    r"info|live|club|site|app|fun|top|cam|mobi|one|ink|run|art|work|lat|icu|mx|wiki|pro|click|link|"
+    r"buzz|cyou|rest|life|world|blog|bz|mov|movie|movies|film|ooo|sx|gs|nu|vc|ag|pm)\b)"
     r"(?:\s*[-–—|:]+\s*|\s+(?=[A-Za-z0-9]))"
 )
 _LEADING_JUNK_RE = re.compile(r"^[\s._\-~|:]+")

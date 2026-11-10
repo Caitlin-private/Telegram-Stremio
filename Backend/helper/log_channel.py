@@ -368,7 +368,7 @@ def log_media_assigned(file_name: str, info: dict, origin: str = "Live ingestion
 def log_verify_change(action: str, file_name: str, old: str, new: str = "", api: str = "Unknown") -> None:
     """One re-assignment / skip-channel move made by Verify Media, including resolver."""
     if action in ("unmatched", "skip"):
-        body = f"🚫 <b>No confident match</b> · was <b>{escape(old)}</b>\n📤 Sent to skip channel; original removed"
+        body = f"🚫 <b>No confident match</b> · was <b>{escape(old)}</b>\n📤 Copied to skip channel; original left in place"
         icon = "🧹"
     elif action == "duplicate":
         body = f"♻️ <b>{escape(old)}</b> → <b>{escape(new)}</b>\n🗑️ Already had this quality; wrong entry dropped"

@@ -268,6 +268,9 @@ def clean_filename(filename: str) -> str:
     #----- (@Uploader is cut at the next space / _ / -, never the rest of the name)
     filename = strip_channel_tags(filename)
 
+    #----- 5b – Underscores are word separators (Enola_Holmes_2_2022_1080p.mkv), never title text
+    filename = filename.replace("_", " ")
+
     #----- 6 – Remove codec / source tags that clutter the title region
     filename = _CODEC_TAG_PATTERN.sub(" ", filename)
 

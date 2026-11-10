@@ -79,6 +79,7 @@ def normalize_title(title: str) -> str:
         return ""
     t = title.lower().strip()
     t = re.sub(r"^\b(the|a|an)\b\s+", "", t)
+    t = t.replace("_", " ")
     t = re.sub(r"[^\w\s]", " ", t)
     return re.sub(r"\s+", " ", t).strip()
 

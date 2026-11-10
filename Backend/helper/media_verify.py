@@ -66,10 +66,10 @@ _EMPTY = (None, "", 0)
 # Verify-only confidence threshold. The upstream metadata matcher remains
 # untouched; this helper is used solely to decide whether an existing library
 # filing is safe to retain/reassign during Verify Media.
-_VERIFY_MOVIE_MATCH_THRESHOLD = 0.60
+_VERIFY_MOVIE_MATCH_THRESHOLD = 0.65
 
 
-def _verify__verify_score_candidate_aliases(
+def _verify_score_candidate_aliases(
     query_title: str,
     query_year,
     primary_title: str,
@@ -339,6 +339,11 @@ class MediaVerifier:
         return None
 
     @staticmethod
+    def _stored_resolution(value) -> Optional[str]:
+        value = str(value or "").strip()
+        return value if value and value.lower() not in ("unknown", "n/a", "none") else None
+
+    @staticmethod
     def _alive(msg) -> Optional[bool]:
         if msg is None or getattr(msg, "empty", False):
             return False
@@ -361,7 +366,7 @@ class MediaVerifier:
                 return msg, alive
             return await self._peek(self.client, chat_id, msg_id)
 
-    async def _evaluate_message(self, msg) -> tuple:
+    async def _evaluate_message(self, msg, stored_quality=None) -> tuple:
         """Run the scan's metadata pipeline for one message -> (info | None, title).
 
         The caption is only trusted when it reads like a release name; promo captions
@@ -376,7 +381,8 @@ class MediaVerifier:
         channel_int = int(str(msg.chat.id).replace("-100", ""))
         kwargs = dict(
             override_id=extract_default_id(caption_with_links(msg)),
-            quality_hint=source_resolution(msg.caption, file_name),
+            # "Inception (2010).mkv" has no resolution in its name: the filing already has one.
+            quality_hint=source_resolution(msg.caption, file_name) or self._stored_resolution(stored_quality),
             raise_errors=True,
         )
         info = await metadata(clean_filename(title), channel_int, msg.id, **kwargs)
@@ -399,18 +405,22 @@ class MediaVerifier:
             if not ident.usable:
                 return False
             if unit["media_type"] == "movie":
-                if not (ident.year and doc.get("release_year")):
-                    return False
+                doc_year = _int_or_none(doc.get("release_year")) or 0
+                if ident.year and doc_year:
+                    return _verify_score_candidate_aliases(
+                        ident.title, ident.year, doc["title"], doc_year,
+                        year_reliable=True, year_lower_bound=False) >= _VERIFY_MOVIE_MATCH_THRESHOLD
+                # No year on one side ("Rocky Aur Rani Kii Prem Kahaani.mkv"): the title alone must be near-exact.
                 return _verify_score_candidate_aliases(
-                    ident.title, ident.year, doc["title"], _int_or_none(doc.get("release_year")) or 0,
-                    year_reliable=True, year_lower_bound=False) >= 0.85
+                    ident.title, None, doc["title"], 0,
+                    year_reliable=False, year_lower_bound=False) >= 0.85
             from Backend.helper.metadata.parse import parse_media_name
             parsed = parse_media_name(clean_filename(title))
             if _int_or_none(parsed.get("season")) != unit["season"] or _int_or_none(parsed.get("episode")) != unit["episode"]:
                 return False
             return _verify_score_candidate_aliases(
                 parsed.get("title") or ident.title, None, doc["title"], 0,
-                year_reliable=False, year_lower_bound=True) >= 0.9
+                year_reliable=False, year_lower_bound=True) >= _VERIFY_MOVIE_MATCH_THRESHOLD
         except Exception:
             return False
 
@@ -438,12 +448,15 @@ class MediaVerifier:
             if is_skip_channel(msg) or not (msg.video or msg.document):
                 return {"unit": unit, "status": "skipped"}
             file = msg.video or msg.document
+            stored_quality = unit["quality"].get("quality")
+            # Admission follows the settings (resolution filters, "allow unknown resolution"):
+            # only what the name/caption itself says counts, never the stored quality.
             if rejection_reason(source_resolution(msg.caption, file.file_name)):
                 # Indexed earlier, excluded by today's resolution policy: not a title problem,
                 # so never forward/delete it from here.
                 return {"unit": unit, "status": "skipped"}
             async with self._meta_sem:
-                info, title = await asyncio.wait_for(self._evaluate_message(msg), VERIFY_METADATA_TIMEOUT)
+                info, title = await asyncio.wait_for(self._evaluate_message(msg, stored_quality), VERIFY_METADATA_TIMEOUT)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -463,9 +476,12 @@ class MediaVerifier:
         elif same_title(unit["doc"], unit["media_type"], info) and (not self.check_episodes or same_slot(unit, info)):
             out["status"] = "matched"
         elif not self._confident(info, title, bool(extract_default_id(caption_with_links(msg)))):
-            # Weak match that does not agree with the file name: never re-assign it,
-            # and since it is not a trustworthy filing either, treat it as unmatched (-> Skip).
-            out["status"] = "unmatched"
+            # Weak new match: never re-assign it. If the current filing still agrees with the
+            # file name keep it; only a filing that does not agree either goes to Skip.
+            if self._name_agrees(unit, title):
+                out["status"], out["kept"] = "matched", True
+            else:
+                out["status"] = "unmatched"
         else:
             out["status"] = "mismatch"
         return out
@@ -476,7 +492,7 @@ class MediaVerifier:
             unit["db_index"], unit["media_type"], unit["doc_id"], unit["quality"]["id"],
             season=unit["season"], episode=unit["episode"])
 
-    async def _prepare_part(self, chat_id, msg_id, first: Optional[dict], worker) -> Optional[dict]:
+    async def _prepare_part(self, chat_id, msg_id, first: Optional[dict], worker, stored_quality=None) -> Optional[dict]:
         """Metadata + insert arguments for one backing message (the first reuses phase A's work)."""
         if first is not None:
             msg, info, title = first["msg"], first["info"], first["title"]
@@ -485,7 +501,7 @@ class MediaVerifier:
             if not alive:
                 return None
             async with self._meta_sem:
-                info, title = await asyncio.wait_for(self._evaluate_message(msg), VERIFY_METADATA_TIMEOUT)
+                info, title = await asyncio.wait_for(self._evaluate_message(msg, stored_quality), VERIFY_METADATA_TIMEOUT)
             if info is None:
                 return {"unmatched": True, "chat_id": chat_id, "msg_id": msg_id}
         file = msg.video or msg.document
@@ -516,7 +532,8 @@ class MediaVerifier:
         try:
             prepared = []
             for n, (chat_id, msg_id) in enumerate(out["sources"]):
-                part = await self._prepare_part(chat_id, msg_id, out if n == 0 else None, out["worker"])
+                part = await self._prepare_part(chat_id, msg_id, out if n == 0 else None, out["worker"],
+                                                stored_quality=out["unit"]["quality"].get("quality"))
                 if part is not None:
                     prepared.append(part)
             if not prepared or all(p.get("unmatched") for p in prepared):

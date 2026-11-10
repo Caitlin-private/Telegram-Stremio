@@ -152,8 +152,13 @@ async def metadata(
             parsed["episode"] = abs_ep
 
     if not quality:
-        LOGGER.warning(f"Skipping {filename}: No resolution (parsed={parsed})")
-        return None
+        # Unlabelled files are only indexed when "allow unknown resolution" is on
+        # (the admission check in rejection_reason() uses the same setting).
+        if SettingsManager.current().allow_unknown_resolution:
+            quality = "Unknown"
+        else:
+            LOGGER.warning(f"Skipping {filename}: No resolution (parsed={parsed})")
+            return None
     if not title:
         LOGGER.info(f"No title parsed from: {filename} (parsed={parsed})")
         return None
