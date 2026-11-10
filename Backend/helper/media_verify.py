@@ -594,7 +594,7 @@ class MediaVerifier:
                     msg = await get_check_message(router, chat_id, msg_id, source="Verify skip")
                 if msg is None or getattr(msg, "empty", False) or not is_media(msg):
                     raise RuntimeError(f"Could not re-read media source {chat_id}/{msg_id}")
-                await route_to_skip_channel(router, msg, reason=reason, force_delete=SettingsManager.current().delete_on_metadata_fail, retry_call=self._plain_call)
+                await route_to_skip_channel(router, msg, reason=reason, retry_call=self._plain_call)
                 moved += 1
             if moved != len(sources):
                 raise RuntimeError("Not every backing Telegram message was moved to Skip")

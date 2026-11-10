@@ -20,7 +20,11 @@ def is_skip_channel(message: Message) -> bool:
     return bool(username) and ref.lstrip("@").lower() == username
 
 
-async def route_to_skip_channel(client: Client, message: Message, reason=None, force_delete=False, retry_call=None) -> None:
+async def route_to_skip_channel(client: Client, message: Message, reason=None, force_delete=False, retry_call=None, live=False) -> None:
+    # Bots cannot delete messages older than 48 hours, so removing the original is only
+    # attempted for live ingestion (fresh uploads). Scans and Verify only copy to Skip.
+    if not live:
+        force_delete = False
     async def call(operation, *args, **kwargs):
         if retry_call is not None:
             return await retry_call(operation, *args, **kwargs)
@@ -102,7 +106,7 @@ async def route_to_skip_channel(client: Client, message: Message, reason=None, f
             raise RuntimeError('Could not delete the original resolution-filtered message.')
         return
 
-    if settings.delete_on_metadata_fail:
+    if live and settings.delete_on_metadata_fail:
         if retry_call is not None:
             if await call(client.delete_messages, message.chat.id, message.id) is False:
                 raise RuntimeError('Could not delete rejected scan message.')

@@ -1206,9 +1206,9 @@ document.addEventListener('DOMContentLoaded', sessLoadStatus);
                 {% if settings.delete_on_metadata_fail %}checked{% endif %}>
             <span class="toggle-track"></span>
             <span class="toggle-label">
-                <strong>Delete original after Skip copy</strong>
+                <strong>Delete original after Skip copy (live ingestion only)</strong>
                 <span style="color:var(--text-sec);font-size:0.8rem;display:block">
-                    Applies to live ingestion, channel scans and Verify. When disabled, rejected files are copied to Skip with a reason but remain in their source channel.
+                    Only applies to live ingestion. Bots cannot delete messages older than 48 hours, so channel scans and Verify Media always copy rejected files to Skip with a reason and leave the original in its source channel. When disabled, live ingestion also leaves the original in place.
                 </span>
             </span>
         </label>

@@ -68,7 +68,14 @@ async def metadata(
     override_id: str = None,
     season_hint: int = None,
     quality_hint: str = None,
+    raise_errors: bool = False,
 ) -> dict | None:
+    """Resolve a file name to metadata.
+
+    A clean miss returns None. With ``raise_errors`` a provider/network failure is raised
+    instead of being logged and returned as None, so scans and Verify can tell "no match"
+    apart from "could not check" and never treat an outage as an unmatched file.
+    """
     if is_multipart_video(filename):
         LOGGER.info(f"Skipping {filename}: split video file not meant to be combined in Stremio")
         return None
@@ -226,6 +233,8 @@ async def metadata(
             ensure_media_ids(result, seed=str(result.get("title") or ""))
         return result
     except Exception as e:
+        if raise_errors:
+            raise
         LOGGER.error(f"Error while fetching metadata for {filename}: {e}\n{traceback.format_exc()}")
         return None
 

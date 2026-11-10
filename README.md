@@ -488,7 +488,7 @@ Sometimes a forwarded file can't be indexed — the caption has **no title** or 
 2. When a file forwarded to an auth channel fails to index, the bot **copies it here** and replies with a short note explaining **what's missing or wrong** (e.g. add a quality like `1080p`, add a clearer title, or add an IMDb/TMDB link/id).
 3. Fix the caption and forward it to your main channel again, or add it manually — your choice.
 
-> 🗑️ **Optional:** the **Delete original on metadata fail** toggle (it appears once a Skip Channel is set) removes the file from the main channel after it's copied into the Skip Channel.
+> 🗑️ **Optional:** the **Delete original on metadata fail** toggle (it appears once a Skip Channel is set) removes the file from the main channel after it's copied into the Skip Channel. This only works for **live ingestion** (bots can't delete messages older than 48 hours); scans and Verify Media never delete originals.
 
 ---
 
@@ -729,7 +729,7 @@ Turn on **Announce New Content** and set an **Announcement Channel** to auto-pos
 Set the channel used for **hand-added / personal files** (these are *not* auto-indexed). Used by the [Manual Upload Session](#️-adding-files-manually-goa-trip-lectures-one-piece).
 
 ### 🚑 Skip Channel
-Set **one** channel where files that fail to index are copied, each with a note describing what to fix. Files here are never indexed. Optionally enable **Delete original on metadata fail** (shown once a Skip Channel is set) to remove the failed file from the main channel after it's copied. See [Skip Channel](#-skip-channel).
+Set **one** channel where files that fail to index are copied, each with a note describing what to fix. Files here are never indexed. Optionally enable **Delete original on metadata fail** (shown once a Skip Channel is set) to remove the failed file from the main channel after it's copied (live ingestion only; scans and Verify Media never delete). See [Skip Channel](#-skip-channel).
 
 ### 🌐 Proxy (optional)
 Set an **HTTP Proxy URL** for outbound metadata/API requests, and optionally **show both** proxied and direct stream links.

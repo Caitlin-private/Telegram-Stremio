@@ -249,7 +249,7 @@ async def process_channel_message(client: Client, message: Message, durable_cont
         if reason:
             LOGGER.info(f'[Ingestion] Skipped {message.chat.id}/{message.id}: {reason}')
             if durable_ingestion.authorized(message.chat.id):
-                await route_to_skip_channel(client, message, reason=reason, force_delete=SettingsManager.current().delete_on_metadata_fail)
+                await route_to_skip_channel(client, message, reason=reason, force_delete=SettingsManager.current().delete_on_metadata_fail, live=True)
             return
 
     # Capture only new supported media in explicitly authorized channels.
@@ -307,7 +307,7 @@ async def process_channel_message(client: Client, message: Message, durable_cont
         metadata_info = await metadata(clean_filename(title), int(channel), msg_id, override_id=override_id or extract_default_id(caption_with_links(message)), season_hint=season_hint, quality_hint=source_resolution(message.caption, (message.video or message.document).file_name))
         if metadata_info is None:
             LOGGER.warning(f"Metadata failed for file: {title} (ID: {msg_id})")
-            await route_to_skip_channel(client, message)
+            await route_to_skip_channel(client, message, live=True)
             return
 
         title = _finalize_title(title, metadata_info)
@@ -381,7 +381,7 @@ async def process_edited_message(client: Client, message: Message, durable_conte
         reason = rejection_reason(source_resolution(message.caption, (message.video or message.document).file_name))
         if reason:
             LOGGER.info(f'[Ingestion] Skipped edited message {message.id}: {reason}')
-            await route_to_skip_channel(client, message, reason=reason, force_delete=SettingsManager.current().delete_on_metadata_fail)
+            await route_to_skip_channel(client, message, reason=reason, force_delete=SettingsManager.current().delete_on_metadata_fail, live=True)
             return
 
         _, title, msg_id, raw_size, size, channel = _extract_fields(message)

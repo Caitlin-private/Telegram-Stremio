@@ -934,7 +934,7 @@ class ScanManager:
         if reason:
             LOGGER.info(f'[Scan] Skipped {chat_id}/{message.id}: {reason}')
             if not quick:
-                await route_to_skip_channel(client, message, reason=reason, force_delete=SettingsManager.current().delete_on_metadata_fail, retry_call=self._telegram_call)
+                await route_to_skip_channel(client, message, reason=reason, retry_call=self._telegram_call)
             s['counters']['skipped_resolution'] = s['counters'].get('skipped_resolution', 0) + 1
             return
         from Backend.helper.metadata.name_identity import choose_media_title
