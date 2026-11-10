@@ -23,7 +23,7 @@ _MULTIPART_RE = re.compile(r"(?:part|cd|disc|disk)[s._-]*\d+(?=\.\w+$)", re.IGNO
 # PTN does NOT parse by itself). Anything else falls through to the
 # absolute-episode logic below instead of guessing.
 _EXPLICIT_SXXEXX_RE = re.compile(r"(?i)\bs\d{1,2}[._\s-]*e\d{1,3}\b")
-_EXPLICIT_NXNN_RE = re.compile(r"(?i)\b\d{1,2}x\d{2,3}\b")
+_EXPLICIT_NXNN_RE = re.compile(r"(?i)\b\d{1,2}x\d{1,3}\b")
 _EXPLICIT_SEASON_WORD_RE = re.compile(r"(?i)\b(?:season|series)\s*0*\d{1,2}\b")
 
 
@@ -69,11 +69,31 @@ def parse_media_name(name: str) -> dict:
                             g_season_int = None
                         if g_season_int is not None and g_season_int > 0:
                             parsed["season"] = g_season_int
-                    parsed["episode"] = first(g.get("episode"))
+                    g_episode = first(g.get("episode"))
+                    if g_episode is not None:
+                        try:
+                            g_episode_int = int(g_episode)
+                        except (TypeError, ValueError):
+                            g_episode_int = None
+                        if g_episode_int is not None and g_episode_int > 0:
+                            parsed["episode"] = g_episode_int
 
             parsed["quality"] = parsed["quality"] or first(g.get("screen_size"))
         except Exception as e:
             LOGGER.warning(f"GuessIt parsing failed for {name}: {e}")
+
+    # Recover the episode from an explicit NxN token when GuessIt treats a
+    # single-digit episode as a release-group number (e.g. 4x2).
+    if parsed.get("season") is not None and parsed.get("episode") is None:
+        nxnn_match = _EXPLICIT_NXNN_RE.search(name)
+        if nxnn_match is not None:
+            numbers = nxnn_match.group(0).lower().split("x")
+            try:
+                recovered_episode = int(numbers[1])
+            except (IndexError, TypeError, ValueError):
+                recovered_episode = None
+            if recovered_episode is not None and recovered_episode > 0:
+                parsed["episode"] = recovered_episode
 
     # Normalize season 0 → None (specials folder only, not a real season for routing)
     try:

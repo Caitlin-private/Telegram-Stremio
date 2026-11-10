@@ -1,18 +1,19 @@
 import asyncio
-import asyncio
 import json
 import os
 import random
+import re
 import secrets
 import shutil
 from datetime import datetime
 from time import time
+from typing import Optional
 
 from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
-from pyrogram.enums import ChatMemberStatus, ChatMembersFilter
-from pyrogram.errors import FloodWait
-from pyrogram.types import ChatPrivileges
+from wzgram.enums import ChatMemberStatus, ChatMembersFilter
+from wzgram.errors import FloodWait
+from wzgram.types import ChatPrivileges
 
 import Backend
 from Backend import StartTime, __version__, db
@@ -31,6 +32,7 @@ from Backend.helper.custom_dl import ByteStreamer, _speed_test_single_client, ru
 from Backend.helper.encrypt import decode_string, encode_string
 from Backend.helper.health import run_health_checks
 from Backend.helper.manual_add import resolve_telegram_message, retag_media, stamp_caption_by_ref
+from Backend.helper.ingestion_rules import serialize_manual_ingestion
 from Backend.helper.pyro import resolve_video_thumb_url
 from Backend.helper.requests_manager import (
     delete_request,
@@ -52,7 +54,7 @@ from Backend.helper.metadata import (
     search_tv_candidates,
 )
 from Backend.helper.passwords import hash_password, verify_password
-from Backend.helper.pyro import get_readable_file_size, get_readable_time
+from Backend.helper.pyro import get_readable_time
 from Backend.helper.scan_manager import dbcheck_manager, duplicate_manager, scan_manager
 from Backend.helper.session_auth import (
     disconnect_session,
@@ -112,6 +114,8 @@ def _require_tmdb_id(value) -> int:
 
 #----- System stats
 async def get_system_stats_api():
+    from Backend.helper.stats_display import media_size_stats
+    from Backend.helper.ingestion_status import ingestion_snapshot
     try:
         db_stats = await db.get_database_stats()
         total_movies, total_tv_shows = db.content_totals(db_stats)
@@ -119,6 +123,8 @@ async def get_system_stats_api():
         
         return {
             "server_status": "running",
+            **await media_size_stats(db),
+            **await ingestion_snapshot(StreamBot),
             "uptime": get_readable_time(time() - StartTime),
             "telegram_bot": f"@{StreamBot.username}" if StreamBot and StreamBot.username else "@StreamBot",
             "connected_bots": len(multi_clients),
@@ -152,35 +158,97 @@ _LIST_PROJECTION = {k: 0 for k in (
 )}
 
 
+_STREAM_ID_RE = re.compile(r"^[A-Za-z0-9]{24,}$")
+_TME_RE = re.compile(r"t\.me/c/(\d+)/(?:\d+/)*(\d+)(?=[/?#]|$)", re.I)
+
+
+def parse_file_reference(text: str) -> Optional[dict]:
+    """Pull a stream id or a Telegram message out of a pasted file link, else None."""
+    from urllib.parse import unquote, urlparse
+    text = (text or "").strip()
+    if not text or len(text) < 12:
+        return None
+    m = _TME_RE.search(text)
+    if m:
+        return {"chat_id": int(m.group(1)), "msg_id": int(m.group(2))}
+    if "/" in text:
+        try:
+            segs = [unquote(x) for x in urlparse(text if "//" in text else f"//{text}").path.split("/") if x]
+        except ValueError:
+            return None
+        # /dl/{token}/{id}/{name}  ·  /sub/{token}/{id}/{name}  ·  /thumb/{id}
+        for idx, seg in enumerate(segs):
+            if seg in ("dl", "sub") and len(segs) > idx + 2 and _STREAM_ID_RE.match(segs[idx + 2]):
+                return {"stream_id": segs[idx + 2]}
+            if seg == "thumb" and len(segs) > idx + 1 and _STREAM_ID_RE.match(segs[idx + 1]):
+                return {"stream_id": segs[idx + 1]}
+        return None
+    if _STREAM_ID_RE.match(text):
+        return {"stream_id": text}
+    return None
+
+
+async def _file_link_result(search: str) -> Optional[dict]:
+    ref = parse_file_reference(search)
+    if not ref:
+        return None
+    hits = await db.find_media_by_file(**ref)
+    if not hits and ref.get("chat_id") is not None:
+        from Backend.helper.encrypt import encode_string
+        # Plain (non-split) files are stored under a stream id derived from chat + message.
+        sid = await encode_string({"chat_id": ref["chat_id"], "msg_id": ref["msg_id"]})
+        hits = await db.find_media_by_file(stream_id=sid)
+    if not hits:
+        return None
+    items = []
+    for hit in hits:
+        doc, file = dict(hit["doc"]), hit["file"]
+        for key in ("_id", "description", "cast"):
+            doc.pop(key, None)
+        quality, season, episode = file["quality"], file.get("season"), file.get("episode")
+        year = doc.get("release_year")
+        assigned = f"{doc.get('title') or 'Unknown'}" + (f" ({year})" if year else "")
+        if hit["media_type"] == "tv" and season is not None and episode is not None:
+            assigned += f" S{int(season):02d}E{int(episode):02d}"
+        doc.update(db_index=hit["db_index"], media_type=hit["media_type"], catalog_tags=[])
+        doc["matched_file"] = {
+            "name": quality.get("name") or "", "quality": quality.get("quality") or "",
+            "size": quality.get("size") or "", "assigned": assigned,
+        }
+        items.append(doc)
+    return {"items": items, "total_count": len(items), "current_page": 1, "total_pages": 1,
+            "databases_checked": sorted({h["db_index"] for h in hits}), "file_match": True}
+
+
 #----- Media management
 async def list_media_api(
-    media_type: str = Query("movie", regex="^(movie|tv)$"),
+    media_type: str = Query("all", regex="^(all|movie|tv)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(24, ge=1, le=100),
-    search: str = Query("", max_length=100),
+    search: str = Query("", max_length=2000),
     custom: bool = Query(False)
 ):
+    from Backend.helper.media_library import list_library
     try:
-        key = "movies" if media_type == "movie" else "tv_shows"
-        #----- Custom (manually added) titles carry a negative synthetic tmdb_id
-        extra_filter = {"tmdb_id": {"$lt": 0}} if custom else None
-        if search:
-            result = await db.search_documents(search, page, page_size, extra_filter=extra_filter, media_type=media_type)
-            total = result["total_count"]
-            resp = {
-                "total_count": total,
-                "current_page": page,
-                "total_pages": (total + page_size - 1) // page_size,
-                key: result["results"],
-            }
-        elif media_type == "movie":
-            resp = await db.sort_movies([], page, page_size, extra_filter=extra_filter, projection=_LIST_PROJECTION)
-        else:
-            resp = await db.sort_tv_shows([], page, page_size, extra_filter=extra_filter, projection=_LIST_PROJECTION)
-        _resolve_covers(resp.get(key))
-        return resp
+        # A pasted stream link / t.me message link finds the title that file is filed under.
+        file_result = await _file_link_result(search)
+        if file_result:
+            _resolve_covers(file_result["items"])
+            return file_result
+        result = await list_library(db, media_type, page, page_size, search, custom, projection=_LIST_PROJECTION)
+        _resolve_covers(result["items"])
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def bulk_media_api(payload: dict):
+    from Backend.helper.media_library import bulk_library
+    try:
+        return await bulk_library(db, payload, delete_media_api, add_custom_catalog_item_api)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
 
 async def delete_media_api(
     tmdb_id: str | int,
@@ -408,19 +476,17 @@ async def grant_lifetime_api() -> dict:
     return {"status": "success", "updated": count, "message": f"{count} token(s) marked as lifetime."}
 
 async def update_token_limits_api(token: str, payload: dict):
-    try:
-        daily_limit = payload.get("daily_limit_gb")
-        monthly_limit = payload.get("monthly_limit_gb")
-
-        await db.update_api_token_limits(
-            token,
-            _parse_limit(daily_limit),
-            _parse_limit(monthly_limit)
-        )
-        return {"message": "Limits updated successfully"}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if "session_streaming_allowed" in payload and not isinstance(payload["session_streaming_allowed"], bool):
+        raise HTTPException(status_code=400, detail="Session playback permission must be true or false")
+    success = await db.update_api_token_limits(
+        token,
+        _parse_limit(payload["daily_limit_gb"]) if "daily_limit_gb" in payload else None,
+        _parse_limit(payload["monthly_limit_gb"]) if "monthly_limit_gb" in payload else None,
+        session_streaming_allowed=payload.get("session_streaming_allowed"),
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="Token not found")
+    return {"message": "User settings updated successfully"}
 
 
 #----- Speed test
@@ -860,6 +926,7 @@ async def get_all_tokens_api() -> dict:
                 "lifetime": lifetime,
                 "never_expires": never_expires,
                 "has_token": bool(token_str),
+                "session_streaming_allowed": is_admin or token_doc.get("session_streaming_allowed") is True,
                 "has_active_sub": has_active_sub,
                 "created_at": created.isoformat() if created else None,
                 "expires_at": expiry.isoformat() if expiry else None,
@@ -1223,15 +1290,15 @@ def _fill_placeholder_metadata(meta: dict) -> None:
 
 
 #----- Manual add: create/append a movie, tv show, season, episode or stream by hand
+@serialize_manual_ingestion
 async def manual_add_media_api(payload: dict) -> dict:
+    from Backend.helper.ingestion_rules import episode_mode, leading_episode, ordered_episodes, nonnegative_number
     media_type = payload.get("media_type")
     if media_type not in ("movie", "tv"):
         raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'.")
 
     stream = payload.get("stream") or {}
     quality = str(stream.get("quality") or "").strip()
-    if not quality:
-        raise HTTPException(status_code=400, detail="A quality label (e.g. 1080p) is required.")
 
     #----- One source = single file, multiple sources = split file parts (in order)
     part_sources = stream.get("parts")
@@ -1256,8 +1323,20 @@ async def manual_add_media_api(payload: dict) -> dict:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Could not read that message: {exc}")
 
+    unique_parts = {}
+    for part in resolved_parts:
+        key = (str(part['chat_id']), int(part['msg_id']))
+        unique_parts.setdefault(key, part)
+    resolved_parts = list(unique_parts.values())
+    for part in resolved_parts:
+        part['encoded_string'] = await encode_string({'chat_id': int(part['chat_id']), 'msg_id': int(part['msg_id'])})
     primary = resolved_parts[0]
-    is_split = len(resolved_parts) > 1
+    quality = quality or primary.get('quality') or 'Unknown'
+    try:
+        detection = episode_mode(payload.get('episode_detection')) if media_type == 'tv' else 'fixed'
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    is_split = len(resolved_parts) > 1 and detection == 'fixed'
     raw_name = (stream.get("name") or primary["name"]).strip()
     name = strip_part_suffix(raw_name) if is_split else raw_name
 
@@ -1269,8 +1348,9 @@ async def manual_add_media_api(payload: dict) -> dict:
     base = None
     if tmdb_id and db_index:
         doc = await db.get_document(media_type, int(tmdb_id), int(db_index))
-        if doc:
-            base = _metadata_base(doc, from_doc=True)
+        if not doc:
+            raise HTTPException(status_code=404, detail="The selected title no longer exists. Select it again.")
+        base = _metadata_base(doc, from_doc=True)
     if base is None and selected_id:
         selection = await (
             fetch_selected_movie_metadata(selected_id) if media_type == "movie"
@@ -1310,10 +1390,22 @@ async def manual_add_media_api(payload: dict) -> dict:
     tv_extra = {}
     if media_type == "tv":
         try:
-            season_number = int(payload.get("season_number"))
-            episode_number = int(payload.get("episode_number"))
+            season_number = nonnegative_number(payload.get("season_number"))
+            if season_number is None:
+                raise ValueError('Invalid season')
+            episode_number = nonnegative_number(payload.get("episode_number")) if detection == 'fixed' else 1
+            if episode_number is None:
+                raise ValueError('Invalid episode')
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="Season and episode numbers are required for TV.")
+        if detection == 'filename':
+            try:
+                detected_episodes = [leading_episode(p.get('caption'), p.get('file_name'), p['name']) for p in resolved_parts]
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+        elif detection == 'order':
+            existing = await db.get_media_details(imdb_id=base['imdb_id'], media_type='tv')
+            detected_episodes = ordered_episodes(existing, season_number, [p['encoded_string'] for p in resolved_parts])
         tv_extra = {
             "season_number": season_number,
             "episode_number": episode_number,
@@ -1328,7 +1420,7 @@ async def manual_add_media_api(payload: dict) -> dict:
     for index, part in enumerate(resolved_parts, start=1):
         p_channel = int(part["chat_id"])
         p_msg = int(part["msg_id"])
-        encoded = await encode_string({"chat_id": p_channel, "msg_id": p_msg})
+        encoded = part['encoded_string']
         metadata_info = dict(base)
         metadata_info.update({
             "media_type": media_type,
@@ -1339,9 +1431,16 @@ async def manual_add_media_api(payload: dict) -> dict:
             "is_anime": False,
         })
         metadata_info.update(tv_extra)
+        part_name = name
+        if media_type == 'tv' and detection != 'fixed':
+            metadata_info['quality'] = str(stream.get('quality') or '').strip() or part.get('quality') or 'Unknown'
+            number = detected_episodes[index - 1]
+            metadata_info['episode_number'] = number
+            metadata_info['episode_title'] = f'S{season_number:02d}E{number:02d}'
+            part_name = part['name']
         updated_id = await db.insert_media(
             metadata_info, channel=p_channel, msg_id=p_msg,
-            size=part["size"], name=name, raw_size=int(part.get("raw_size") or 0),
+            size=part["size"], name=part_name, raw_size=int(part.get("raw_size") or 0),
         )
         if not updated_id:
             raise HTTPException(status_code=500, detail="Failed to add media (validation error).")
@@ -1388,6 +1487,8 @@ async def manual_add_media_api(payload: dict) -> dict:
             pass
 
     message = f"Split stream added ({len(resolved_parts)} parts)." if is_split else "Stream added successfully."
+    if media_type == 'tv' and detection != 'fixed':
+        message = f'Added {len(resolved_parts)} separate episode stream(s).'
     if catalogs_added:
         message += f" Added to: {', '.join(catalogs_added)}."
     return {
@@ -1573,8 +1674,17 @@ async def add_custom_catalog_item_api(catalog_id: str, payload: dict):
         raise HTTPException(status_code=404, detail="Catalog not found.")
 
     added = await db.add_item_to_custom_catalog(catalog_id, int(tmdb_id), int(db_index), media_type)
+    if not added:
+        catalog = await db.get_custom_catalog(catalog_id)
+        present = catalog and any(
+            item.get("tmdb_id") == int(tmdb_id) and item.get("db_index") == int(db_index)
+            and item.get("media_type") == media_type for item in catalog.get("items", [])
+        )
+        if not present:
+            raise HTTPException(status_code=500, detail="Failed to add title to catalogue.")
     visibility_synced = None
-    if added:
+    if catalog:
+        #----- Also resync on retries after a partially completed batch.
         #----- Adding to a hidden/restricted catalog adopts that visibility onto the title
         cat_vis = catalog.get("visibility")
         if cat_vis in ("owner", "tokens"):
@@ -1751,6 +1861,8 @@ async def get_settings_api() -> dict:
     data["admin_password"] = ""
     data["session_secret_set"] = bool(data.get("session_secret"))
     data["session_secret"] = ""
+    data["log_bot_token_set"] = bool(data.get("log_bot_token"))
+    data["log_bot_token"] = ""
 
     try:
         data["database_list"] = db.get_database_list()
@@ -1763,22 +1875,70 @@ async def get_settings_api() -> dict:
     if not isinstance(titles, dict):
         titles = {}
     titles = {str(k): str(v) for k, v in titles.items() if str(k) in active and v}
-    missing = [cid for cid in active if cid not in titles]
-    if missing:
-        full = SettingsManager.current().to_dict()
-        await SettingsManager._sync_channel_titles(full)
-        try:
-            await db.save_settings(full)
-            SettingsManager._current = SettingsManager.current().__class__(full)
-        except Exception as e:
-            LOGGER.warning(f"get_settings_api: could not persist channel titles: {e}")
-        titles = full.get("channel_titles") or {}
     data["channel_titles"] = {str(k): str(v) for k, v in (titles or {}).items() if k and v}
 
     return {"settings": data}
 
 
+async def force_refresh_auth_channel_titles_api() -> dict:
+    """Explicitly refresh only configured AUTH channel titles on admin request."""
+    channels = list(SettingsManager.current().auth_channels)
+    if not channels:
+        return {"status": "success", "checked": 0, "updated": 0, "message": "No AUTH channels are configured."}
+    try:
+        result = await SettingsManager.refresh_auth_channel_titles(db)
+        return {
+            "status": "success",
+            "checked": int(result.get("checked", len(channels))),
+            "updated": int(result.get("updated", 0)),
+            "message": f"Checked {int(result.get('checked', len(channels)))} AUTH channel(s); refreshed {int(result.get('updated', 0))} name(s).",
+        }
+    except Exception as exc:
+        LOGGER.exception("Manual AUTH channel title refresh failed")
+        raise HTTPException(status_code=500, detail=f"AUTH channel refresh failed: {exc}")
+
+
 async def update_settings_api(payload: dict) -> dict:
+    if "db_scan_mode" in payload and payload["db_scan_mode"] not in ("auto", "manual"):
+        raise HTTPException(status_code=400, detail="db_scan_mode must be auto or manual")
+
+    if 'pictorium_poster_enabled' in payload and not isinstance(payload['pictorium_poster_enabled'], bool):
+        raise HTTPException(status_code=400, detail='Pictorium enabled must be true or false.')
+    if 'pictorium_poster_url' in payload:
+        from Backend.helper.pictorium import validate_poster_url
+        try:
+            payload['pictorium_poster_url'] = validate_poster_url(payload['pictorium_poster_url'])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if payload.get('pictorium_poster_enabled', SettingsManager.current().pictorium_poster_enabled) and not payload.get('pictorium_poster_url', SettingsManager.current().pictorium_poster_url):
+        raise HTTPException(status_code=400, detail='Pictorium URL is required.')
+
+    if 'ingestion_resolutions' in payload:
+        from Backend.helper.resolution_policy import RESOLUTIONS
+        values = payload['ingestion_resolutions']
+        if not isinstance(values, list) or any(not isinstance(v, str) or v not in RESOLUTIONS for v in values):
+            raise HTTPException(status_code=400, detail='Select valid ingestion resolutions.')
+        payload['ingestion_resolutions'] = list(dict.fromkeys(values))
+    if 'allow_unknown_resolution' in payload and not isinstance(payload['allow_unknown_resolution'], bool):
+        raise HTTPException(status_code=400, detail='Unknown-resolution permission must be true or false.')
+
+    #----- Log channel: dedicated MTProto bot token is write-only (blank = keep).
+    from Backend.helper import log_channel as _lc
+    if payload.pop("log_bot_token_clear", False):
+        payload["log_bot_token"] = ""
+    elif "log_bot_token" in payload:
+        tok = str(payload["log_bot_token"] or "").strip()
+        if not tok:
+            del payload["log_bot_token"]
+        elif not _lc.valid_token(tok):
+            raise HTTPException(status_code=400, detail="The log bot token is not valid (expected 123456:ABC…).")
+        else:
+            payload["log_bot_token"] = tok
+    if "log_channel" in payload:
+        chan = str(payload["log_channel"] or "").strip()
+        if chan and not re.fullmatch(r"-?\d{5,20}|@[A-Za-z][A-Za-z0-9_]{3,31}", chan):
+            raise HTTPException(status_code=400, detail="Log channel must be a numeric id (-100…) or @username.")
+        payload["log_channel"] = chan
 
     #----- Empty password string means leave it unchanged
     if "admin_password" in payload and not str(payload["admin_password"]).strip():
@@ -1786,8 +1946,20 @@ async def update_settings_api(payload: dict) -> dict:
     if "session_secret" in payload and not str(payload["session_secret"]).strip():
         del payload["session_secret"]
 
+    if "free_access_requests" in payload and not isinstance(payload["free_access_requests"], bool):
+        raise HTTPException(status_code=400, detail="Free access requests must be true or false.")
+    if "free_access_days" in payload:
+        days = payload["free_access_days"]
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 36500:
+            raise HTTPException(status_code=400, detail="Free access duration must be 1 to 36500 whole days.")
+    if "subscription_approval_message" in payload:
+        message = payload["subscription_approval_message"]
+        if not isinstance(message, str) or len(message.encode("utf-16-le")) // 2 > 4000:
+            raise HTTPException(status_code=400, detail="Approval message must be text of at most 4000 characters.")
+        payload["subscription_approval_message"] = message.strip()
+
     #----- Type coercion and validation
-    bool_keys = {"replace_mode", "duplicate_protection", "hide_catalog", "subscription", "show_proxy_and_non_proxy_both", "mediaflow_proxy", "announce_new_content", "delete_on_metadata_fail", "better_poster_enabled", "rpdb_enabled", "spatial_poster_enabled", "fanart_enabled", "fanart_shuffle", "fanart_low_res_poster"}
+    bool_keys = {"allow_multipart_video", "replace_mode", "duplicate_protection", "advanced_file_filtering", "hide_catalog", "subscription", "show_proxy_and_non_proxy_both", "mediaflow_proxy", "announce_new_content", "announce_scan_titles", "delete_on_metadata_fail", "better_poster_enabled", "rpdb_enabled", "spatial_poster_enabled", "fanart_enabled", "fanart_shuffle", "fanart_low_res_poster"}
     for key in bool_keys:
         if key in payload:
             payload[key] = bool(payload[key])
@@ -1799,6 +1971,17 @@ async def update_settings_api(payload: dict) -> dict:
                 raise HTTPException(status_code=400, detail=f"'{key}' must be a list.")
             payload[key] = [str(v).strip() for v in payload[key] if str(v).strip()]
 
+    if "search_bot_username" in payload:
+        from Backend.helper.search_bot_links import normalize_search_bot
+        try:
+            payload["search_bot_username"] = normalize_search_bot(payload["search_bot_username"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    if "announcement_poster_provider" in payload:
+        if payload["announcement_poster_provider"] not in ("same", "pictorium", "better", "rpdb", "spatial", "fanart", "default"):
+            raise HTTPException(status_code=400, detail="Invalid announcement poster provider")
+
     if "better_poster" in payload:
         payload["better_poster"] = str(payload["better_poster"] or "").strip()
         if payload["better_poster"] and "{imdb_id}" not in payload["better_poster"]:
@@ -1809,7 +1992,7 @@ async def update_settings_api(payload: dict) -> dict:
         if payload["spatial_poster"] and "{imdb_id}" not in payload["spatial_poster"]:
             raise HTTPException(status_code=400, detail="SpatialPosters URL must contain {imdb_id}")
 
-    if payload.get("spatial_poster_enabled") and not payload.get("spatial_poster"):
+    if payload.get("spatial_poster_enabled", SettingsManager.current().spatial_poster_enabled) and not payload.get("spatial_poster", SettingsManager.current().spatial_poster):
         raise HTTPException(status_code=400, detail="SpatialPosters URL is required")
 
     if "stream_formatter" in payload:
@@ -1835,7 +2018,7 @@ async def update_settings_api(payload: dict) -> dict:
         except (ValueError, TypeError):
             payload["fanart_shuffle_interval"] = 5
 
-    if len([k for k in ("better_poster_enabled", "rpdb_enabled", "spatial_poster_enabled", "fanart_enabled") if payload.get(k)]) > 1:
+    if len([k for k in ("better_poster_enabled", "rpdb_enabled", "spatial_poster_enabled", "fanart_enabled", "pictorium_poster_enabled") if payload.get(k)]) > 1:
         raise HTTPException(status_code=400, detail="Enable only one poster provider at a time")
 
     if payload.get("fanart_enabled") and not str(payload.get("fanart_api_key") or "").strip():
@@ -2165,6 +2348,10 @@ async def _set_online_manual_session(payload: dict, media_type: str, selected_id
 #----- Real (TMDB/IMDb) titles parse season/episode/quality from each file; personal
 #----- (hand-made) titles need a season for TV since their files carry no metadata.
 async def set_manual_session_api(payload: dict) -> dict:
+    from Backend.helper.channel_auto_add import get_session
+    capture = await get_session(db)
+    if capture["status"] in ("active", "scheduled"):
+        raise HTTPException(status_code=409, detail="Turn off auth-channel auto-add before starting a manual upload session.")
     tmdb_id = payload.get("tmdb_id")
     db_index = payload.get("db_index")
     media_type = _normalize_media_type(payload.get("media_type", "movie"))
@@ -2192,6 +2379,11 @@ async def set_manual_session_api(payload: dict) -> dict:
         #----- Personal: files have no usable metadata, so season/episode come from here
         season = payload.get("season")
         episode = payload.get("episode")
+        from Backend.helper.ingestion_rules import episode_mode
+        try:
+            detection = episode_mode(payload.get('episode_detection'), 'fixed' if episode not in (None, '') else 'order')
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         quality = str(payload.get("quality") or "").strip()
 
         if media_type == "tv":
@@ -2208,12 +2400,17 @@ async def set_manual_session_api(payload: dict) -> dict:
                     raise HTTPException(status_code=400, detail="Episode must be a number.")
             else:
                 episode = None
+            if season < 0 or (episode is not None and episode < 0):
+                raise HTTPException(status_code=400, detail='Season and episode must not be negative.')
+            if detection == 'fixed' and episode is None:
+                raise HTTPException(status_code=400, detail='Enter an episode for fixed episode mode.')
         else:
             season = None
             episode = None
 
         session.update({
             "kind": "personal",
+            "episode_detection": detection,
             "default_id": None,
             "season": season,
             "episode": episode,
@@ -2260,20 +2457,34 @@ async def start_scan_api(payload: dict) -> dict:
         raise HTTPException(status_code=503, detail="No Telegram client is connected yet.")
 
     mode = str(payload.get("mode", "scan")).lower()
-    if mode not in ("scan", "rescan"):
-        raise HTTPException(status_code=400, detail="mode must be 'scan' or 'rescan'.")
+    if mode not in ("scan", "rescan", "quick"):
+        raise HTTPException(status_code=400, detail="mode must be 'scan', 'quick' or 'rescan'.")
     channels = payload.get("channels") or []
     if not isinstance(channels, list):
         raise HTTPException(status_code=400, detail="'channels' must be a list.")
 
-    result = await scan_manager.start(client, channels, mode=mode)
+    worker_limit = payload.get('worker_limit')
+    pause_for_playback = payload.get('pause_for_playback')
+    if worker_limit is not None and (type(worker_limit) is not int or not 0 <= worker_limit <= 8):
+        raise HTTPException(status_code=400, detail='Scan workers must be 0 (Auto) or 1–8.')
+    if pause_for_playback is not None and not isinstance(pause_for_playback, bool):
+        raise HTTPException(status_code=400, detail='Playback pause must be true or false.')
+    start_id, end_id = payload.get('start_id'), payload.get('end_id')
+    for value in (start_id, end_id):
+        if value is not None and (type(value) is not int or not 1 <= value <= 2147483647):
+            raise HTTPException(status_code=400, detail='Message IDs must be positive integers up to 2147483647.')
+    if start_id is not None and end_id is not None and start_id > end_id:
+        raise HTTPException(status_code=400, detail='Start message ID must not exceed end message ID.')
+    result = await scan_manager.start(client, channels, mode=mode,
+                                     worker_limit=worker_limit, pause_for_playback=pause_for_playback,
+                                     start_id=start_id, end_id=end_id)
     if not result.get("ok"):
         raise HTTPException(status_code=409, detail=result.get("message", "Could not start scan."))
     return {"status": "success", **result}
 
 
-async def cancel_scan_api() -> dict:
-    result = await scan_manager.cancel()
+async def cancel_scan_api(discard=False) -> dict:
+    result = await scan_manager.cancel(discard=discard)
     return {"status": "success" if result.get("ok") else "error", **result}
 
 
@@ -2281,11 +2492,16 @@ async def scan_status_api() -> dict:
     return {"status": "success", "data": scan_manager.get_status()}
 
 
-async def start_dbcheck_api() -> dict:
+async def start_dbcheck_api(payload: dict | None = None) -> dict:
     client = _scan_client()
     if client is None:
         raise HTTPException(status_code=503, detail="No Telegram client is connected yet.")
-    result = await dbcheck_manager.start(client)
+    payload = payload or {}
+    mode = "verify" if str(payload.get("mode", "check")).lower() == "verify" else "check"
+    result = await dbcheck_manager.start(
+        client, mode=mode, dry_run=bool(payload.get("dry_run")),
+        check_episodes=payload.get("check_episodes", True) is not False,
+        pause_for_playback=payload.get("pause_for_playback", True) is not False)
     if not result.get("ok"):
         raise HTTPException(status_code=409, detail=result.get("message", "Could not start DB check."))
     return {"status": "success", **result}
@@ -2357,47 +2573,8 @@ LOG_FILE = "log.txt"
 
 #----- Aggregate content + system metrics across all storage DBs (was /stats)
 async def get_db_stats_api() -> dict:
-    try:
-        total_movies = total_tv = total_episodes = total_streams = total_db_size = 0
-
-        for i in range(1, db.current_db_index + 1):
-            storage = db.dbs.get(f"storage_{i}")
-            if storage is None:
-                continue
-
-            total_movies += await storage["movie"].count_documents({})
-            async for movie in storage["movie"].find({}, {"telegram": 1}):
-                total_streams += len(movie.get("telegram", []))
-
-            total_tv += await storage["tv"].count_documents({})
-            async for show in storage["tv"].find({}, {"seasons": 1}):
-                for season in show.get("seasons", []):
-                    for episode in season.get("episodes", []):
-                        total_episodes += 1
-                        total_streams += len(episode.get("telegram", []))
-
-            try:
-                total_db_size += (await storage.command("dbStats")).get("dataSize", 0)
-            except Exception:
-                pass
-
-        return {
-            "status": "success",
-            "data": {
-                "version": __version__,
-                "movies": total_movies,
-                "tv_shows": total_tv,
-                "episodes": total_episodes,
-                "streams": total_streams,
-                "uptime": get_readable_time(int(time() - StartTime)),
-                "db_size": get_readable_file_size(total_db_size),
-                "storage_dbs": db.current_db_index,
-                "auth_channels": len(SettingsManager.current().auth_channels),
-            },
-        }
-    except Exception as e:
-        LOGGER.error(f"[Stats] Error: {e}")
-        return {"status": "error", "message": str(e)}
+    from Backend.helper.stats_display import collect_system_stats
+    return await collect_system_stats(db, StreamBot)
 
 
 #----- First-run setup checklist: what's configured vs still missing
@@ -2440,7 +2617,7 @@ async def import_config_api(payload: dict) -> dict:
 
 #----- Lightweight liveness probe; start_time changes on every boot (restart detection)
 async def health_api() -> dict:
-    return {"status": "ok", "start_time": StartTime, "version": __version__}
+    return {"status": "ok", "start_time": StartTime, "version": __version__, "build": Backend.BUILD_ID}
 
 
 async def version_status_api(force: bool = False) -> dict:
@@ -2483,6 +2660,16 @@ async def download_logs_api():
 #----- Run the updater then re-exec the app; runs after the HTTP response is flushed
 async def _perform_restart(delay: float = 1.0) -> None:
     await asyncio.sleep(delay)
+    try:
+        from Backend.helper import log_channel
+        await log_channel.send_now(
+            "♻️ <b>Service Restarting</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"🏷️ <b>Version:</b> {__version__}\n"
+            f"🧩 <b>Version ID:</b> {getattr(Backend, 'BUILD_ID', '')}\n"
+            "ℹ️ <b>Details:</b> Restart requested from the admin dashboard."
+        )
+    except Exception as exc:
+        LOGGER.warning("Could not deliver restart notice to log channel: %s", type(exc).__name__)
     try:
         LOGGER.info("Web-triggered restart: running updater...")
         proc = await asyncio.create_subprocess_exec("uv", "run", "update.py")
@@ -2862,3 +3049,165 @@ async def bot_admin_apply_status_api() -> dict:
             "error": st["error"],
         },
     }
+
+
+#----- Ingestion metrics
+async def ingestion_metrics_api() -> dict:
+    from Backend.helper.ingestion_status import ingestion_snapshot
+    return await ingestion_snapshot(StreamBot)
+
+
+#----- Pause ingestion
+async def pause_ingestion_api(payload: dict) -> dict:
+    from Backend.helper.durable_ingestion import durable_ingestion
+    if not isinstance(payload.get('paused'), bool):
+        raise HTTPException(status_code=400, detail='paused must be true or false.')
+    return await durable_ingestion.set_paused(payload['paused'])
+
+
+#----- Channel ingestion
+async def channel_ingestion_api(payload: dict) -> dict:
+    from Backend.helper.durable_ingestion import durable_ingestion
+    try:
+        return await durable_ingestion.set_channel_enabled(
+            str(payload.get('channel', '')), payload.get('enabled'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+#----- Ingestion start from
+async def ingestion_start_from_api(payload: dict) -> dict:
+    from Backend.helper.durable_ingestion import durable_ingestion
+    try:
+        return await durable_ingestion.set_start(str(payload.get('channel', '')), payload.get('message_id'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+#----- Channel auto add status
+async def channel_auto_add_status_api() -> dict:
+    from Backend.helper.channel_auto_add import get_session
+    return await get_session(db)
+
+
+#----- Channel auto add start
+async def channel_auto_add_start_api(payload: dict) -> dict:
+    from Backend.helper.channel_auto_add import start_session
+    if Backend.MANUAL_SESSION:
+        raise HTTPException(status_code=409, detail="Stop the manual upload session before starting auto-add.")
+    if not SettingsManager.current().auth_channels:
+        raise HTTPException(status_code=400, detail="Configure at least one AUTH channel first.")
+    try:
+        return await start_session(Backend.db, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+#----- Channel auto add stop
+async def channel_auto_add_stop_api() -> dict:
+    from Backend.helper.channel_auto_add import stop_session
+    return await stop_session(db)
+
+
+async def test_log_channel_api(payload: dict) -> dict:
+    from Backend.helper import log_channel as lc
+    cfg = SettingsManager.current()
+    channel = str(payload.get("log_channel") or cfg.log_channel or "").strip()
+    token = str(payload.get("log_bot_token") or cfg.log_bot_token or "").strip()
+    if not lc.valid_token(token):
+        raise HTTPException(status_code=400, detail="Enter a valid log bot token first.")
+    name = await lc.bot_username(token)
+    if not name:
+        raise HTTPException(status_code=400, detail="Telegram rejected this bot token.")
+    ok, error = await lc.send_now(
+        lc._card("🧪", "Log Channel Connected", [("🤖", "Log bot", name), ("📣", "Status", "Events will appear here")]),
+        channel=channel, token=token)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"{name} could not post: {error}. Add it as an admin of the channel.")
+    return {"message": f"Test message sent by {name}."}
+
+
+# ======================================================================
+# Viewer Insights — admin-only dashboard and per-viewer controls.
+# Raw playback records are bounded by the existing 30-day TTL.
+# ======================================================================
+
+async def get_insights_overview_api(days: int = 30) -> dict:
+    from Backend.helper import insights_agg
+    records = await db.fetch_insight_records(days=days)
+    token_map = await db.get_token_user_map()
+    sessions = insights_agg.build_sessions(records)
+    data = insights_agg.summarize_overview(sessions, token_map)
+    data["days"] = max(1, min(int(days or 30), 30))
+    data["shared_tokens"] = sum(1 for value in token_map.values() if value.get("shared"))
+    return data
+
+
+async def get_insights_title_api(days: int = 30, imdb_id: str = None, tmdb_id: int = None,
+                                db_index: int = None, media_type: str = None, title: str = None) -> dict:
+    from Backend.helper import insights_agg
+    records = await db.fetch_insight_records(days=days)
+    token_map = await db.get_token_user_map()
+    sessions = insights_agg.build_sessions(records)
+    data = insights_agg.title_audience(sessions, token_map, imdb_id=imdb_id,
+                                       tmdb_id=tmdb_id, db_index=db_index, title=title)
+    data["uploaders"] = []  # Caitlin's current ingestion schema does not persist uploader attribution.
+    return data
+
+
+async def get_insights_viewer_api(days: int = 30, viewer_key: str = None, token: str = None) -> dict:
+    from Backend.helper import insights_agg
+    days = max(1, min(int(days or 30), 30))
+    records = await db.fetch_insight_records(days=days, token=token)
+    token_map = await db.get_token_user_map()
+    sessions = insights_agg.build_sessions(records)
+    data = insights_agg.viewer_profile(sessions, token_map, viewer_key=viewer_key, token=token)
+    ident = data.get("viewer") or {}
+    data["access"] = None
+    if ident.get("mode") == "user" and ident.get("telegram_id"):
+        try:
+            doc = await db.get_api_token_by_user(int(ident["telegram_id"]))
+            if doc:
+                limits = doc.get("limits") or {}
+                usage = doc.get("usage") or {}
+                data["access"] = {
+                    "token": doc.get("token"),
+                    "daily_limit_gb": limits.get("daily_limit_gb") or 0,
+                    "monthly_limit_gb": limits.get("monthly_limit_gb") or 0,
+                    "daily_bytes": (usage.get("daily") or {}).get("bytes") or 0,
+                    "monthly_bytes": (usage.get("monthly") or {}).get("bytes") or 0,
+                    "session_streaming_allowed": bool(doc.get("session_streaming_allowed")),
+                    "is_admin": bool(doc.get("is_admin")),
+                    "subscription_exempt": bool(doc.get("subscription_exempt")),
+                    "expires_at": (doc.get("expires_at").isoformat() if hasattr(doc.get("expires_at"), "isoformat")
+                                   else str(doc.get("expires_at")) if doc.get("expires_at") else None),
+                }
+        except Exception as exc:
+            LOGGER.warning("Viewer access settings lookup failed: %s", exc)
+    return data
+
+
+async def get_insights_export_api(scope: str = "plays", days: int = 30):
+    import csv
+    import io
+    from Backend.helper import insights_agg
+    scope = (scope or "plays").strip().lower()
+    if scope not in ("plays", "titles", "viewers"):
+        scope = "plays"
+    days = max(1, min(int(days or 30), 30))
+    records = await db.fetch_insight_records(days=days)
+    token_map = await db.get_token_user_map()
+    sessions = insights_agg.build_sessions(records)
+    headers, rows = insights_agg.csv_rows(scope, sessions, token_map)
+    def generate():
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(headers)
+        yield buffer.getvalue()
+        for row in rows:
+            buffer.seek(0); buffer.truncate(0)
+            writer.writerow(row)
+            yield buffer.getvalue()
+    return StreamingResponse(generate(), media_type="text/csv", headers={
+        "Content-Disposition": f"attachment; filename=caitlin-insights-{scope}-{days}d.csv"
+    })

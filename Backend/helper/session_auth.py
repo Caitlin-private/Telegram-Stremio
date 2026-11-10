@@ -1,8 +1,8 @@
 import secrets
 import time
 
-from pyrogram import Client
-from pyrogram.errors import (
+from wzgram import Client
+from wzgram.errors import (
     BadRequest,
     FloodWait,
     PasswordHashInvalid,

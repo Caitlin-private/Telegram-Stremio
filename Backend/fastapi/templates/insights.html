@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+{% block title %}Viewer Insights - TG Stremio{% endblock %}
+
+{% block content %}
+<style>
+.ins-stat { display:flex; flex-direction:column; gap:.25rem; }
+.ins-v { font-size:1.5rem; font-weight:900; line-height:1.1; }
+.ins-l { font-size:.7rem; text-transform:uppercase; letter-spacing:.18em; color:var(--text-secondary); font-weight:700; }
+.ins-table { width:100%; border-collapse:collapse; font-size:.85rem; }
+.ins-table th { text-align:left; padding:.45rem .6rem; color:var(--text-secondary); font-size:.68rem; text-transform:uppercase; letter-spacing:.12em; border-bottom:1px solid var(--hairline, rgba(255,255,255,.12)); }
+.ins-table td { padding:.5rem .6rem; border-bottom:1px solid var(--hairline, rgba(255,255,255,.07)); vertical-align:top; }
+.ins-bar { height:8px; border-radius:999px; background:var(--primary); opacity:.85; min-width:2px; }
+.ins-chip { display:inline-flex; align-items:center; gap:.3rem; font-size:.68rem; font-weight:700; padding:.15rem .55rem; border-radius:999px; border:1px solid var(--hairline, rgba(255,255,255,.15)); }
+.ins-muted { color:var(--text-secondary); }
+.ins-rowlink { cursor:pointer; }
+.ins-rowlink:hover td { background:color-mix(in srgb, var(--primary) 8%, transparent); }
+#ins-detail { scroll-margin-top:90px; }
+</style>
+
+<section class="space-y-6">
+  <div class="glass-panel rounded-3xl p-6">
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <div>
+        <p class="text-xs uppercase tracking-[0.24em] text-text-secondary font-bold">Admin</p>
+        <h1 class="text-2xl md:text-3xl font-black mt-1">Viewer Insights</h1>
+        <p class="text-sm text-text-secondary mt-1">Who watched what, how long they watched, which devices and apps they used, and their approximate IP-derived location.</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <select id="ins-days" class="rounded-2xl bg-surface border border-hairline px-3 py-2 text-sm" onchange="loadInsights()">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          
+        </select>
+        <button onclick="loadInsights()" class="bg-primary text-background px-4 py-2 rounded-full font-bold text-sm"><i class="fa-solid fa-rotate mr-1"></i> Refresh</button>
+        <button onclick="exportCsv('plays')" class="border border-hairline px-4 py-2 rounded-full font-bold text-sm hover:bg-primary/10">CSV: plays</button>
+        <button onclick="exportCsv('titles')" class="border border-hairline px-4 py-2 rounded-full font-bold text-sm hover:bg-primary/10">CSV: titles</button>
+        <button onclick="exportCsv('viewers')" class="border border-hairline px-4 py-2 rounded-full font-bold text-sm hover:bg-primary/10">CSV: viewers</button>
+      </div>
+    </div>
+    <div id="ins-note" class="hidden mt-4 rounded-2xl border border-primary/30 bg-primary/10 p-3 text-xs"></div>
+  </div>
+
+  <div id="ins-overview" class="glass-panel rounded-3xl p-6">
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4" id="ins-stats"></div>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
+      <div>
+        <h3 class="text-sm font-black uppercase tracking-wider text-text-secondary mb-3">Plays per day</h3>
+        <div id="ins-perday" class="space-y-2 text-xs"></div>
+      </div>
+      <div>
+        <h3 class="text-sm font-black uppercase tracking-wider text-text-secondary mb-3">Devices</h3>
+        <div id="ins-devices" class="space-y-2 text-xs"></div>
+      </div>
+      <div>
+        <h3 class="text-sm font-black uppercase tracking-wider text-text-secondary mb-3">Countries</h3>
+        <div id="ins-countries" class="space-y-2 text-xs"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+    <div class="glass-panel rounded-3xl p-6">
+      <h2 class="text-xl font-black mb-1">Top titles</h2>
+      <p class="text-xs text-text-secondary mb-3">Click a title to see its viewers.</p>
+      <div class="overflow-x-auto"><table class="ins-table" id="ins-titles"><tbody></tbody></table></div>
+    </div>
+    <div class="glass-panel rounded-3xl p-6">
+      <h2 class="text-xl font-black mb-1">Viewers</h2>
+      <p class="text-xs text-text-secondary mb-3">Top 100 active viewers. Click any viewer for their history and current access restrictions.</p>
+      <div class="overflow-x-auto"><table class="ins-table" id="ins-viewers"><tbody></tbody></table></div>
+    </div>
+  </div>
+
+  <div id="ins-detail" class="hidden glass-panel rounded-3xl p-6"></div>
+
+  <div class="glass-panel rounded-3xl p-6">
+    <h3 class="text-sm font-black uppercase tracking-wider text-text-secondary mb-2">Data collected &amp; retention (admin-only)</h3>
+    <ul class="text-xs text-text-secondary space-y-1 list-disc ml-5">
+      <li>Per playback: token, client IP, country/city/ISP (derived from IP), device/app, title/episode, watch duration, completion %, stream health. Raw records auto-expire after <b>30 days</b>.</li>
+      <li>Self/VPS traffic (watchdogs, host tests) is excluded. This notice exists only here — it is not shown on the public site.</li>
+      <li>Shared-token viewers are identified by IP/device only. Issuing per-user tokens upgrades the same rows to Telegram names automatically.</li>
+    </ul>
+  </div>
+</section>
+
+<script>
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function fmtBytes(b){if(!b)return'0 B';const u=['B','KB','MB','GB','TB'];let i=0,n=Number(b);while(n>=1024&&i<u.length-1){n/=1024;i++;}return n.toFixed(n>=10||i===0?0:1)+' '+u[i];}
+function pct(c){return (c===null||c===undefined)?'—':Math.round(c*100)+'%';}
+function days(){return document.getElementById('ins-days').value;}
+function exportCsv(scope){
+  // token-gated streaming download: fetch then save (keeps session cookie auth)
+  fetch(`/api/admin/insights/export?scope=${scope}&days=${days()}`)
+    .then(r=>r.blob()).then(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`insights-${scope}-${days()}d.csv`;a.click();URL.revokeObjectURL(a.href);});
+}
+
+async function loadInsights(){
+  try{
+    const d = await (await fetch(`/api/admin/insights/overview?days=${days()}`)).json();
+    renderOverview(d);
+  }catch(e){ console.error(e); }
+}
+
+function renderOverview(d){
+  const t = d.totals || {};
+  const stats = [
+    ['Plays', t.plays ?? 0],
+    ['Unique viewers', t.unique_viewers ?? 0],
+    ['Watch time', t.total_watch_time || '0m'],
+    ['Avg completion', pct(t.avg_completion)],
+    ['Titles', t.unique_titles ?? 0],
+  ];
+  document.getElementById('ins-stats').innerHTML = stats.map(([l,v])=>`<div class="ins-stat"><span class="ins-v">${esc(v)}</span><span class="ins-l">${l}</span></div>`).join('');
+
+  const note = document.getElementById('ins-note');
+  const mix = (t.identity_mix||{});
+  if((d.shared_tokens||0) > 0){
+    note.classList.remove('hidden');
+    note.innerHTML = `<b>Shared token active:</b> viewers are identified by IP/device (${mix.ip||0} of ${t.plays||0} plays). Give each viewer a personal token to see Telegram names instead.`;
+  } else note.classList.add('hidden');
+
+  const maxDay = Math.max(1, ...(d.per_day||[]).map(x=>x.plays));
+  document.getElementById('ins-perday').innerHTML = (d.per_day||[]).slice(-21).map(x=>
+    `<div class="flex items-center gap-2"><span class="w-20 ins-muted">${esc(x.date)}</span><span class="ins-bar" style="width:${Math.max(2,(x.plays/maxDay)*100)}%"></span><span>${x.plays} · ${x.viewers}👤</span></div>`).join('') || '<span class="ins-muted">No activity in this window.</span>';
+
+  const maxDev = Math.max(1, ...(d.devices||[]).map(x=>x.plays));
+  document.getElementById('ins-devices').innerHTML = (d.devices||[]).map(x=>
+    `<div class="flex items-center gap-2"><span class="w-24 truncate" title="${esc(x.device)}">${esc(x.device)}</span><span class="ins-bar" style="width:${(x.plays/maxDev)*100}%"></span><span>${x.plays}</span></div>`).join('') || '<span class="ins-muted">—</span>';
+
+  const maxC = Math.max(1, ...(d.countries||[]).map(x=>x.plays));
+  document.getElementById('ins-countries').innerHTML = (d.countries||[]).map(x=>
+    `<div class="flex items-center gap-2"><span class="w-24 truncate" title="${esc(x.country)}">${esc(x.country)}</span><span class="ins-bar" style="width:${(x.plays/maxC)*100}%"></span><span>${x.plays}</span></div>`).join('') || '<span class="ins-muted">—</span>';
+
+  document.querySelector('#ins-titles tbody').innerHTML = (d.top_titles||[]).map(x=>{
+    const m = x.media||{};
+    const q = new URLSearchParams({days:days(), imdb_id:m.imdb_id||'', tmdb_id:m.tmdb_id??'', title:x.label||''});
+    return `<tr class="ins-rowlink" onclick="openTitle('${esc(String(m.imdb_id||''))}','${esc(String(m.tmdb_id??''))}','${esc(x.label||'')}')">
+      <td><b>${esc(x.label)}</b></td><td>${x.plays} ▶</td><td>${x.viewer_count} 👤</td><td class="ins-muted">${esc(new Date((x.last_ts||0)*1000).toLocaleDateString())}</td></tr>`;
+  }).join('') || '<tr><td class="ins-muted">No activity yet.</td></tr>';
+
+  document.querySelector('#ins-viewers tbody').innerHTML = (d.top_viewers||[]).map(v=>{
+    const badge = v.mode==='ip' ? '<span class="ins-chip">shared token · IP</span>' : (v.mode==='user' ? '<span class="ins-chip">Telegram</span>' : '<span class="ins-chip">token</span>');
+    return `<tr class="ins-rowlink" onclick="openViewer('${esc(v.key)}')">
+      <td><b>${esc(v.label)}</b> ${v.username?`<span class="ins-muted">@${esc(v.username)}</span>`:''}<div class="ins-muted text-xs">${esc(v.place||'')}${v.isp?` · ${esc(v.isp)}`:''}</div></td>
+      <td>${v.plays} ▶<div class="ins-muted text-xs">${esc(v.watch_time||'')}</div></td>
+      <td>${badge}</td><td class="ins-muted">${esc(v.last_seen||'')}</td></tr>`;
+  }).join('') || '<tr><td class="ins-muted">No viewers yet.</td></tr>';
+}
+
+async function openTitle(imdb, tmdb, title){
+  const p = new URLSearchParams({days:days()});
+  if(imdb) p.set('imdb_id', imdb); if(tmdb) p.set('tmdb_id', tmdb); if(title) p.set('title', title);
+  const d = await (await fetch('/api/admin/insights/title?'+p)).json();
+  const up = '<span class="ins-muted">Uploader attribution is not currently collected by Caitlin.</span>';
+  const rows = (d.viewers||[]).map(v=>`<tr>
+      <td><b>${esc(v.label)}</b>${v.username?` <span class="ins-muted">@${esc(v.username)}</span>`:''}</td>
+      <td>${v.plays} ▶<div class="ins-muted text-xs">${esc(v.watch_time||'')}</div></td>
+      <td>${pct(v.avg_completion)}</td>
+      <td>${esc(Object.keys(v.devices||{}).join(', ')||'—')}</td>
+      <td>${esc(v.place||'—')}${v.isp?`<div class="ins-muted text-xs">${esc(v.isp)}</div>`:''}</td>
+      <td class="ins-muted">${esc(v.last_seen||'')}</td></tr>`).join('') || '<tr><td class="ins-muted">No viewers recorded.</td></tr>';
+  const ses = (d.sessions||[]).slice(0,15).map(s=>`<tr><td class="ins-muted">${esc(s.when||'')}</td><td>${esc(s.viewer||'')}</td><td>${esc(s.device||'')}</td><td>${pct(s.completion)}</td><td>${esc(s.city||'')}${s.country?`, ${esc(s.country)}`:''}</td></tr>`).join('');
+  document.getElementById('ins-detail').classList.remove('hidden');
+  document.getElementById('ins-detail').innerHTML = `
+    <div class="flex items-center justify-between gap-3 mb-4">
+      <h2 class="text-xl font-black">👥 ${esc(title)}</h2>
+      <button onclick="document.getElementById('ins-detail').classList.add('hidden')" class="border border-hairline px-3 py-1.5 rounded-full text-sm">Close</button>
+    </div>
+    <div class="text-sm mb-4"><span class="ins-muted">Uploaded by:</span> ${up}</div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div><h3 class="text-sm font-black uppercase tracking-wider text-text-secondary mb-2">Viewers (${d.unique_viewers||0} unique · ${d.plays||0} plays)</h3>
+        <div class="overflow-x-auto"><table class="ins-table"><thead><tr><th>Viewer</th><th>Plays</th><th>Completion</th><th>Devices</th><th>Location</th><th>Last seen</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+      <div><h3 class="text-sm font-black uppercase tracking-wider text-text-secondary mb-2">Recent sessions</h3>
+        <div class="overflow-x-auto"><table class="ins-table"><thead><tr><th>When</th><th>Viewer</th><th>Device</th><th>Done</th><th>Where</th></tr></thead><tbody>${ses||'<tr><td class="ins-muted">—</td></tr>'}</tbody></table></div></div>
+    </div>`;
+  document.getElementById('ins-detail').scrollIntoView({behavior:'smooth'});
+}
+
+async function openViewer(key){
+  const d = await (await fetch(`/api/admin/insights/viewer?days=${days()}&viewer_key=${encodeURIComponent(key)}`)).json();
+  const v = d.viewer||{}; const t = d.totals||{};
+  const wr = d.watch_requests;
+  const rows = (d.history||[]).slice(0,100).map(h=>`<tr>
+      <td class="ins-muted">${esc(h.when||'')}</td><td><b>${esc(h.title||'')}</b></td>
+      <td>${esc(h.watch_time||'')}</td><td>${pct(h.completion)}</td>
+      <td>${esc(h.device||'')}</td><td>${esc(h.city||'')}${h.country?`, ${esc(h.country)}`:''}<div class="ins-muted text-xs">${esc(h.isp||'')} ${h.ip?`· ${esc(h.ip)}`:''}</div></td></tr>`).join('') || '<tr><td class="ins-muted">No history.</td></tr>';
+  document.getElementById('ins-detail').classList.remove('hidden');
+  document.getElementById('ins-detail').innerHTML = `
+    <div class="flex items-center justify-between gap-3 mb-4">
+      <h2 class="text-xl font-black">🎬 ${esc(v.label||'Viewer')} ${v.username?`<span class="ins-muted text-base">@${esc(v.username)}</span>`:''}</h2>
+      <button onclick="document.getElementById('ins-detail').classList.add('hidden')" class="border border-hairline px-3 py-1.5 rounded-full text-sm">Close</button>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-5">
+      <div class="ins-stat"><span class="ins-v">${t.plays??0}</span><span class="ins-l">Plays</span></div>
+      <div class="ins-stat"><span class="ins-v">${esc(t.watch_time||'0m')}</span><span class="ins-l">Watch time</span></div>
+      <div class="ins-stat"><span class="ins-v">${t.unique_titles??0}</span><span class="ins-l">Titles</span></div>
+      <div class="ins-stat"><span class="ins-v">${pct(t.avg_completion)}</span><span class="ins-l">Avg completion</span></div>
+      <div class="ins-stat"><span class="ins-v">${(d.devices||[])[0]?esc((d.devices||[])[0].device):'—'}</span><span class="ins-l">Main device</span></div>
+    </div>
+    ${wr&&wr.count?`<div class="mb-4 text-xs rounded-2xl border border-primary/30 bg-primary/10 p-3"><b>Requested-vs-watched:</b> clicked Watch ${wr.count} time(s) — ${esc((wr.titles||[]).slice(0,6).join(', '))}${(wr.titles||[]).length>6?'…':''}. Playback above is measured directly from streams.</div>`:''}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="lg:col-span-2"><h3 class="text-sm font-black uppercase tracking-wider text-text-secondary mb-2">History</h3>
+        <div class="overflow-x-auto"><table class="ins-table"><thead><tr><th>When</th><th>Title</th><th>Time</th><th>Done</th><th>Device</th><th>Where</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+      <div>
+        <h3 class="text-sm font-black uppercase tracking-wider text-text-secondary mb-2">Devices</h3>
+        <div class="space-y-1 text-xs mb-4">${(d.devices||[]).map(x=>`<div class="flex justify-between"><span>${esc(x.device)}</span><span class="ins-muted">${x.plays}</span></div>`).join('')||'—'}</div>
+        <h3 class="text-sm font-black uppercase tracking-wider text-text-secondary mb-2">Locations</h3>
+        <div class="space-y-1 text-xs">${(d.places||[]).map(x=>`<div class="flex justify-between"><span>${esc(x.place)}</span><span class="ins-muted">${x.plays}</span></div>`).join('')||'—'}</div>
+      </div>
+    </div>
+    ${d.access && d.access.token ? `
+      <div class="mt-6 rounded-2xl border border-hairline p-4">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3"><h3 class="font-black">Playback limits &amp; restrictions</h3><span class="ins-muted text-xs">Changes apply to this registered viewer</span></div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <label class="text-xs ins-muted">Daily limit (GB)<input id="viewer-daily-limit" type="number" min="0" step="0.1" value="${Number(d.access.daily_limit_gb||0)}" class="mt-1 w-full rounded-xl bg-surface border border-hairline px-3 py-2 text-sm text-current"></label>
+          <label class="text-xs ins-muted">Monthly limit (GB)<input id="viewer-monthly-limit" type="number" min="0" step="0.1" value="${Number(d.access.monthly_limit_gb||0)}" class="mt-1 w-full rounded-xl bg-surface border border-hairline px-3 py-2 text-sm text-current"></label>
+          <div class="text-xs ins-muted">Current usage<div class="mt-2">Day: ${fmtBytes(d.access.daily_bytes)}<br>Month: ${fmtBytes(d.access.monthly_bytes)}</div></div>
+        </div>
+        <label class="flex items-center gap-2 mt-3 text-sm"><input id="viewer-session-allowed" type="checkbox" ${d.access.session_streaming_allowed?'checked':''}> Allow Telegram session playback</label>
+        <p class="text-xs ins-muted mt-1">Session playback permission controls Userbot/session-only playback. Set a data limit to 0 for unlimited. Owner access remains exempt.</p>
+        <p class="text-xs ins-muted mt-2">Access: ${d.access.is_admin?'Owner':(d.access.subscription_exempt?'Lifetime / exempt':(d.access.expires_at?`Expires ${esc(d.access.expires_at)}`:'Subscription-managed'))}</p>
+        <button onclick="saveViewerLimits('${esc(d.access.token)}')" class="mt-3 bg-primary text-background px-4 py-2 rounded-full text-sm font-bold">Save viewer restrictions</button>
+      </div>` : ''}
+    `;
+  document.getElementById('ins-detail').scrollIntoView({behavior:'smooth'});
+}
+
+async function saveViewerLimits(token){
+  const payload={
+    daily_limit_gb:Number(document.getElementById('viewer-daily-limit').value||0),
+    monthly_limit_gb:Number(document.getElementById('viewer-monthly-limit').value||0),
+    session_streaming_allowed:document.getElementById('viewer-session-allowed').checked
+  };
+  const r=await fetch(`/api/tokens/${encodeURIComponent(token)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  if(!r.ok){alert('Could not save viewer settings.');return;}
+  alert('Viewer restrictions saved.');
+}
+
+loadInsights();
+</script>
+{% endblock %}

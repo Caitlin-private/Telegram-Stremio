@@ -289,7 +289,7 @@ async def webdav_get(request: Request, token: str, path: str = ""):
         parent = normalize_path("/".join(vpath.rstrip("/").split("/")[:-1]) or "/")
         if vpath not in ("", "/"):
             rows.append(f'<li><a href="{_href(request, token, parent, True)}">../</a></li>')
-        for c in sorted(children, key=lambda n: (not n.is_dir, n.name.lower())):
+        for c in sorted(children, key=lambda n: (not n.is_dir, bool(n.video_part), n.video_group or '', n.video_part or 0, n.name.lower())):
             href = _href(request, token, c.path, c.is_dir)
             label = c.name + ("/" if c.is_dir else "")
             size = "" if c.is_dir else f" ({c.size} bytes)"

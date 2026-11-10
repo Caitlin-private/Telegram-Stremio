@@ -25,6 +25,7 @@ from Backend.helper.metadata.common import (
     score_candidate_aliases,
 )
 from Backend.helper.settings_manager import SettingsManager
+from Backend.helper.metadata_matcher import build_title_variants, normalize_title, _number_signature
 from Backend.logger import LOGGER
 
 _tmdb_client: aioTMDb | None = None
@@ -138,11 +139,18 @@ async def pick_best(results, query_title: str, query_year: Optional[int], media_
         r_title, r_year = tmdb_title_year(item, media_type)
         # original_title / original_name also counts as an alias
         orig = getattr(item, "original_title", None) or getattr(item, "original_name", None) or ""
-        score = score_candidate_aliases(
-            query_title, query_year, r_title, r_year,
-            aliases=[orig] if orig and orig != r_title else None,
-            year_reliable=year_reliable, year_lower_bound=year_lower_bound,
-        )
+        # Protect sequels/remakes with numbered titles from cross-matching
+        # (e.g. "Movie 2" must not silently resolve to "Movie").
+        query_numbers = _number_signature(query_title)
+        result_numbers = _number_signature(r_title)
+        if query_numbers and result_numbers and query_numbers != result_numbers:
+            score = 0.0
+        else:
+            score = score_candidate_aliases(
+                query_title, query_year, r_title, r_year,
+                aliases=[orig] if orig and orig != r_title else None,
+                year_reliable=year_reliable, year_lower_bound=year_lower_bound,
+            )
         scored.append((score, item, r_year))
         if score > best_score:
             best_score, best_item = score, item
@@ -179,7 +187,29 @@ async def safe_search(title: str, type_: str, year: Optional[int] = None):
 
     async def _produce():
         try:
-            results = await raw_search(title, type_, search_year)
+            # Search more than the parser's single title: Telegram release names
+            # frequently contain uploader/site prefixes, sequel markers or noisy
+            # release tokens. The matcher creates conservative, normalized variants.
+            variants = build_title_variants(
+                raw_title=title,
+                parsed_title=title,
+                year=year,
+            ) or [title]
+            results = []
+            seen = set()
+            for variant in variants[:6]:
+                if not variant:
+                    continue
+                found = await raw_search(variant, type_, search_year)
+                for item in found or []:
+                    item_id = getattr(item, "id", None)
+                    key = str(item_id) if item_id is not None else normalize_title(
+                        getattr(item, "title" if type_ == "movie" else "name", "")
+                    )
+                    if key and key not in seen:
+                        seen.add(key)
+                        results.append(item)
+
             best = await pick_best(results, title, year, type_)
             if best is None and results:
                 top = results[0]

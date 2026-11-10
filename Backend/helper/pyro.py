@@ -1,4 +1,4 @@
-from pyrogram.file_id import FileId
+from wzgram.file_id import FileId
 from typing import Optional
 from Backend.logger import LOGGER
 from Backend import __version__, now, timezone
@@ -7,12 +7,30 @@ from Backend.helper.exceptions import FileNotFound
 from Backend.helper.split_files import strip_part_suffix
 from aiofiles import open as aiopen
 from aiofiles.os import path as aiopath, remove as aioremove
-from pyrogram import Client
+from wzgram import Client
 from Backend.pyrofork.bot import StreamBot
 import re
-from pyrogram.types import BotCommand
-from pyrogram import enums
+from wzgram.types import BotCommand
+from wzgram import enums
 import httpx
+import asyncio
+from time import monotonic
+from wzgram.errors import FloodWait
+
+
+# Optional artwork shares a cooldown across live ingestion and channel scans.
+_artwork_until = {}
+_thumb_lock = asyncio.Lock()
+
+
+def artwork_available(client):
+    return monotonic() >= _artwork_until.get(id(client), 0)
+
+
+def defer_artwork(client, seconds):
+    key = id(client)
+    _artwork_until[key] = max(_artwork_until.get(key, 0), monotonic() + max(1, seconds) + 1)
+    LOGGER.warning(f'[Artwork] Skipping optional Telegram artwork for {seconds}s after FloodWait.')
 
 
 _EMOJI_PATTERN = re.compile(
@@ -129,20 +147,26 @@ async def upload_bytes_to_host(data: bytes, filename: str = "thumb.jpg") -> Opti
 
 async def upload_message_thumb_to_host(client, message) -> Optional[str]:
     target = get_thumb_download_target(message)
-    if not target or not client:
+    if not target or not client or not artwork_available(client):
         return None
     try:
-        file_id = getattr(target, "file_id", None) or target
-        buf = await client.download_media(file_id, in_memory=True)
-        data = buf.getvalue() if hasattr(buf, "getvalue") else bytes(buf)
-        return await upload_bytes_to_host(data)
+        async with _thumb_lock:
+            if not artwork_available(client):
+                return None
+            file_id = getattr(target, "file_id", None) or target
+            buf = await client.download_media(file_id, in_memory=True)
+            data = buf.getvalue() if hasattr(buf, "getvalue") else bytes(buf)
+            return await upload_bytes_to_host(data)
+    except FloodWait as e:
+        defer_artwork(client, e.value)
+        return None
     except Exception as e:
         LOGGER.warning(f"[THUMB] host upload failed: {e}")
         return None
 
 
 async def resolve_video_thumb_url(client, message, encoded: str) -> str:
-    if not message_has_thumb(message):
+    if not message_has_thumb(message) or (client and not artwork_available(client)):
         return ""
     fallback = f"/thumb/{encoded}"
     if client:
@@ -152,7 +176,7 @@ async def resolve_video_thumb_url(client, message, encoded: str) -> str:
                 return url
         except Exception as e:
             LOGGER.warning(f"[THUMB] hybrid resolve failed: {e}")
-    return fallback
+    return '' if client and not artwork_available(client) else fallback
 
 
 async def apply_video_thumb_to_metadata(metadata_info: dict, message, encoded: str, client=None) -> None:
@@ -226,6 +250,10 @@ def clean_filename(filename: str) -> str:
     #----- 1 – Strip URLs that captions sometimes prepend
     filename = remove_urls(filename)
     
+    #----- 1b – Fancy unicode letters (𝗕𝗼𝗹𝗱, full-width) back to ASCII; curly quotes to ' and "
+    from Backend.helper.metadata.name_identity import normalize_unicode_text, strip_channel_tags
+    filename = normalize_unicode_text(filename)
+
     #----- 2 – Remove emoji sequences
     filename = _EMOJI_PATTERN.sub(" ", filename)
 
@@ -237,7 +265,8 @@ def clean_filename(filename: str) -> str:
     filename = re.sub(r"[^\x20-\x7E]", " ", filename)
 
     #----- 5 – Remove Telegram channel tags  (@ChannelName_ etc.)
-    filename = _CHANNEL_TAG_PATTERN.sub("", filename)
+    #----- (@Uploader is cut at the next space / _ / -, never the rest of the name)
+    filename = strip_channel_tags(filename)
 
     #----- 6 – Remove codec / source tags that clutter the title region
     filename = _CODEC_TAG_PATTERN.sub(" ", filename)

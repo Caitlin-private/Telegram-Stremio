@@ -3,7 +3,7 @@ import logging
 import secrets
 from traceback import format_exc
 
-from pyrogram import idle
+from wzgram import idle
 from starlette.middleware.sessions import SessionMiddleware
 
 from Backend import __version__, db
@@ -38,11 +38,15 @@ async def start_services():
         await asyncio.sleep(0.5)
 
         await scan_manager.load(db)
+        from Backend.helper.check_history import check_history
+        await check_history.load(db)
         dbcheck_manager.bind_db(db)
         duplicate_manager.bind_db(db)
         await asyncio.sleep(0.3)
 
         await db.reload_extra_databases(SettingsManager.current().extra_databases)
+        from Backend.helper.durable_ingestion import durable_ingestion
+        await durable_ingestion.load(db)
         await asyncio.sleep(0.5)
 
         await StreamBot.start()
@@ -66,6 +70,8 @@ async def start_services():
 
         LOGGER.info("Initializing Multi Clients...")
         await initialize_clients()
+        from Backend.pyrofork.plugins.receiver import process_channel_message, process_edited_message
+        await durable_ingestion.start(StreamBot, process_channel_message, process_edited_message)
         await asyncio.sleep(2)
 
         await setup_bot_commands(StreamBot)
@@ -77,11 +83,18 @@ async def start_services():
         loop.create_task(ping())
 
         link_checker_task = DeadLinkChecker(db, app, check_interval_hours=24)
+        from Backend.helper.check_coordination import register_checker
+        register_checker(link_checker_task)
         loop.create_task(link_checker_task.start())
 
         await subscription_task_manager.sync(StreamBot)
 
         LOGGER.info("Telegram-Stremio Started Successfully!")
+        from Backend.helper import log_channel
+        log_channel.log_service_event(
+            "online", version=__version__, build_id=getattr(__import__("Backend"), "BUILD_ID", ""),
+            detail="Startup checks completed; bot, ingestion and web services are ready.",
+        )
         await idle()
     except Exception:
         LOGGER.error("Error during startup:\n" + format_exc())
@@ -96,6 +109,10 @@ async def stop_services():
         for task in pending_tasks:
             task.cancel()
         await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+        # The log bot has an isolated MTProto connection; stop it independently.
+        from Backend.helper import log_channel
+        await log_channel.stop()
 
         await StreamBot.stop()
         if botmod.Userbot is not None:

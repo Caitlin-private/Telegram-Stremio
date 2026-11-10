@@ -14,7 +14,7 @@ class ISTFormatter(Formatter):
 
 
 #----- Root logging configuration
-formatter = ISTFormatter("[%(asctime)s] [%(levelname)s] - %(message)s", "%d-%b-%y %I:%M:%S %p")
+formatter = ISTFormatter("[%(asctime)s] [%(levelname)s] [%(name)s:%(lineno)d] - %(message)s", "%d-%b-%y %I:%M:%S %p")
 file_handler = FileHandler("log.txt")
 stream_handler = StreamHandler()
 file_handler.setFormatter(formatter)
@@ -23,7 +23,8 @@ stream_handler.setFormatter(formatter)
 basicConfig(handlers=[file_handler, stream_handler], level=INFO)
 
 getLogger("httpx").setLevel(ERROR)
-getLogger("pyrogram").setLevel(ERROR)
+getLogger("pyrogram").setLevel(ERROR)  # WZGram compatibility namespace
+getLogger("wzgram").setLevel(ERROR)
 getLogger("fastapi").setLevel(ERROR)
 
 LOGGER = getLogger(__name__)

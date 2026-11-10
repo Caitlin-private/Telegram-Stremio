@@ -128,6 +128,8 @@ function cardHtml(r) {
     ? `<img src="${esc(r.poster)}" loading="lazy" alt="">`
     : `<div class="noimg"><i class="fa-solid fa-film"></i></div>`;
   const yr = r.year ? ` (${esc(r.year)})` : '';
+  const episode = Number.isInteger(Number(r.season_number)) && Number.isInteger(Number(r.episode_number))
+    ? ` · S${String(r.season_number).padStart(2, '0')}E${String(r.episode_number).padStart(2, '0')}` : '';
   let actions = '';
   if (r.status !== 'uploaded')
     actions += `<button class="rq-btn btn-up" onclick="setStatus('${r._id}','uploaded')"><i class="fa-solid fa-check"></i> Uploaded</button>`;
@@ -146,7 +148,7 @@ function cardHtml(r) {
       <span class="rq-badge b-${esc(r.status)}">${esc(r.status)}</span>
     </div>
     <div class="rq-body">
-      <div class="rq-title">${esc(r.title)}${yr}</div>
+      <div class="rq-title">${esc(r.title)}${yr}${episode}</div>
       <div class="rq-id">${idLine(r)}</div>
     </div>
     <div class="rq-actions">${actions}</div>

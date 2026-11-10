@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+from Backend.config import _int_env
 import time
+from copy import deepcopy
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
-from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired
+from wzgram.errors import FloodWait, ChannelPrivate, ChatAdminRequired, MessageDeleteForbidden
 
 from Backend.logger import LOGGER
+from Backend.helper.scan_coordination import scan_coordinator
 from Backend.helper.encrypt import encode_string, decode_string
+from Backend.helper.file_sizes import collect_file_size, size_updates
+from Backend.helper.checker_workers import ordered_check_clients
+from Backend.helper.checker_requests import CHECK_TIMEOUT, CheckUnavailable, check_reference, get_check_message
 from Backend.helper.manual_add import stamp_caption_with_id
 from Backend.helper.metadata import caption_with_links, extract_default_id, has_raw_ref, metadata
 from Backend.helper.pyro import apply_video_thumb_to_metadata, clean_filename, finalize_media_name, get_readable_file_size
@@ -18,17 +25,22 @@ from Backend.helper.subtitles import ingest_subtitle, is_subtitle_file
 SCAN_BATCH_SIZE = 200          
 SCAN_MAX_EMPTY_BATCHES = 10    
 SCAN_MAX_ID_CAP = 1_000_000    
-SCAN_BATCH_DELAY = 0.5         
 SCAN_PERSIST_EVERY = 1         
 SCAN_PROBE_TEXT = "🔄"         
-SCAN_PROCESS_CONCURRENCY = 8   
+QUICK_SCAN_CONCURRENCY = max(1, min(64, _int_env("QUICK_SCAN_CONCURRENCY", 16)))
+# All channel scan modes share quick scan's bounded worker budget.
+SCAN_PROCESS_CONCURRENCY = QUICK_SCAN_CONCURRENCY   
 
-DBCHECK_CONCURRENCY = 5        
-DBCHECK_BATCH_DELAY = 0.3      
+DBCHECK_CONCURRENCY = 24        
+DBCHECK_BATCH_DELAY = 0.02      
 DBCHECK_PAGE_SIZE = 100        
 
 _STATE_COLLECTION = "scan_state"
 _SCAN_DOC_ID = "scan"
+
+
+class _ScanStopped(Exception):
+    """Cooperative stop while awaiting Telegram's retry window."""
 
 
 def _now() -> float:
@@ -53,6 +65,15 @@ class ScanManager:
         self._cancel = False
         self._lock = asyncio.Lock()
         self._db_lock = asyncio.Lock()
+        self._stop_event = asyncio.Event()
+        self._notice_task = None
+        self._worker_context = ContextVar('scan_worker', default=None)
+        self._persist_lock = asyncio.Lock()
+        self._worker_waits = {}
+        self._fetch_delays = {}
+        self._catalog_wakeup = asyncio.Event()
+        self._priority = None
+        self._metrics = {'telegram_seconds': 0.0, 'metadata_seconds': 0.0, 'db_seconds': 0.0, 'db_lock_seconds': 0.0, 'catalog_seconds': 0.0, 'duplicate_seconds': 0.0}
         self.state: Dict[str, Any] = self._blank_state()
 
     #----- ── State helpers ────────────────────────────────────────────────────────
@@ -61,24 +82,25 @@ class ScanManager:
         return {
             "status": "idle",            
             "mode": "scan",              
+            "flood_wait_until": 0.0,
+            "worker_limit": 0,
+            "start_id": None,
+            "end_id": None,
+            "pause_for_playback": True,
+            "active_workers": 0,
+            "worker_waits": {},
+            "catalog_pending": {},
+            "purge_pending": [],
             "selected_channels": [],     
             "pending": [],               
             "current_channel": None,
             "current_channel_name": "",
+            "last_processed_message_id": None,
+            "last_processed_channel": None,
             "current_id": 0,             
             "current_target_id": 0,      
             "cursors": {},               
-            "counters": {
-                "total_found": 0,
-                "processed": 0,
-                "indexed": 0,
-                "skipped_dup": 0,
-                "skipped_meta": 0,
-                "skipped_nonvid": 0,
-                "subtitles_added": 0,
-                "subtitles_skipped": 0,
-                "errors": 0,
-            },
+            "counters": ScanManager._blank_counters(),
             "started_at": 0.0,
             "updated_at": 0.0,
             "finished_at": 0.0,
@@ -88,6 +110,7 @@ class ScanManager:
     @staticmethod
     def _blank_counters() -> Dict[str, int]:
         return {
+            "skipped_delete_forbidden": 0,
             "total_found": 0,
             "processed": 0,
             "indexed": 0,
@@ -112,11 +135,20 @@ class ScanManager:
 
         if doc:
             doc.pop("_id", None)
+            if doc.get('discard_requested'):
+                self.state = doc
+                await self._discard_job()
+                return
             merged = self._blank_state()
             merged.update(doc)
             merged["cursors"] = {str(k): int(v) for k, v in (merged.get("cursors") or {}).items()}
             if merged["status"] == "running":
                 merged["status"] = "paused"
+                report = merged.get('import_report') or {}
+                if report.get('run_started'):
+                    report['elapsed'] = report.get('elapsed', 0) + max(
+                        0, merged.get('updated_at', report['run_started']) - report['run_started'])
+                    report['run_started'] = 0
             self.state = merged
             if self.state["status"] == "paused":
                 LOGGER.info("[ScanManager] Found an interrupted scan — marked as paused (resumable).")
@@ -127,15 +159,16 @@ class ScanManager:
     async def _persist(self) -> None:
         if self._db is None:
             return
-        self.state["updated_at"] = _now()
-        try:
-            doc = dict(self.state)
-            doc["_id"] = _SCAN_DOC_ID
-            await self._db.dbs["tracking"][_STATE_COLLECTION].update_one(
-                {"_id": _SCAN_DOC_ID}, {"$set": doc}, upsert=True
-            )
-        except Exception as e:
-            LOGGER.error(f"[ScanManager] persist failed: {e}")
+        async with self._persist_lock:
+            self.state["updated_at"] = _now()
+            try:
+                doc = deepcopy(self.state)
+                doc["_id"] = _SCAN_DOC_ID
+                await self._db.dbs["tracking"][_STATE_COLLECTION].update_one(
+                    {"_id": _SCAN_DOC_ID}, {"$set": doc}, upsert=True
+                )
+            except Exception as e:
+                LOGGER.error(f"[ScanManager] persist failed: {e}")
 
     def get_status(self) -> Dict[str, Any]:
         s = self.state
@@ -146,24 +179,56 @@ class ScanManager:
 
         target = int(s.get("current_target_id", 0) or 0)
         cur = int(s.get("current_id", 0) or 0)
-        progress = max(0, min(100, round(cur / target * 100))) if target > 0 else 0
+        report = s.get("import_report") or {}
+        first = int(report.get("first_id", s.get("start_id") or 1))
+        total_ids = report.get("target")
+        has_progress = total_ids is not None and bool(report)
+        # The cursor is the NEXT uncommitted ID, not a processed count. Include
+        # completed parallel ranges and successful messages in partial batches.
+        ranges = report.get("completed_ranges", [])
+        scanned_ids = max(0, cur - first)
+        scanned_ids += sum(max(0, hi - max(lo, cur, first)) for lo, hi in ranges)
+        scanned_ids += sum(1 for mid in set(report.get("processed_message_ids", []))
+                           if mid >= max(cur, first) and not any(lo <= mid < hi for lo, hi in ranges))
+        if has_progress:
+            scanned_ids = min(scanned_ids, total_ids)
+        progress = (round(scanned_ids / total_ids * 100, 2) if total_ids else
+                    100 if has_progress and report.get("finished") else 0)
+
+        if has_progress and scanned_ids < total_ids:
+            progress = min(progress, 99.99)
 
         return {
             "status": s["status"],
             "mode": s["mode"],
+            "cancelling": bool(s.get('discard_requested')),
+            "catalog_pending_count": len(s.get("catalog_pending", {})),
+            "worker_limit": s.get('worker_limit', 0),
+            "start_id": s.get('start_id'),
+            "end_id": s.get('end_id'),
+            "pause_for_playback": s.get('pause_for_playback', True),
+            "playback_paused": bool(self._priority and self._priority.paused),
+            "active_workers": s.get('active_workers', 0),
+            "timings": {k: round(v, 2) for k, v in self._metrics.items()},
+            "flood_wait_seconds": max(0, int(s.get('flood_wait_until', 0) - _now() + 0.999)),
             "is_running": s["status"] == "running",
-            "resumable": s["status"] in ("paused", "cancelled") and bool(s["pending"]),
+            "resumable": s["status"] in ("paused", "cancelled", "error") and bool(s["pending"]),
             "selected_channels": list(s["selected_channels"]),
             "pending": list(s["pending"]),
             "current_channel": s["current_channel"],
             "current_channel_name": s["current_channel_name"],
+            "last_processed_message_id": s.get("last_processed_message_id"),
+            "last_processed_channel": s.get("last_processed_channel"),
             "current_id": cur,
             "current_target_id": target,
             "progress": progress,
-            "has_progress": target > 0,
+            "has_progress": has_progress,
+            "scanned_ids": scanned_ids,
+            "total_ids": total_ids,
             "counters": dict(s["counters"]),
             "elapsed": _fmt_elapsed(elapsed),
             "elapsed_seconds": int(elapsed),
+            "messages_per_second": round(max(0, s["counters"].get("processed", 0) - getattr(self, "_run_processed_baseline", 0)) / elapsed, 2) if elapsed > 0 else 0.0,
             "error": s["error"],
         }
 
@@ -178,46 +243,54 @@ class ScanManager:
             storage = db.dbs.get(f"storage_{i}")
             if storage is None:
                 continue
-            if stream_hash:
-                if await storage["movie"].find_one({"telegram.id": stream_hash}):
+            for collection, prefix in (('movie', 'telegram'), ('tv', 'seasons.episodes.telegram')):
+                checks = [{f'{prefix}.parts': part_match}]
+                if stream_hash:
+                    checks.append({f'{prefix}.id': stream_hash})
+                if await storage[collection].find_one({'$or': checks}, {'_id': 1}):
                     return True
-                if await storage["tv"].find_one({"seasons.episodes.telegram.id": stream_hash}):
-                    return True
-            if await storage["movie"].find_one({"telegram.parts": part_match}):
-                return True
-            if await storage["tv"].find_one({"seasons.episodes.telegram.parts": part_match}):
-                return True
         return False
 
-    async def start(self, client, channels: List[str], mode: str = "scan") -> Dict[str, Any]:
+    @scan_coordinator.exclusive_start("channel")
+    async def start(self, client, channels: List[str], mode: str = "scan", worker_limit=None, pause_for_playback=None, start_id=None, end_id=None) -> Dict[str, Any]:
         async with self._lock:
-            if self.state["status"] == "running":
+            if self.state["status"] == "running" or (self._task and not self._task.done()):
                 return {"ok": False, "message": "A scan is already running."}
 
             channels = [str(c).strip() for c in (channels or []) if str(c).strip()]
 
-            if mode == "scan" and not channels and self.state["pending"]:
+            if mode in ("scan", "quick") and not channels and self.state["pending"]:
                 channels = list(self.state["pending"])
 
             if not channels:
                 return {"ok": False, "message": "No channels selected."}
 
+            resuming_job = mode != 'rescan' and self.state['status'] in ('paused', 'cancelled', 'error') and bool(self.state['pending'])
+            if resuming_job:
+                if ((start_id is not None and start_id != self.state.get('start_id')) or
+                        (end_id is not None and end_id != self.state.get('end_id'))):
+                    return {'ok': False, 'message': 'Cancel the current scan before changing its message range.'}
+            else:
+                self.state['start_id'], self.state['end_id'] = start_id, end_id
+                for ch in channels:
+                    self.state['cursors'].pop(ch, None)
+
+            if not resuming_job:
+                self.state['last_processed_message_id'] = None
+                self.state['last_processed_channel'] = None
+
+            if mode == 'rescan' or self.state['status'] not in ('paused', 'cancelled', 'error'):
+                self.state.pop('import_report', None)
+
             if mode == "rescan":
                 for ch in channels:
-                    try:
-                        ch_int = int(str(ch).replace("-100", ""))
-                    except ValueError:
-                        continue
-                    try:
-                        await self._purge_channel_entries(ch_int)
-                    except Exception as e:
-                        LOGGER.error(f"[ScanManager] purge failed for {ch}: {e}")
                     self.state["cursors"].pop(str(ch), None)
+                self.state['purge_pending'] = list(channels)
                 self.state["selected_channels"] = list(channels)
                 self.state["pending"] = list(channels)
                 self.state["counters"] = self._blank_counters()
             else:
-                resuming = self.state["status"] in ("paused", "cancelled") and self.state["pending"]
+                resuming = self.state["status"] in ("paused", "cancelled", "error") and self.state["pending"]
                 if resuming:
                     merged_pending = list(self.state["pending"])
                     for ch in channels:
@@ -232,25 +305,90 @@ class ScanManager:
                     self.state["pending"] = list(channels)
                     self.state["counters"] = self._blank_counters()
 
+            self._run_processed_baseline = self.state["counters"].get("processed", 0)
+            self.state["current_id"] = self.state["cursors"].get(self.state["pending"][0], self.state.get("start_id") or 1)
+            self.state["current_target_id"] = 0
             self.state["mode"] = mode
             self.state["status"] = "running"
             self.state["error"] = None
             self.state["finished_at"] = 0.0
             self.state["started_at"] = _now()
             self._cancel = False
+            self._stop_event.clear()
+            from Backend.helper.scan_resources import PlaybackPriority
+            self.state['worker_limit'] = worker_limit if worker_limit is not None else self.state.get('worker_limit', 0)
+            self.state['pause_for_playback'] = pause_for_playback if pause_for_playback is not None else self.state.get('pause_for_playback', True)
+            self._priority = PlaybackPriority(self._stop_event, self.state['pause_for_playback'], grace=10)
+            self._worker_waits = {k: v for k, v in self.state.get('worker_waits', {}).items() if v > _now()}
+            self.state['worker_waits'] = self._worker_waits
+            self._metrics = dict.fromkeys(self._metrics, 0.0)
+            self._fetch_delays = {}
             await self._persist()
 
             self._task = asyncio.create_task(self._run(client))
-            return {"ok": True, "message": f"{'Rescan' if mode == 'rescan' else 'Scan'} started.",
+            return {"ok": True, "message": f"{'Quick scan' if mode == 'quick' else 'Rescan' if mode == 'rescan' else 'Scan'} started.",
                     "status": self.get_status()}
 
-    async def cancel(self) -> Dict[str, Any]:
+    async def cancel(self, discard=False) -> Dict[str, Any]:
+        if discard:
+            async with self._lock:
+                self.state['discard_requested'] = True
+                self._cancel = True
+                self._stop_event.set()
+                await self._persist()
+                if not self._task or self._task.done():
+                    await self._discard_job()
+            return {'ok': True, 'message': 'Scan cancelled. Any in-flight work will finish safely; you can then start any scan mode.'}
         if self.state["status"] != "running":
             return {"ok": False, "message": "No scan is currently running."}
         self._cancel = True
+        self._stop_event.set()
         return {"ok": True, "message": "Stop requested — the scan will pause after the current batch."}
 
+    async def _discard_job(self):
+        keep = {key: self.state[key] for key in ('worker_limit', 'pause_for_playback', 'worker_waits', 'last_processed_message_id', 'last_processed_channel', 'catalog_pending') if key in self.state}
+        self.state = self._blank_state()
+        self.state.update(keep)
+        self._priority = None
+        await self._persist()
+
+    async def _wait_for_playback(self):
+        if self._priority:
+            await self._priority.wait()
+        if self._cancel:
+            raise _ScanStopped()
+
+    async def _telegram_call(self, operation, *args, scan_client=None, **kwargs):
+        client = scan_client or self._worker_context.get() or getattr(operation, '__self__', None)
+        key = str(getattr(getattr(client, 'me', None), 'id', None) or getattr(client, 'name', None) or id(client))
+        while True:
+            await self._wait_for_playback()
+            if self._cancel:
+                raise _ScanStopped()
+            delay = self._worker_waits.get(key, 0) - _now()
+            if delay > 0:
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            try:
+                started = time.monotonic()
+                try:
+                    return await operation(*args, **kwargs)
+                finally:
+                    if getattr(operation, '__name__', '') != '_process_message':
+                        self._metrics['telegram_seconds'] += time.monotonic() - started
+            except FloodWait as exc:
+                self._worker_waits[key] = _now() + max(1, exc.value) + 1
+                self.state['flood_wait_until'] = max(self._worker_waits.values())
+                self._fetch_delays[key] = min(2.0, max(0.1, self._fetch_delays.get(key, 0.02) * 2))
+                LOGGER.warning(f'[ScanManager] Telegram FloodWait: {exc.value}s; retaining current message/batch for retry.')
+                await self._persist()
+
     async def _run(self, client) -> None:
+        catalog_done = asyncio.Event()
+        catalog_task = asyncio.create_task(self._scan_catalog_loop(catalog_done))
         try:
             while self.state["pending"] and not self._cancel:
                 ch = self.state["pending"][0]
@@ -262,6 +400,17 @@ class ScanManager:
                     await self._persist()
                     continue
 
+                await self._wait_for_playback()
+                if ch in self.state.get('purge_pending', []):
+                    await self._purge_channel_entries(int(str(ch).removeprefix('-100')))
+                    self.state['purge_pending'].remove(ch)
+                    await self._persist()
+                report = self.state.get('import_report') or {}
+                if report.get('channel') != ch or report.get('finished'):
+                    report = {'baseline': dict(self.state['counters']), 'elapsed': 0}
+                report.update(channel=ch, name=ch, mode=report.get('mode', self.state['mode']),
+                              cursor=self.state['cursors'].get(ch, 1), target=None, run_started=_now())
+                self.state['import_report'] = report
                 completed = await self._scan_channel(client, ch_id, ch)
                 if self._cancel:
                     break
@@ -270,6 +419,14 @@ class ScanManager:
                         self.state["pending"].pop(0)
                     await self._persist()
 
+            if catalog_task is not None:
+                catalog_done.set()
+                self._catalog_wakeup.set()
+                if self._cancel:
+                    catalog_task.cancel()
+                    await asyncio.gather(catalog_task, return_exceptions=True)
+                else:
+                    await catalog_task
             if self._cancel:
                 self.state["status"] = "cancelled"
                 LOGGER.info("[ScanManager] Scan cancelled by user (resumable).")
@@ -281,6 +438,10 @@ class ScanManager:
             self.state["finished_at"] = _now()
             await self._persist()
 
+        except _ScanStopped:
+            self.state['status'] = 'cancelled'
+            self.state['finished_at'] = _now()
+            await self._persist()
         except (ChannelPrivate, ChatAdminRequired) as e:
             self.state["status"] = "error"
             self.state["error"] = f"Access denied to channel — make sure the bot is an admin. ({e})"
@@ -297,113 +458,412 @@ class ScanManager:
             LOGGER.error(f"[ScanManager] Unexpected error: {e}")
             await self._persist()
 
+        finally:
+            if catalog_task is not None:
+                catalog_task.cancel()
+                await asyncio.gather(catalog_task, return_exceptions=True)
+                await self._persist()
+            event = 'cancel' if self.state.get('discard_requested') else 'stop' if self.state['status'] == 'cancelled' else 'error'
+            if self.state['status'] in ('cancelled', 'error'):
+                await self._announce_import(client, event)
+            if self.state.get('discard_requested'):
+                await self._discard_job()
+
+    async def _announce_import(self, client, event):
+        from Backend.helper.scan_announcements import format_notice, send_notice
+        from Backend.helper.stats_display import library_totals
+        from Backend.helper.settings_manager import SettingsManager
+        report = self.state.get('import_report')
+        if not report or (event != 'start' and not report.get('run_started')):
+            return
+        now = _now()
+        elapsed = report.get('elapsed', 0) + max(0, now - report.get('run_started', now))
+        if event != 'start':
+            report['elapsed'] = elapsed
+            report['run_started'] = 0
+            await self._persist()
+        from Backend.helper import log_channel
+        to_log = log_channel.enabled()
+        destination = SettingsManager.current().announcement_channel
+        if not destination and not to_log:
+            return
+        counts = {k: max(0, v - report['baseline'].get(k, 0))
+                  for k, v in self.state['counters'].items()}
+        if to_log:
+            # Keep the operator log channel to scan lifecycle milestones, not scan chatter.
+            task_event = "start" if event == "start" else "finish" if event == "finish" else "stop"
+            rows = [("📂", "Channel", report.get("name") or "—"),
+                    ("🔍", "Scan type", report.get("mode") or "scan")]
+            if event != "start":
+                rows.extend([
+                    ("⏱️", "Elapsed", _fmt_elapsed(elapsed)),
+                    ("📨", "Detected", f'{counts.get("media_detected", 0):,}'),
+                    ("📂", "Processed", f'{counts.get("media_processed", 0):,}'),
+                    ("✅", "Indexed", f'{counts.get("indexed", 0):,}'),
+                ])
+            log_channel.log_task(task_event, "Media Import", rows, emoji="📡")
+            return
+        totals = None
+        if event == 'finish':
+            try:
+                totals = await library_totals(self._db)
+            except Exception as exc:
+                LOGGER.warning(f'[Scan announcement] Cannot count library: {exc}')
+        text = format_notice(event, report, counts, _fmt_elapsed(elapsed), totals)
+        try:
+            destination = int(destination)
+        except ValueError:
+            pass
+        self._notice_task = asyncio.create_task(send_notice(client, destination, text, self._notice_task))
+
+    async def _flush_scan_catalogs(self):
+        from Backend.helper.auto_catalog import sync_single_media
+        pending = self.state.setdefault('catalog_pending', {})
+        for key, item in list(pending.items()):
+            await self._wait_for_playback()
+            # A concurrent worker may requeue this title during the sync.
+            pending.pop(key, None)
+            try:
+                await sync_single_media(self._db, **item)
+            except Exception as exc:
+                LOGGER.warning(f'[Scan] Catalog update failed for {key}: {exc}')
+                pending.setdefault(key, item)
+        await self._persist()
+
+    async def _scan_catalog_loop(self, done):
+        from Backend.helper.auto_catalog import sync_scan_media
+        sync_notified = False
+        synced_count = 0
+        while not self._cancel:
+            pending = self.state.setdefault('catalog_pending', {})
+            if pending:
+                if not sync_notified:
+                    from Backend.helper import log_channel
+                    log_channel.log_task("start", "Scan Catalogue Sync", [
+                        ("📦", "Queued", len(pending)),
+                        ("ℹ️", "Source", "Channel/database scan; live ingestion excluded"),
+                    ], emoji="📚")
+                    sync_notified = True
+                # Keep entries in durable state until acknowledged. A newly queued
+                # dict for the same title is a newer generation and must survive.
+                snapshot = dict(list(pending.items())[:64])
+                started = time.monotonic()
+                try:
+                    completed = await sync_scan_media(self._db, snapshot, self._wait_for_playback)
+                    for key in completed:
+                        if pending.get(key) is snapshot[key]:
+                            pending.pop(key, None)
+                    synced_count += len(completed)
+                except _ScanStopped:
+                    if sync_notified:
+                        from Backend.helper import log_channel
+                        log_channel.log_task("stop", "Scan Catalogue Sync", [
+                            ("✅", "Synced", synced_count),
+                            ("📥", "Remaining", len(pending)),
+                            ("ℹ️", "Result", "Scan paused; queued items remain for retry."),
+                        ], emoji="📚")
+                    return
+                except Exception as exc:
+                    LOGGER.warning(f'[Scan] Catalog queue retained for retry: {exc}')
+                    completed = set()
+                finally:
+                    self._metrics['catalog_seconds'] += time.monotonic() - started
+                await self._persist()
+                if completed and pending:
+                    continue
+                if done.is_set():
+                    if sync_notified:
+                        from Backend.helper import log_channel
+                        log_channel.log_task("stop", "Scan Catalogue Sync", [
+                            ("✅", "Synced", synced_count),
+                            ("📥", "Remaining", len(pending)),
+                            ("ℹ️", "Result", "Some items remain queued for the next scan."),
+                        ], emoji="📚")
+                    return  # Failed entries remain durable for the next scan.
+            elif done.is_set():
+                if sync_notified:
+                    from Backend.helper import log_channel
+                    log_channel.log_task("finish", "Scan Catalogue Sync", [
+                        ("✅", "Synced", synced_count),
+                        ("📥", "Remaining", 0),
+                    ], emoji="📚")
+                return
+            self._catalog_wakeup.clear()
+            try:
+                await asyncio.wait_for(self._catalog_wakeup.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _quick_existing_sources(self, channel, ids):
+        from Backend.helper.scan_batch import existing_sources
+        started = time.monotonic()
+        try:
+            return await existing_sources(self._db, channel, ids, self.state.setdefault('catalog_pending', {}))
+        finally:
+            self._metrics['duplicate_seconds'] += time.monotonic() - started
+
+    async def _quick_write(self, rows, committed):
+        if not rows:
+            return
+        from Backend.pyrofork.plugins.receiver import db_lock
+        from Backend.helper.scan_batch import write_batch
+        await self._wait_for_playback()
+        started = time.monotonic()
+        async with db_lock, self._db_lock:
+            self._metrics['db_lock_seconds'] += time.monotonic() - started
+            if self._cancel:
+                raise _ScanStopped()
+            # Fresh batched recheck under the same lock as live ingestion.
+            found = await self._quick_existing_sources(rows[0]['channel'], [r['msg_id'] for r in rows])
+            fresh = []
+            for row in rows:
+                if row['msg_id'] in found:
+                    row['status']['duplicate_skipped'] = True
+                    committed(row)
+                else:
+                    fresh.append(row)
+            started = time.monotonic()
+            try:
+                await write_batch(self._db, fresh, committed)
+            except Exception:
+                self.state['counters']['errors'] += 1
+                raise
+            finally:
+                self._metrics['db_seconds'] += time.monotonic() - started
+
     async def _scan_channel(self, client, chat_id: int, ch_key: str) -> bool:
         s = self.state
 
         try:
-            chat = await client.get_chat(chat_id)
+            chat = await self._telegram_call(client.get_chat, chat_id)
             s["current_channel_name"] = getattr(chat, "title", str(chat_id))
-        except (ChannelPrivate, ChatAdminRequired):
+        except (ChannelPrivate, ChatAdminRequired, _ScanStopped):
             raise
         except Exception as e:
             s["current_channel_name"] = str(chat_id)
             LOGGER.warning(f"[ScanManager] Could not resolve channel name for {chat_id}: {e}")
 
         s["current_channel"] = ch_key
+        s["current_id"] = int(s["cursors"].get(ch_key, s.get("start_id") or 1))
+        s["current_target_id"] = 0
+        if s.get("last_processed_channel") != ch_key:
+            s["last_processed_message_id"] = None
+            s["last_processed_channel"] = None
 
-        last_id = await self._probe_last_message_id(client, chat_id)
-        use_probe = last_id is not None and last_id >= 1
+        last_id = await self._probe_last_message_id(client, chat_id, scan_retry=True)
+        last_id = max(0, last_id - 1) if last_id is not None else None
+        use_probe = last_id is not None
         s["current_target_id"] = last_id if use_probe else 0
 
-        current = int(s["cursors"].get(str(ch_key), 1) or 1)
+        first_id = s.get('start_id') or 1
+        if s.get('end_id') is not None:
+            last_id = min(last_id, s['end_id']) if last_id is not None else s['end_id']
+            use_probe = True
+        s['current_target_id'] = last_id if use_probe else 0
+        current = max(first_id, int(s['cursors'].get(str(ch_key), first_id) or first_id))
+        scan_limit = last_id + 1 if use_probe and (s.get('start_id') or s.get('end_id')) else SCAN_MAX_ID_CAP
+        report = s.get('import_report') or {}
+        if report.get('channel') != ch_key or report.get('finished'):
+            report = {'baseline': dict(s['counters']), 'elapsed': 0}
+        report.setdefault('first_id', current)
+        report.update(channel=ch_key, name=s['current_channel_name'], mode=report.get('mode', s['mode']),
+                      target=max(0, min(last_id, scan_limit - 1) - report['first_id'] + 1) if use_probe else None,
+                      cursor=current, run_started=_now())
+        s['import_report'] = report
+        await self._persist()
+        await self._announce_import(client, 'start')
+        from Backend.helper.scan_resources import select_scan_clients
+        workers = await select_scan_clients(client, chat_id, s.get('worker_limit', 0),
+                                            s.get('mode') == 'quick', self._telegram_call, stopped_error=_ScanStopped)
+        s['active_workers'] = len(workers)
+        process_limit = SCAN_PROCESS_CONCURRENCY
+        worker_slots = {id(c): asyncio.Semaphore(max(1, process_limit // len(workers))) for c in workers}
         LOGGER.info(
             f"[ScanManager] Scanning {s['current_channel_name']} ({chat_id}) from id {current}"
             + (f" up to {last_id} (probe)" if use_probe else " (heuristic mode — probe unavailable)")
+            + f" using {len(workers)} bot(s), configured limit {s.get('worker_limit', 0) or 'Auto'}"
         )
 
+        # Independent worker loops with a bounded look-ahead window. Completed
+        # ranges survive resume, but the main cursor never jumps over a gap.
+        if not use_probe:
+            workers = workers[:1]  # Preserve ordered empty-batch discovery.
+            s['active_workers'] = len(workers)
+        end = min(scan_limit, last_id + 1) if use_probe else scan_limit
+        # Keep the original checkpoint batch size to avoid multiplying DB writes.
+        chunk_size = SCAN_BATCH_SIZE
+        window = SCAN_BATCH_SIZE * max(2, len(workers)) * 4
+        next_id = current
+        completed = [list(r) for r in report.get('completed_ranges', []) if r[1] > current]
+        report['completed_ranges'] = completed
+        condition = asyncio.Condition()
+        commit_lock = asyncio.Lock()
+        sem = asyncio.Semaphore(process_limit)
         empty_streak = 0
-        batch_count = 0
+        processed_ids = set(report.get('processed_message_ids', []))
 
-        while not self._cancel and current < SCAN_MAX_ID_CAP:
-            #----- ── Stop condition ───────────────────────────────────────────────
-            if use_probe:
-                if current > last_id:
-                    break
-            elif empty_streak >= SCAN_MAX_EMPTY_BATCHES:
-                break
+        def mark_processed(msg):
+            processed_ids.add(msg.id)
+            report['processed_message_ids'] = sorted(processed_ids)
+            s['counters']['processed'] += 1
+            s['last_processed_message_id'] = msg.id
+            s['last_processed_channel'] = ch_key
+            report['last_processed_message_id'] = msg.id
+            if msg.video or msg.document:
+                s['counters']['media_processed'] = s['counters'].get('media_processed', 0) + 1
 
-            upper = min(current + SCAN_BATCH_SIZE, SCAN_MAX_ID_CAP)
-            if use_probe:
-                upper = min(upper, last_id + 1)
-            batch_ids = list(range(current, upper))
-            if not batch_ids:
-                break
 
-            try:
-                messages = await client.get_messages(chat_id, batch_ids)
-            except FloodWait as e:
-                LOGGER.info(f"[ScanManager] FloodWait {e.value}s — sleeping…")
-                await asyncio.sleep(e.value)
+        async def process(worker, msg, known_sources=None):
+            async with worker_slots[id(worker)], sem:
+                if msg.id in processed_ids:
+                    return
+                if self._cancel:
+                    raise _ScanStopped()
+                token = self._worker_context.set(worker)
                 try:
-                    messages = await client.get_messages(chat_id, batch_ids)
-                except Exception as ex:
-                    LOGGER.error(f"[ScanManager] Retry failed at {current}: {ex}")
-                    s["counters"]["errors"] += 1
-                    current = upper
-                    empty_streak += 1
-                    s["cursors"][str(ch_key)] = current
-                    s["current_id"] = current
-                    continue
-            except Exception as e:
-                LOGGER.error(f"[ScanManager] Batch fetch error at {current}: {e}")
-                s["counters"]["errors"] += 1
-                current = upper
-                empty_streak += 1
-                s["cursors"][str(ch_key)] = current
-                s["current_id"] = current
-                continue
+                    row = await self._telegram_call(self._process_message, worker, msg, chat_id,
+                        known_sources=known_sources, prepare_only=s['mode'] == 'quick')
+                except MessageDeleteForbidden:
+                    s['counters']['skipped_delete_forbidden'] = s['counters'].get('skipped_delete_forbidden', 0) + 1
+                    row = None
+                finally:
+                    self._worker_context.reset(token)
+                if row is None:
+                    mark_processed(msg)
+                return row
 
-            if not isinstance(messages, list):
-                messages = [messages]
+        async def reserve():
+            nonlocal next_id, current, empty_streak
+            async with condition:
+                next_id = max(next_id, current)
+                while next_id >= current + window and next_id < end and not self._cancel:
+                    try:
+                        await asyncio.wait_for(condition.wait(), timeout=1)
+                    except asyncio.TimeoutError:
+                        pass
+                if self._cancel or (not use_probe and empty_streak >= SCAN_MAX_EMPTY_BATCHES):
+                    return
+                # Skip ranges already completed before a Stop/restart.
+                for lo, hi in sorted(completed):
+                    if lo <= next_id < hi:
+                        next_id = hi
+                if next_id >= end:
+                    return
+                lo = next_id
+                hi = min(lo + chunk_size, end)
+                hi = min([hi] + [r[0] for r in completed if lo < r[0] < hi])
+                next_id = hi
+            return lo, hi
 
-            to_process = [m for m in messages if m is not None and not m.empty]
-            batch_had_content = bool(to_process)
+        async def fetch(worker, bounds):
+            key = str(getattr(getattr(worker, 'me', None), 'id', None) or getattr(worker, 'name', None) or id(worker))
+            delay = self._fetch_delays.get(key, 0.02)
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
+                raise _ScanStopped()
+            except asyncio.TimeoutError:
+                pass
+            messages = await self._telegram_call(worker.get_messages, chat_id, list(range(*bounds)), scan_client=worker)
+            self._fetch_delays[key] = max(0.02, self._fetch_delays.get(key, 0.02) * 0.9)
+            return [m for m in (messages if isinstance(messages, list) else [messages]) if m and not m.empty]
 
-            if to_process:
-                s["counters"]["total_found"] += len(to_process)
-                sem = asyncio.Semaphore(SCAN_PROCESS_CONCURRENCY)
+        async def serial_batches(worker):
+            while True:
+                bounds = await reserve()
+                if bounds is None:
+                    return
+                yield bounds, await fetch(worker, bounds)
 
-                async def _worker(msg):
-                    async with sem:
-                        if self._cancel:
-                            return
-                        await self._process_message(client, msg, chat_id)
-                        s["counters"]["processed"] += 1
+        async def lane(worker):
+            nonlocal current, empty_streak
+            from Backend.helper.scan_pipeline import prefetch
+            batches = (prefetch(reserve, lambda bounds: fetch(worker, bounds))
+                       if use_probe else serial_batches(worker))
+            try:
+                async for (lo, hi), messages in batches:
+                    known = await self._quick_existing_sources(int(str(chat_id).removeprefix('-100')),
+                        [m.id for m in messages if m.video or m.document])
+                    tasks = [asyncio.create_task(process(worker, msg, known)) for msg in messages]
+                    rows = []
+                    try:
+                        if tasks:
+                            rows = [row for row in await asyncio.gather(*tasks) if row is not None]
+                    finally:
+                        for task in tasks:
+                            if not task.done():
+                                task.cancel()
+                        if tasks:
+                            await asyncio.gather(*tasks, return_exceptions=True)
+                    if rows:
+                        by_id = {m.id: m for m in messages}
+                        def committed(row):
+                            if row['status'].get('duplicate_skipped'):
+                                s['counters']['skipped_dup'] += 1
+                            else:
+                                s['counters']['indexed'] += 1
+                                info = row['metadata_info']
+                                item = {'tmdb_id': info.get('tmdb_id'), 'media_type': info.get('media_type')}
+                                s.setdefault('catalog_pending', {})[f'{item["media_type"]}:{item["tmdb_id"]}'] = item
+                            mark_processed(by_id[row['msg_id']])
+                        await self._quick_write(rows, committed)
+                    if self._cancel:
+                        return  # Partial work is safe to replay; never commit a gap.
+                    async with commit_lock:
+                        async with condition:
+                            completed.append([lo, hi])
+                            merged = []
+                            for start, stop in sorted(completed):
+                                if merged and start <= merged[-1][1]:
+                                    merged[-1][1] = max(stop, merged[-1][1])
+                                else:
+                                    merged.append([start, stop])
+                            while merged and merged[0][0] <= current:
+                                current = max(current, merged.pop(0)[1])
+                            completed[:] = merged
+                            s['cursors'][str(ch_key)] = current
+                            s['current_id'] = current
+                            report['cursor'] = current
+                            processed_ids.difference_update({mid for mid in processed_ids
+                                if mid < current or any(lo <= mid < hi for lo, hi in completed)})
+                            report['processed_message_ids'] = sorted(processed_ids)
+                            s['counters']['total_found'] += len(messages)
+                            detected = sum(1 for m in messages if m.id > report.get('detected_through', 0) and (m.video or m.document))
+                            s['counters']['media_detected'] = s['counters'].get('media_detected', 0) + detected
+                            empty_streak = 0 if messages else empty_streak + 1
+                            condition.notify_all()
+                        await self._persist()
+                        self._catalog_wakeup.set()
+            finally:
+                await batches.aclose()
 
-                await asyncio.gather(*(_worker(m) for m in to_process))
-
-            if self._cancel:
-                s["cursors"][str(ch_key)] = current
-                s["current_id"] = current
-                await self._persist()
-                return False
-
-            empty_streak = 0 if batch_had_content else empty_streak + 1
-            current = upper
-            s["cursors"][str(ch_key)] = current
-            s["current_id"] = current
-
-            batch_count += 1
-            if batch_count % SCAN_PERSIST_EVERY == 0:
-                await self._persist()
-
-            await asyncio.sleep(SCAN_BATCH_DELAY)
+        tasks = [asyncio.create_task(lane(worker)) for worker in workers]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await self._persist()
+        if self._cancel:
+            return False
 
         await self._persist()
         LOGGER.info(f"[ScanManager] Finished {s['current_channel_name']} at id {current}")
+        if not self._cancel:
+            await self._announce_import(client, 'finish')
+            report['finished'] = True
+            await self._persist()
         return True
 
-    async def _probe_last_message_id(self, client, chat_id: int):
+    async def _probe_last_message_id(self, client, chat_id: int, scan_retry=False):
+        if scan_retry:
+            probe = await self._telegram_call(client.send_message, chat_id, SCAN_PROBE_TEXT)
+            try:
+                await self._telegram_call(client.delete_messages, chat_id, probe.id)
+            except MessageDeleteForbidden:
+                LOGGER.warning(f'[Scan] Cannot remove probe {chat_id}/{probe.id}; continuing with its message boundary.')
+            return probe.id
         probe = None
         try:
             probe = await client.send_message(chat_id, SCAN_PROBE_TEXT)
@@ -429,9 +889,10 @@ class ScanManager:
             )
         return last_id
 
-    async def _process_message(self, client, message, chat_id: int) -> None:
+    async def _process_message(self, client, message, chat_id: int, known_sources=None, prepare_only=False):
         s = self.state
         db = self._db
+        quick = s.get('mode') == 'quick'
 
         if is_skip_channel(message):
             s["counters"]["skipped_meta"] += 1
@@ -463,43 +924,81 @@ class ScanManager:
             return
 
         file = message.video or message.document
-        title = message.caption or file.file_name
+        channel_int = int(str(chat_id).replace('-100', ''))
+        if (message.id in known_sources if known_sources is not None
+                else await self._stream_id_exists(channel_int, message.id)):
+            s['counters']['skipped_dup'] += 1
+            return
+        from Backend.helper.resolution_policy import source_resolution, rejection_reason
+        reason = rejection_reason(source_resolution(message.caption, file.file_name))
+        if reason:
+            LOGGER.info(f'[Scan] Skipped {chat_id}/{message.id}: {reason}')
+            if not quick:
+                await route_to_skip_channel(client, message, reason=reason, force_delete=SettingsManager.current().delete_on_metadata_fail, retry_call=self._telegram_call)
+            s['counters']['skipped_resolution'] = s['counters'].get('skipped_resolution', 0) + 1
+            return
+        from Backend.helper.metadata.name_identity import choose_media_title
+        title = choose_media_title(message.caption, file.file_name)
         msg_id = message.id
         raw_size = file.file_size
         size = get_readable_file_size(file.file_size)
         channel_int = int(str(chat_id).replace("-100", ""))
 
         try:
-            if await self._stream_id_exists(channel_int, msg_id):
-                s["counters"]["skipped_dup"] += 1
-                return
-        except Exception as e:
-            LOGGER.warning(f"[ScanManager] Dup-check error msg {msg_id}: {e}")
-
-        try:
+            metadata_started = time.monotonic()
             metadata_info = await metadata(
                 clean_filename(title), channel_int, msg_id,
                 override_id=extract_default_id(caption_with_links(message)),
+                quality_hint=source_resolution(message.caption, file.file_name),
+                raise_errors=True,
             )
+        except (FloodWait, MessageDeleteForbidden):
+            raise
         except Exception as e:
             LOGGER.warning(f"[ScanManager] Metadata exception for msg {msg_id}: {e}")
+            if quick:
+                raise
             metadata_info = None
+        finally:
+            self._metrics['metadata_seconds'] += time.monotonic() - metadata_started
 
         if metadata_info is None:
-            s["counters"]["skipped_meta"] += 1
+            if quick:
+                s["counters"]["skipped_meta"] += 1
+                return
             try:
-                await route_to_skip_channel(client, message)
+                await route_to_skip_channel(client, message, retry_call=self._telegram_call)
+            except FloodWait:
+                raise
             except Exception as e:
                 LOGGER.warning(f"[ScanManager] Skip-channel route failed for msg {msg_id}: {e}")
+                raise
+            s["counters"]["skipped_meta"] += 1
             return
 
         title_clean = finalize_media_name(title, bool(metadata_info.get('group_key')))
         encoded = metadata_info.get("encoded_string") or await encode_string({"chat_id": channel_int, "msg_id": msg_id})
-        await apply_video_thumb_to_metadata(metadata_info, message, encoded, client)
+        if not quick:
+            await apply_video_thumb_to_metadata(metadata_info, message, encoded, client)
+
+        if prepare_only:
+            metadata_info['encoded_string'] = encoded
+            return dict(metadata_info=metadata_info, channel=channel_int, msg_id=msg_id,
+                        size=size, name=title_clean, raw_size=raw_size, status={})
 
         insert_status: dict = {}
         try:
-            async with self._db_lock:
+            from Backend.pyrofork.plugins.receiver import db_lock
+            await self._wait_for_playback()
+            lock_started = time.monotonic()
+            async with db_lock, self._db_lock:
+                self._metrics['db_lock_seconds'] += time.monotonic() - lock_started
+                if self._cancel:
+                    raise _ScanStopped()
+                db_started = time.monotonic()
+                if await self._stream_id_exists(channel_int, msg_id):
+                    s['counters']['skipped_dup'] += 1
+                    return
                 updated_id = await db.insert_media(
                     metadata_info,
                     channel=channel_int,
@@ -509,15 +1008,29 @@ class ScanManager:
                     raw_size=raw_size,
                     status=insert_status,
                 )
+                self._metrics['db_seconds'] += time.monotonic() - db_started
             if updated_id:
                 if insert_status.get("duplicate_skipped"):
                     s["counters"]["skipped_dup"] += 1
                 else:
                     s["counters"]["indexed"] += 1
+                    if not quick:
+                        from Backend.helper.settings_manager import SettingsManager
+                        if SettingsManager.current().announce_scan_titles:
+                            # Opt-in (Settings → Announcements). Quick scan never announces. Queued
+                            # in the background, so the scan does not wait for the channel.
+                            from Backend.helper.announcer import announce_new_media
+                            announce_new_media(metadata_info)
+                    # One shared catalog update per title per batch, awaited
+                    # through the playback gate instead of unbounded tasks.
+                    item = {'tmdb_id': metadata_info.get('tmdb_id'), 'media_type': metadata_info.get('media_type')}
+                    self.state.setdefault('catalog_pending', {})[f'{item["media_type"]}:{item["tmdb_id"]}'] = item
                     if has_raw_ref(message.caption):
                         await stamp_caption_with_id(message, metadata_info)
             else:
                 s["counters"]["skipped_meta"] += 1
+        except (FloodWait, _ScanStopped, MessageDeleteForbidden):
+            raise
         except Exception as e:
             LOGGER.error(f"[ScanManager] DB insert error msg {msg_id}: {e}")
             s["counters"]["errors"] += 1
@@ -526,8 +1039,38 @@ class ScanManager:
     async def _purge_channel_entries(self, channel_int: int) -> int:
         db = self._db
         purged = 0
+        low, high = self.state.get('start_id') or 1, self.state.get('end_id') or 2147483647
+        def targeted(part):
+            try:
+                return int(part['chat_id']) == channel_int and low <= int(part['msg_id']) <= high
+            except (KeyError, TypeError, ValueError):
+                return False
+
+        async def retained(quality):
+            nonlocal purged
+            parts = quality.get('parts') or []
+            if parts:
+                remaining = [p for p in parts if not targeted(p)]
+                if len(remaining) == len(parts):
+                    return quality, False
+                purged += len(parts) - len(remaining)
+                if not remaining:
+                    return None, True
+                updated = dict(quality)
+                archive = 'zip' if str(quality.get('group_key', '')).endswith('.zip') else None
+                updated['id'], updated['size'] = await db._build_part_id_and_size(remaining, archive)
+                updated['parts'] = remaining
+                return updated, True
+            try:
+                decoded = await decode_string(quality['id'])
+            except Exception:
+                return quality, False
+            if targeted(decoded):
+                purged += 1
+                return None, True
+            return quality, False
         try:
-            await db.dbs["tracking"]["subtitles"].delete_many({"chat_id": channel_int})
+            await db.dbs["tracking"]["subtitles"].delete_many({"chat_id": channel_int, 'msg_id': {'$gte': low, '$lte': high}})
         except Exception as e:
             LOGGER.warning(f"[ScanManager] subtitle purge failed for {channel_int}: {e}")
         for i in range(1, db.current_db_index + 1):
@@ -539,15 +1082,10 @@ class ScanManager:
                 remaining = []
                 changed = False
                 for q in movie.get("telegram", []):
-                    try:
-                        decoded = await decode_string(q["id"])
-                        if int(decoded["chat_id"]) == channel_int:
-                            purged += 1
-                            changed = True
-                            continue
-                    except Exception:
-                        pass
-                    remaining.append(q)
+                    kept, removed = await retained(q)
+                    changed = changed or removed
+                    if kept is not None:
+                        remaining.append(kept)
                 if changed:
                     if remaining:
                         movie["telegram"] = remaining
@@ -561,15 +1099,10 @@ class ScanManager:
                     for episode in season.get("episodes", []):
                         remaining = []
                         for q in episode.get("telegram", []):
-                            try:
-                                decoded = await decode_string(q["id"])
-                                if int(decoded["chat_id"]) == channel_int:
-                                    purged += 1
-                                    tv_changed = True
-                                    continue
-                            except Exception:
-                                pass
-                            remaining.append(q)
+                            kept, removed = await retained(q)
+                            tv_changed = tv_changed or removed
+                            if kept is not None:
+                                remaining.append(kept)
                         episode["telegram"] = remaining
                     season["episodes"] = [ep for ep in season["episodes"] if ep.get("telegram")]
                 tv["seasons"] = [se for se in tv["seasons"] if se.get("episodes")]
@@ -588,18 +1121,24 @@ class DbCheckManager:
         self._cancel = False
         self._lock = asyncio.Lock()
         self.state: Dict[str, Any] = self._blank_state()
+        self.last_success = None
 
     @staticmethod
     def _blank_state() -> Dict[str, Any]:
         return {
             "status": "idle",   
             "checked": 0,
+            "sizes_updated": 0,
             "alive": 0,
             "dead": 0,
             "errors": 0,
             "purged": 0,
             "speed": 0,
             "dead_entries": [],   
+            "mode": "check",        # "check" (links + sizes) or "verify" (titles vs. current matcher)
+            "dry_run": False,
+            "verify": None,         # counters, only in verify mode
+            "changes": [],          # what verify moved / forwarded (capped)
             "started_at": 0.0,
             "finished_at": 0.0,
             "error": None,
@@ -618,6 +1157,7 @@ class DbCheckManager:
             "status": s["status"],
             "is_running": s["status"] == "running",
             "checked": s["checked"],
+            "sizes_updated": s["sizes_updated"],
             "alive": s["alive"],
             "dead": s["dead"],
             "errors": s["errors"],
@@ -625,78 +1165,188 @@ class DbCheckManager:
             "speed": s["speed"],
             "dead_count": len(s["dead_entries"]),
             "dead_entries": list(s["dead_entries"]),
+            "mode": s.get("mode", "check"),
+            "dry_run": bool(s.get("dry_run")),
+            "verify": dict(s["verify"]) if s.get("verify") else None,
+            "changes": list(s.get("changes") or []),
             "elapsed": _fmt_elapsed(elapsed),
             "elapsed_seconds": int(elapsed),
             "error": s["error"],
+            "last_manual_success": __import__("Backend.helper.check_history", fromlist=["check_history"]).check_history.manual,
+            "last_auto_success": self._auto_success(),
         }
 
+    def _auto_success(self):
+        from Backend.helper.check_history import check_history
+        return check_history.automatic
+
     #----- ── Control ───────────────────────────────────────────────────────────────
-    async def start(self, client) -> Dict[str, Any]:
+    @scan_coordinator.exclusive_start("DB")
+    async def start(self, client, mode: str = "check", dry_run: bool = False,
+                    check_episodes: bool = True, pause_for_playback: bool = True) -> Dict[str, Any]:
         async with self._lock:
-            if self.state["status"] == "running":
+            if self.state["status"] == "running" or (self._task and not self._task.done()):
                 return {"ok": False, "message": "A DB check is already running."}
+            verify = mode == "verify"
             self.state = self._blank_state()
+            if verify:
+                from Backend.helper.media_verify import blank_verify_state
+                self.state.update(mode="verify", dry_run=bool(dry_run), verify=blank_verify_state())
+            from Backend.helper.check_coordination import manual_check_started
+            manual_check_started()
             self.state["status"] = "running"
             self.state["started_at"] = _now()
             self._cancel = False
-            self._task = asyncio.create_task(self._run(client))
-            return {"ok": True, "message": "DB check started.", "status": self.get_status()}
+            runner = self._run_verify(client, bool(dry_run), bool(check_episodes), bool(pause_for_playback)) if verify else self._run(client)
+            self._task = asyncio.create_task(runner)
+            self._task.add_done_callback(lambda _t, v=verify: self._log_end(v))
+            self._log_start(verify, bool(dry_run))
+            label = "Media verification" + (" (preview only)" if dry_run else "") if verify else "DB check"
+            return {"ok": True, "message": f"{label} started.", "status": self.get_status()}
+
+    #----- Log-channel notices for DB check / Verify Media
+    def _log_start(self, verify: bool, dry_run: bool) -> None:
+        from Backend.helper import log_channel as lc
+        rows = [("🧪", "Mode", "Preview only — nothing is changed" if dry_run else "Live — changes are applied")] if verify else []
+        lc.log_task("start", "Verify Media" if verify else "DB Check", rows, emoji="🧬" if verify else "🩺")
+
+    def _log_end(self, verify: bool) -> None:
+        from Backend.helper import log_channel as lc
+        s = self.state
+        event = {"completed": "finish", "cancelled": "stop", "error": "error"}.get(s.get("status"))
+        if not event:
+            return
+        rows = [("⏱️", "Elapsed", _fmt_elapsed(max(0, _now() - s.get("started_at", _now())))),
+                ("📂", "Files read", f'{s.get("checked", 0):,}')]
+        if verify:
+            v = s.get("verify") or {}
+            dry = bool(s.get("dry_run"))
+            rows += [("✅", "Already correct", f'{v.get("matched", 0):,}'),
+                     ("🔀", "Would re-assign" if dry else "Re-assigned", f'{(v.get("mismatched") if dry else v.get("reassigned", 0)) or 0:,}'),
+                     ("🧹", "Unmatched → skip channel", f'{(v.get("unmatched", 0) if dry else v.get("moved_to_skip", 0)):,}'),
+                     ("♻️", "Duplicates dropped", f'{v.get("duplicates", 0):,}'),
+                     ("🛟", "Kept (name still agrees)", f'{v.get("kept", 0):,}'),
+                     ("⏸️", "Held (provider outage?)", f'{v.get("held", 0):,}'),
+                     ("⚠️", "Errors", f'{s.get("errors", 0):,}')]
+        else:
+            rows += [("🟢", "Alive", f'{s.get("alive", 0):,}'), ("💀", "Dead", f'{s.get("dead", 0):,}'),
+                     ("⚠️", "Errors", f'{s.get("errors", 0):,}')]
+        if event == "error":
+            rows.append(("🧯", "Error", s.get("error")))
+        lc.log_task(event, "Verify Media" if verify else "DB Check", rows, emoji="🧬" if verify else "🩺")
 
     async def cancel(self) -> Dict[str, Any]:
         if self.state["status"] != "running":
             return {"ok": False, "message": "No DB check is currently running."}
-        self._cancel = True
-        return {"ok": True, "message": "Stop requested — finishing the current batch."}
+        async with self._lock:
+            if self.state["status"] != "running":
+                return {"ok": False, "message": "No DB check is currently running."}
+            self._cancel = True
+            task = self._task
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            # A task cancelled before its first execution never enters _run's
+            # finally block. Release automatic-check coordination in that case.
+            if self.state["status"] == "running":
+                self.state["status"] = "cancelled"
+                self.state["finished_at"] = _now()
+                from Backend.helper.check_coordination import manual_check_finished
+                manual_check_finished(False)
+            return {"ok": True, "message": "DB check stopped; pending checks cancelled."}
 
     #----- ── Single-message check ───────────────────────────────────────────────────
-    async def _check_message(self, client, stream_hash: str):
+    async def _check_message(self, client, stream_hash: str, sizes=None):
         try:
             decoded = await decode_string(stream_hash)
+            if not isinstance(decoded, dict):
+                raise ValueError("invalid decoded stream")
             if isinstance(decoded, dict) and "parts" in decoded:
                 parts = decoded.get("parts") or []
                 if not parts:
-                    return False
+                    raise ValueError("empty parts list")
                 for part in parts:
-                    alive = await self._check_one(client, part.get("chat_id"), part.get("msg_id"))
+                    alive = await self._check_one(client, part.get("chat_id"), part.get("msg_id"), sizes)
                     if alive is None:
                         return None
                     if not alive:
                         return False
                 return True
-            return await self._check_one(client, decoded.get("chat_id"), decoded.get("msg_id"))
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            return await self._check_message(client, stream_hash)
+            return await self._check_one(client, decoded.get("chat_id"), decoded.get("msg_id"), sizes)
         except Exception:
+            LOGGER.warning("[DbCheck] Cannot check stream=%s", check_reference(stream_hash), exc_info=True)
             return None
 
-    async def _check_one(self, client, chat_id, msg_id):
+    async def _check_one(self, client, chat_id, msg_id, sizes=None):
         if chat_id is None or msg_id is None:
-            return False
+            LOGGER.warning("[DbCheck] Missing message coordinates: chat=%s message=%s", chat_id, msg_id)
+            return None
         try:
-            chat_id = int(f"-100{chat_id}")
-            msg_id = int(msg_id)
-            msg = await client.get_messages(chat_id, msg_id)
+            msg = await get_check_message(client, chat_id, msg_id, source="DbCheck")
             if msg is None or msg.empty:
                 return False
+            from Backend.helper.pyro import is_media
+            if not is_media(msg):
+                return False
+            collect_file_size(msg, chat_id, int(msg_id), sizes)
             return True
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            return await self._check_one(client, str(chat_id).replace("-100", ""), msg_id)
+        except CheckUnavailable:
+            return None
         except Exception:
+            LOGGER.warning("[DbCheck] Message processing failed: chat=%s message=%s", chat_id, msg_id, exc_info=True)
             return None
 
     async def _process_batch(self, client, batch: List[str]):
-        tasks = [self._check_message(client, h) for h in batch]
+        from Backend.pyrofork.bot import multi_clients
+
+        async def check(stream_hash, worker):
+            sizes = []
+            try:
+                # One deadline covers all parts, cooldowns and the fallback.
+                async with asyncio.timeout(CHECK_TIMEOUT):
+                    result = await self._check_message(worker, stream_hash, sizes)
+                    # Keep the original client's decision authoritative.
+                    if worker is not client and result is not True:
+                        sizes = []
+                        result = await self._check_message(client, stream_hash, sizes)
+                    return result, sizes
+            except TimeoutError:
+                LOGGER.warning("[DbCheck] Complete check timed out: stream=%s limit=%ss; result=unknown",
+                               check_reference(stream_hash), CHECK_TIMEOUT)
+                return None, []
+
+        tasks = []
+        for stream_hash in batch:
+            offset = getattr(self, "_worker_cursor", 0)
+            workers = ordered_check_clients(multi_clients, offset, fallback=client)
+            self._worker_cursor = offset + 1
+            tasks.append(check(stream_hash, workers[0]))
         return await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _save_sizes(self, storage, media_type, document, batch, results):
+        qualities = document.get("telegram", []) if media_type == "movie" else [
+            q for season in document.get("seasons", []) for ep in season.get("episodes", [])
+            for q in ep.get("telegram", [])]
+        by_id = {q.get("id"): q for q in qualities}
+        operations = []
+        for stream_id, result in zip(batch, results):
+            if isinstance(result, tuple):
+                operations.extend(size_updates(document["_id"], media_type, by_id[stream_id], result[1]))
+        if operations:
+            try:
+                result = await storage[media_type].bulk_write(operations, ordered=False)
+                self.state["sizes_updated"] += result.modified_count
+            except Exception:
+                LOGGER.warning("[DbCheck] Size update failed; continuing the link check", exc_info=True)
 
     async def _record_results(self, batch: List[str], results) -> None:
         s = self.state
         for stream_hash, result in zip(batch, results):
             s["checked"] += 1
-            if result is True:
+            status = result[0] if isinstance(result, tuple) else None
+            if status is True:
                 s["alive"] += 1
-            elif result is False:
+            elif status is False:
                 s["dead"] += 1
                 title = None
                 try:
@@ -735,6 +1385,7 @@ class DbCheckManager:
                                 break
                             batch = stream_ids[x:x + DBCHECK_CONCURRENCY]
                             results = await self._process_batch(client, batch)
+                            await self._save_sizes(storage, "movie", movie, batch, results)
                             await self._record_results(batch, results)
                             await asyncio.sleep(DBCHECK_BATCH_DELAY)
 
@@ -759,11 +1410,16 @@ class DbCheckManager:
                                 break
                             batch = stream_ids[x:x + DBCHECK_CONCURRENCY]
                             results = await self._process_batch(client, batch)
+                            await self._save_sizes(storage, "tv", show, batch, results)
                             await self._record_results(batch, results)
                             await asyncio.sleep(DBCHECK_BATCH_DELAY)
 
             s["status"] = "cancelled" if self._cancel else "completed"
             s["finished_at"] = _now()
+            if s["status"] == "completed":
+                from Backend.helper.check_history import check_history
+                await check_history.save_success("manual", s["finished_at"],
+                                                 s["finished_at"] - s["started_at"])
             LOGGER.info(f"[DbCheck] {s['status']} — checked {s['checked']}, dead {s['dead']}")
         except asyncio.CancelledError:
             s["status"] = "cancelled"
@@ -774,6 +1430,33 @@ class DbCheckManager:
             s["error"] = str(e)
             s["finished_at"] = _now()
             LOGGER.error(f"[DbCheck] Error: {e}")
+        finally:
+            from Backend.helper.check_coordination import manual_check_finished
+            manual_check_finished(s["status"] == "completed")
+
+    #----- ── Verify media (re-match every indexed file with the current matcher) ─────────
+    async def _run_verify(self, client, dry_run: bool, check_episodes: bool, pause_for_playback: bool = True) -> None:
+        s = self.state
+        try:
+            from Backend.helper.media_verify import MediaVerifier
+            await MediaVerifier(self, client, dry_run=dry_run, check_episodes=check_episodes,
+                                pause_for_playback=pause_for_playback).run()
+            s["status"] = "cancelled" if self._cancel else "completed"
+            s["finished_at"] = _now()
+            LOGGER.info(f"[Verify] {s['status']}{' (preview)' if dry_run else ''} — {s['verify']}")
+        except asyncio.CancelledError:
+            s["status"] = "cancelled"
+            s["finished_at"] = _now()
+            raise
+        except Exception as e:
+            s["status"] = "error"
+            s["error"] = str(e)
+            s["finished_at"] = _now()
+            LOGGER.error(f"[Verify] Error: {e}")
+        finally:
+            from Backend.helper.check_coordination import manual_check_finished
+            # A verify pass never reads sizes, so it must not satisfy the background checker.
+            manual_check_finished(False)
 
     #----- ── Purge ────────────────────────────────────────────────────────────────────
     async def purge(self, stream_ids: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -800,6 +1483,9 @@ class DbCheckManager:
             d for d in self.state.get("dead_entries", []) if d["id"] not in purged_set
         ]
         self.state["purged"] = self.state.get("purged", 0) + purged
+        from Backend.helper import log_channel as lc
+        lc.log_task("finish", "Dead Link Purge", [("🗑️", "Entries removed", f"{purged:,}"),
+                                                  ("📋", "Requested", f"{len(stream_ids):,}")], emoji="💀")
         return {"ok": True, "message": f"Purged {purged} dead entr{'y' if purged == 1 else 'ies'}.",
                 "purged": purged}
 
@@ -812,6 +1498,7 @@ class DuplicateManager:
         self._cancel = False
         self._lock = asyncio.Lock()
         self.state: Dict[str, Any] = self._blank_state()
+        self.last_success = None
 
     @staticmethod
     def _blank_state() -> Dict[str, Any]:
@@ -887,6 +1574,12 @@ class DuplicateManager:
             self.state["started_at"] = _now()
             self._cancel = False
             self._task = asyncio.create_task(self._run())
+            from Backend.helper import log_channel as lc
+            lc.log_task("start", "Duplicate Scan", emoji="👯")
+            self._task.add_done_callback(lambda _t: lc.log_task(
+                {"completed": "finish", "cancelled": "stop", "error": "error"}.get(self.state.get("status"), "stop"),
+                "Duplicate Scan",
+                [("📚", "Duplicate groups", f'{len(self.state.get("groups", [])):,}')], emoji="👯"))
             return {"ok": True, "message": "Duplicate scan started.", "status": self.get_status()}
 
     async def cancel(self) -> Dict[str, Any]:
@@ -983,6 +1676,10 @@ class DuplicateManager:
             self.state["purge_started_at"] = _now()
             self.state["purge_finished_at"] = 0.0
             self._purge_task = asyncio.create_task(self._run_purge(ids))
+            from Backend.helper import log_channel as lc
+            lc.log_task("start", "Duplicate Removal", [("🗑️", "Files to remove", f"{len(ids):,}")], emoji="🧹")
+            self._purge_task.add_done_callback(lambda _t: lc.log_task(
+                "finish", "Duplicate Removal", [("🗑️", "Removed", f'{self.state.get("purge_done", 0):,}')], emoji="🧹"))
             return {"ok": True, "message": f"Removing {len(ids)} duplicate(s)…",
                     "total": len(ids), "status": self.get_status()}
 

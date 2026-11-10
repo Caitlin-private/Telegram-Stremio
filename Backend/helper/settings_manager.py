@@ -10,9 +10,17 @@ from Backend.logger import LOGGER
 
 #----- Default values (used when nothing exists in the DB yet)
 _DEFAULTS: Dict[str, Any] = {
+    "stream_notice": {},
+    "db_scan_mode": "auto",
+    "forward_subscriber_messages": True,
     "replace_mode": True,
     "duplicate_protection": False,
+    "advanced_file_filtering": False,
+    "allow_multipart_video": False,
+    "ingestion_resolutions": ["360p", "480p", "720p", "1080p", "1440p", "2160p", "other"],
+    "allow_unknown_resolution": False,
     "hide_catalog": False,
+    "allow_user_uploads": False,
     "auth_channels": [],
     "tmdb_api": "",
     "tvdb_api": "",
@@ -25,6 +33,9 @@ _DEFAULTS: Dict[str, Any] = {
     "subscription": False,
     "subscription_group_id": 0,
     "approver_ids": [],
+    "free_access_requests": False,
+    "free_access_days": 30,
+    "subscription_approval_message": "",
     "payment_instructions": "",
     "payment_qr_url": "",
     "http_proxy_url": "",
@@ -45,10 +56,17 @@ _DEFAULTS: Dict[str, Any] = {
     "manual_channels": [],
     "channel_titles": {},
     "announce_new_content": False,
+    "announce_scan_titles": False,
+    "log_channel": "",
+    "log_bot_token": "",
     "announcement_channel": "",
+    "search_bot_username": "",
+    "announcement_poster_provider": "same",
     "skip_channel": "",
     "delete_on_metadata_fail": False,
     "better_poster_enabled": False,
+    "pictorium_poster_enabled": False,
+    "pictorium_poster_url": "",
     "better_poster": "",
     "rpdb_enabled": False,
     "rpdb_api_key": "",
@@ -101,6 +119,10 @@ class Settings:
         merged.update({k: v for k, v in data.items() if k != "_id"})
         self._d = merged
 
+    @property
+    def db_scan_mode(self) -> str:
+        return "manual" if self._d.get("db_scan_mode") == "manual" else "auto"
+
     #----- Booleans
     @property
     def replace_mode(self) -> bool:
@@ -111,8 +133,28 @@ class Settings:
         return bool(self._d.get("duplicate_protection", False))
 
     @property
+    def advanced_file_filtering(self) -> bool:
+        return bool(self._d.get("advanced_file_filtering", False))
+
+    @property
+    def allow_multipart_video(self) -> bool:
+        return bool(self._d.get("allow_multipart_video", False))
+
+    @property
+    def ingestion_resolutions(self) -> List[str]:
+        return list(self._d.get('ingestion_resolutions', _DEFAULTS['ingestion_resolutions']))
+
+    @property
+    def allow_unknown_resolution(self) -> bool:
+        return bool(self._d.get('allow_unknown_resolution', False))
+
+    @property
     def hide_catalog(self) -> bool:
         return bool(self._d["hide_catalog"])
+
+    @property
+    def allow_user_uploads(self) -> bool:
+        return bool(self._d.get("allow_user_uploads", False))
 
     @property
     def subscription(self) -> bool:
@@ -160,6 +202,27 @@ class Settings:
     @property
     def delete_on_metadata_fail(self) -> bool:
         return bool(self._d.get("delete_on_metadata_fail", False))
+
+    @property
+    def announcement_poster_provider(self) -> str:
+        value = str(self._d.get("announcement_poster_provider") or "same").lower()
+        return value if value in ("same", "pictorium", "better", "rpdb", "spatial", "fanart", "default") else "same"
+
+    @property
+    def search_bot_username(self) -> str:
+        return str(self._d.get("search_bot_username") or "").strip()
+
+    @property
+    def announce_scan_titles(self) -> bool:
+        return bool(self._d.get("announce_scan_titles", False))
+
+    @property
+    def log_channel(self) -> str:
+        return str(self._d.get("log_channel") or "").strip()
+
+    @property
+    def log_bot_token(self) -> str:
+        return str(self._d.get("log_bot_token") or "").strip()
 
     @property
     def announcement_channel(self) -> str:
@@ -233,6 +296,18 @@ class Settings:
         return str(self._d.get("webdav_password") or "")
 
     @property
+    def free_access_requests(self) -> bool:
+        return bool(self._d.get("free_access_requests", False))
+
+    @property
+    def free_access_days(self) -> int:
+        return int(self._d.get("free_access_days", 30))
+
+    @property
+    def subscription_approval_message(self) -> str:
+        return str(self._d.get("subscription_approval_message") or "")
+
+    @property
     def payment_instructions(self) -> str:
         return str(self._d.get("payment_instructions") or "")
 
@@ -243,6 +318,14 @@ class Settings:
     @property
     def better_poster_enabled(self) -> bool:
         return bool(self._d.get("better_poster_enabled", False))
+
+    @property
+    def pictorium_poster_enabled(self) -> bool:
+        return bool(self._d.get('pictorium_poster_enabled', False))
+
+    @property
+    def pictorium_poster_url(self) -> str:
+        return str(self._d.get('pictorium_poster_url') or '').strip()
 
     @property
     def better_poster(self) -> str:
@@ -322,6 +405,14 @@ class Settings:
         return list(self._d.get("extra_databases") or [])
 
     #----- Serialisation
+    @property
+    def stream_notice(self) -> dict:
+        return self._d.get('stream_notice') or {}
+
+    @property
+    def forward_subscriber_messages(self) -> bool:
+        return bool(self._d.get('forward_subscriber_messages', True))
+
     def to_dict(self) -> Dict[str, Any]:
         return dict(self._d)
 
@@ -382,6 +473,73 @@ class SettingsManager:
         return ids
 
     @classmethod
+    async def refresh_auth_channel_titles(cls, db) -> dict:
+        """Force-refresh cached AUTH channel names on an explicit admin request.
+
+        Only the settings document is written, and only when a title changed;
+        media/file documents are never scanned or updated.
+        """
+        data = cls.current().to_dict()
+        auth_ids = list(dict.fromkeys(
+            str(value).strip() for value in (data.get("auth_channels") or [])
+            if str(value).strip()
+        ))
+        if not auth_ids:
+            return {"updated": 0, "checked": 0}
+
+        titles = data.get("channel_titles") or {}
+        if not isinstance(titles, dict):
+            titles = {}
+        else:
+            titles = {str(key): str(value) for key, value in titles.items() if value}
+
+        clients = []
+        stream = getattr(botmod, "StreamBot", None)
+        if stream is not None:
+            clients.append(stream)
+        if botmod.Userbot is not None and botmod.Userbot not in clients:
+            clients.append(botmod.Userbot)
+
+        updated = 0
+        for channel_id in auth_ids:
+            resolved = None
+            for client in clients:
+                try:
+                    chat = await client.get_chat(int(channel_id))
+                    title = getattr(chat, "title", None) if chat else None
+                    if title:
+                        resolved = str(title).strip()
+                        break
+                except Exception as exc:
+                    LOGGER.debug(
+                        "SettingsManager: AUTH title refresh failed for %s via %s: %s",
+                        channel_id, type(client).__name__, type(exc).__name__,
+                    )
+            if resolved and titles.get(channel_id) != resolved:
+                titles[channel_id] = resolved
+                updated += 1
+
+        # Keep only active channels, matching the standard title-sync behavior.
+        active = cls._all_channel_ids(data)
+        data["channel_titles"] = {
+            str(key): str(value) for key, value in titles.items()
+            if str(key) in active and value
+        }
+        if updated:
+            await db.save_settings(data)
+            cls._current = Settings(data)
+            LOGGER.info(
+                "SettingsManager: refreshed %s renamed/changed AUTH channel title(s) across %s channel(s).",
+                updated, len(auth_ids),
+            )
+        else:
+            LOGGER.info(
+                "SettingsManager: AUTH channel title refresh checked %s channel(s); no changes found.",
+                len(auth_ids),
+            )
+        return {"updated": updated, "checked": len(auth_ids)}
+
+    @classmethod
     async def _sync_channel_titles(cls, data: dict) -> dict:
         active = cls._all_channel_ids(data)
         existing = data.get("channel_titles") or {}
@@ -414,6 +572,8 @@ class SettingsManager:
     #----- Persist new values, flip the snapshot, and reinitialise dependents
     @classmethod
     async def update(cls, db, new_values: Dict[str, Any]) -> Dict[str, str]:
+        if "db_scan_mode" in new_values and new_values["db_scan_mode"] not in ("auto", "manual"):
+            raise ValueError("db_scan_mode must be auto or manual")
         old = cls.current().to_dict()
         merged = dict(old)
         merged.update(new_values)
@@ -441,6 +601,8 @@ class SettingsManager:
         #----- Phase 2: persist and flip the in-memory snapshot
         await db.save_settings(merged)
         cls._current = Settings(merged)
+        from Backend.helper.check_coordination import scan_settings_changed
+        await scan_settings_changed()
 
         #----- Phase 3: reinit everything that reads current()
         results.update(await cls._reinit_dependent(old, merged))
@@ -505,7 +667,8 @@ class SettingsManager:
                 results["subscription"] = f"error: {exc}"
         else:
             sub_keys = {"subscription_group_id", "approver_ids",
-                        "payment_instructions", "payment_qr_url"}
+                        "payment_instructions", "payment_qr_url", "free_access_requests",
+                        "free_access_days", "subscription_approval_message"}
             if any(old.get(k) != new.get(k) for k in sub_keys):
                 results["subscription"] = "settings reloaded in-memory"
 

@@ -1,22 +1,27 @@
 from datetime import datetime
 
-from pyrogram import Client, enums, filters
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from wzgram import Client, enums, filters
+from wzgram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from Backend import db
+from Backend.helper.bot_media import show_link
 from Backend.config import Telegram
 from Backend.helper.settings_manager import SettingsManager
-from Backend.helper.utils import addon_links_text
+from Backend.helper.utils import addon_links_text, currency_symbol
 from Backend.logger import LOGGER
-
-def _currency_symbol(code):
-    return {"INR": "₹", "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "AUD": "A$", "CAD": "C$", "SGD": "S$", "AED": "د.إ", "BRL": "R$"}.get((code or "INR").upper(), f"{(code or 'INR')} ")
-
 
 
 #----- /start: hand out the Stremio addon link, gated by subscription state
 @Client.on_message(filters.command('start') & filters.private, group=10)
 async def send_start_message(client: Client, message: Message):
+    command = message.command or []
+    if len(command) > 1 and command[1].startswith(("file_", "media_")):
+        try:
+            await show_link(message, command[1])
+        except Exception as exc:
+            LOGGER.warning(f"Media card failed: {type(exc).__name__}")
+            await message.reply_text("Unable to open this title right now. Please try again later.")
+        return
     try:
         user_id = (message.from_user.id if message.from_user else None) or (message.sender_chat.id if message.sender_chat else None) or message.chat.id
         base_url = SettingsManager.current().base_url
@@ -36,7 +41,7 @@ async def send_start_message(client: Client, message: Message):
 
             await message.reply_text(
                 '🎉 <b>Welcome to the Telegram Stremio Media Server!</b>\n\n'
-                'Here are your personal links:\n\n' + links,
+                'Here are your personal links:\n\n' + links + '\n\nUse /history to view your recent playback activity.',
                 quote=True,
                 parse_mode=enums.ParseMode.HTML
             )
@@ -59,22 +64,26 @@ async def send_start_message(client: Client, message: Message):
 
         if not is_active:
             plans = await db.get_subscription_plans()
-            if not plans:
+            allow_free = SettingsManager.current().free_access_requests
+            if not plans and not allow_free:
                 return await message.reply_text(
-                    '<b>Welcome to the Telegram Stremio Private Group!</b>\n\n'
+                    '<b>Welcome to the Caitlin Stream!</b>\n\n'
                     'Currently, no subscription plans are set up. Please contact the administrator.',
                     quote=True,
                     parse_mode=enums.ParseMode.HTML
                 )
 
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"{plan['days']} Days - {_currency_symbol(plan.get('currency'))}{plan['price']}", callback_data=f"plan_{plan['_id']}")]
+            buttons = [
+                [InlineKeyboardButton(f"{plan['days']} Days - {currency_symbol(plan.get('currency'))}{plan['price']}", callback_data=f"plan_{plan['_id']}")]
                 for plan in plans
-            ])
+            ]
+            if allow_free:
+                buttons.append([InlineKeyboardButton("Request Free Access", callback_data="request_free_access")])
+            keyboard = InlineKeyboardMarkup(buttons)
             return await message.reply_text(
-                '<b>Welcome to the Telegram Stremio Private Group!</b>\n\n'
+                '<b>Welcome to the Caitlin Stream!</b>\n\n'
                 'Access to this bot and the Stremio Addon requires an active subscription.\n'
-                'Please select a subscription plan below to continue:',
+                'Please select a subscription plan below or Request access to continue:',
                 reply_markup=keyboard,
                 quote=True,
                 parse_mode=enums.ParseMode.HTML
@@ -90,7 +99,7 @@ async def send_start_message(client: Client, message: Message):
 
         await message.reply_text(
             '🎉 <b>Welcome back to the Telegram Stremio Subscription Manager!</b>\n\n'
-            'Your subscription is active. Here are your personal links:\n\n' + links,
+            'Your subscription is active. Here are your personal links:\n\n' + links + '\n\nUse /history to view your recent playback activity.',
             quote=True,
             parse_mode=enums.ParseMode.HTML
         )

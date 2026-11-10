@@ -299,6 +299,10 @@ def extract_default_id(text: str) -> str | None:
     tmdb_url = re.search(r"/(?:movie|tv)/(\d+)", text)
     if tmdb_url:
         return tmdb_url.group(1)
+    # Cinemeta-style provider IDs: tv123 for series and mv123 for movies.
+    provider_id = re.search(r"\b(tv|mv)(\d{1,10})\b", text, re.IGNORECASE)
+    if provider_id:
+        return provider_id.group(1).lower() + provider_id.group(2)
     return None
 
 
@@ -307,8 +311,13 @@ def split_default_id(default_id) -> tuple:
     if not default_id:
         return None, None, False, False
     value = str(default_id).strip()
-    if value.startswith("tt"):
+    vl = value.lower()
+    if vl.startswith("tt"):
         return value, None, True, False
+    if vl.startswith("tv") and vl[2:].isdigit():
+        return None, int(vl[2:]), False, True
+    if vl.startswith("mv") and vl[2:].isdigit():
+        return None, int(vl[2:]), False, True
     if value.isdigit():
         return None, int(value), False, True
     return None, None, False, False

@@ -95,6 +95,7 @@ class Database:
                 LOGGER.error(f"Failed creating tracking indexes: {e}")
             try:
                 await tracking["stream_analytics"].create_index([("logged_at", ASCENDING)], expireAfterSeconds=30 * 86400)
+                await tracking["stream_analytics"].create_index([("token", ASCENDING), ("logged_at", DESCENDING)], name="token_logged_at")
             except Exception as e:
                 LOGGER.error(f"Failed creating stream_analytics TTL index: {e}")
 
@@ -130,15 +131,18 @@ class Database:
         for collection_name in ("movie", "tv"):
             try:
                 await db[collection_name].create_index([("tmdb_id", ASCENDING)])
+                await db[collection_name].create_index([("updated_on", DESCENDING), ("_id", DESCENDING)])
                 await db[collection_name].create_index([("imdb_id", ASCENDING)])
                 await db[collection_name].create_index([("kitsu_id", ASCENDING)])
-                await db[collection_name].create_index([("updated_on", DESCENDING)])
+                # Source existence checks must not scan whole media collections.
                 await db[collection_name].create_index([("rating", DESCENDING)])
-                prefix = "telegram" if collection_name == "movie" else "seasons.episodes.telegram"
-                await db[collection_name].create_index([(f"{prefix}.id", ASCENDING)])
-                await db[collection_name].create_index([(f"{prefix}.parts.msg_id", ASCENDING)])
-                for field in ("title", "title_english", "original_title", f"{prefix}.name"):
+                source = 'telegram' if collection_name == 'movie' else 'seasons.episodes.telegram'
+                await db[collection_name].create_index([(f'{source}.parts.msg_id', ASCENDING)])
+                for field in ('title', 'title_english', 'original_title', f'{source}.name'):
                     await db[collection_name].create_index([(field, ASCENDING)])
+                await db[collection_name].create_index([(f'{source}.id', ASCENDING)])
+                await db[collection_name].create_index([(f'{source}.parts.chat_id', ASCENDING),
+                                                       (f'{source}.parts.msg_id', ASCENDING)])
             except Exception as e:
                 LOGGER.error(f"Failed creating index on {db_key}/{collection_name}: {e}")
 
@@ -302,11 +306,14 @@ class Database:
         return total_movies, total_tv
 
     async def update_user_interaction(self, user_id: int, first_name: str, username: str):
-        await self.dbs["tracking"]["users"].update_one(
+        result = await self.dbs["tracking"]["users"].update_one(
             {"_id": user_id},
             {"$set": {"first_name": first_name, "username": username, "last_interaction": datetime.utcnow()}},
             upsert=True
         )
+        if result.upserted_id is not None:
+            from Backend.helper import log_channel
+            log_channel.log_new_user(user_id, first_name, username)
 
     async def set_pending_payment(self, user_id: int, plan_duration: int, msg_id: int, price=0, admin_messages: list = None, currency: str = "INR"):
         update_data = {
@@ -326,6 +333,39 @@ class Database:
             upsert=True
         )
 
+    async def create_free_access_request(self, user_id: int, days: int) -> bool:
+        # Selecting a paid plan is only a draft until a screenshot is submitted.
+        # Allow switching that draft to free access, but keep submitted requests.
+        user = await self.get_user(user_id)
+        if not user:
+            return False
+        pending = user.get("pending_payment")
+        if pending is not None:
+            if not isinstance(pending, dict):
+                return False
+            if (pending.get("request_type") == "free"
+                    or pending.get("msg_id", 0) != 0
+                    or pending.get("admin_messages")):
+                return False
+        # Compare the exact snapshot so concurrent submissions cannot be replaced.
+        pending_filter = pending if "pending_payment" in user else {"$exists": False}
+        result = await self.dbs["tracking"]["users"].update_one(
+            {"_id": user_id, "pending_payment": pending_filter},
+            {"$set": {"pending_payment": {
+                "duration": days, "price": 0, "currency": "INR", "msg_id": 0,
+                "date": datetime.utcnow(), "request_type": "free", "admin_messages": [],
+            }}},
+        )
+        return result.modified_count > 0
+
+    async def add_free_access_admin_message(self, user_id: int, chat_id: int, message_id: int):
+        await self.dbs["tracking"]["users"].update_one(
+            {"_id": user_id, "pending_payment.request_type": "free"},
+            {"$push": {"pending_payment.admin_messages": {
+                "chat_id": chat_id, "message_id": message_id, "is_text": True,
+            }}},
+        )
+
     async def approve_payment(self, user_id: int) -> Optional[dict]:
         user = await self.get_user(user_id)
         if not user or "pending_payment" not in user:
@@ -341,14 +381,14 @@ class Database:
         else:
             new_expiry = now + timedelta(days=duration)
 
-        await self.dbs["tracking"]["users"].update_one(
-            {"_id": user_id},
+        result = await self.dbs["tracking"]["users"].update_one(
+            {"_id": user_id, "pending_payment": user["pending_payment"]},
             {
                 "$set": {"subscription_expiry": new_expiry, "subscription_status": "active"},
                 "$unset": {"pending_payment": ""}
             }
         )
-        return await self.get_user(user_id)
+        return await self.get_user(user_id) if result.modified_count else None
 
     async def reject_payment(self, user_id: int) -> bool:
         result = await self.dbs["tracking"]["users"].update_one(
@@ -1167,8 +1207,11 @@ class Database:
                     doc = await col.find_one({"kitsu_id": kid})
                 except (TypeError, ValueError):
                     pass
-            if not doc and title and release_year:
-                doc = await col.find_one({"title": title, "release_year": release_year})
+            if not doc and title and release_year and not str(imdb_id or "").startswith("tgauto"):
+                doc = await col.find_one({
+                    "title": title, "release_year": release_year,
+                    "imdb_id": {"$not": {"$regex": "^tgauto"}},
+                })
             if doc:
                 return doc, f"storage_{db_index}", db_index
         return None, None, None
@@ -1320,9 +1363,11 @@ class Database:
     async def insert_media(
         self, metadata_info: dict,
         channel: int, msg_id: int, size: str, name: str, raw_size: int = 0,
-        status: Optional[dict] = None
-    ) -> Optional[ObjectId]:
-
+        status: Optional[dict] = None, prepare_only: bool = False
+    ) -> Optional[ObjectId] | MovieSchema | TVShowSchema:
+        """Validate a source; quick scan may prepare its model for a grouped write."""
+        from Backend.helper.multipart_video import with_video_part
+        metadata_info = with_video_part({**metadata_info, 'name': name})
         group_key = metadata_info.get("group_key")
         part_number = metadata_info.get("part_number")
 
@@ -1347,8 +1392,11 @@ class Database:
             quality_detail = QualityDetail(
                 quality=metadata_info['quality'],
                 id=metadata_info['encoded_string'],
+                video_part=metadata_info.get('video_part'),
+                video_group=metadata_info.get('video_group'),
                 name=name,
                 size=size,
+                size_bytes=raw_size if raw_size > 0 else None,
             )
 
         def _as_int(val):
@@ -1387,7 +1435,7 @@ class Database:
                 origin_country=metadata_info.get('origin_country', []) or [],
                 telegram=[quality_detail]
             )
-            return await self.update_movie(media, status)
+            return media if prepare_only else await self.update_movie(media, status)
         else:
             tv_show = TVShowSchema(
                 tmdb_id=metadata_info['tmdb_id'],
@@ -1424,9 +1472,14 @@ class Database:
                     )]
                 )]
             )
-            return await self.update_tv_show(tv_show, status)
+            return tv_show if prepare_only else await self.update_tv_show(tv_show, status)
 
     async def _delete_split_part(self, part: dict) -> None:
+        from Backend.helper.scan_batch import DEFERRED_DELETIONS
+        pending = DEFERRED_DELETIONS.get()
+        if pending is not None:
+            pending.append(("part", part.copy()))
+            return
         try:
             chat_id = int(f"-100{part['chat_id']}")
             msg_id = int(part["msg_id"])
@@ -1476,12 +1529,42 @@ class Database:
             result.append(quality_to_update)
         return result
 
+    async def find_existing_duplicate(self, info: dict, name: str, size: str):
+        """Preflight using the exact duplicate policy used by channel insertion."""
+        year = info.get('year')
+        try:
+            year = int(str(year)[:4]) if year else None
+        except (ValueError, TypeError):
+            year = None
+        doc, _, _ = await self._find_existing_media(
+            self._collection_for(info.get('media_type')), info.get('imdb_id'),
+            info.get('tmdb_id'), info.get('title'), year, len(self.dbs) - 1,
+            kitsu_id=info.get('kitsu_id'),
+        )
+        if not doc:
+            return None
+        qualities = doc.get('telegram', [])
+        if self._collection_for(info.get('media_type')) == 'tv':
+            qualities = [q for season in doc.get('seasons', [])
+                         if season.get('season_number') == info.get('season_number')
+                         for episode in season.get('episodes', [])
+                         if episode.get('episode_number') == info.get('episode_number')
+                         for q in episode.get('telegram', [])]
+        incoming = {'quality': info.get('quality'), 'name': name, 'size': size,
+                    'group_key': info.get('group_key'), 'video_part': info.get('video_part'),
+                    'video_group': info.get('video_group')}
+        return doc if self._matches_protected_duplicate(
+            qualities, incoming, self._is_personal_tmdb(doc.get('tmdb_id'))
+        ) else None
+
     #----- Identity of a non-split stream for duplicate protection (quality + name + size)
     @staticmethod
     def _dup_key(quality: dict) -> tuple:
+        from Backend.helper.multipart_video import with_video_part
+        quality = with_video_part(quality)
         name = re.sub(r"\s+", " ", str(quality.get("name") or "").strip().lower())
         size = str(quality.get("size") or "").strip().lower()
-        return (quality.get("quality"), name, size)
+        return (quality.get("quality"), name, size, quality.get('video_part'), quality.get('video_group'))
 
     @staticmethod
     def _is_personal_tmdb(tmdb_id) -> bool:
@@ -1490,13 +1573,55 @@ class Database:
         except (TypeError, ValueError):
             return False
 
+    def _matches_protected_duplicate(self, existing_qualities, incoming, is_personal=False):
+        """Single shared policy for auth-channel inserts and private uploads.
+
+        Replacement mode, split-part merging and personal titles retain their
+        existing channel behavior rather than using a separate upload policy.
+        """
+        settings = SettingsManager.current()
+        if (settings.replace_mode or not settings.duplicate_protection
+                or is_personal or incoming.get('group_key')):
+            return False
+        key = self._dup_key(incoming)
+        return any(not q.get('group_key') and self._dup_key(q) == key
+                   for q in existing_qualities)
+
+    def _advanced_filter_match(self, existing_qualities, incoming, is_personal=False) -> Optional[str]:
+        """Name of an existing same-resolution file the incoming one only duplicates, else None.
+
+        Active only in stacking mode (Replace Mode off, like Duplicate Protection) and never for
+        personal titles, split parts or files sent straight to the main bot.
+        """
+        from Backend.helper.file_variants import bypassed, find_redundant
+        settings = SettingsManager.current()
+        if (not settings.advanced_file_filtering or settings.replace_mode or is_personal
+                or incoming.get('group_key') or bypassed()):
+            return None
+        slot = (incoming.get('video_part'), incoming.get('video_group'))
+        peers = [
+            q.get('name') or '' for q in existing_qualities
+            if q.get('quality') == incoming.get('quality') and not q.get('group_key')
+            and (q.get('video_part'), q.get('video_group')) == slot
+        ]
+        return find_redundant(incoming.get('name') or '', peers)
+
     async def _apply_quality_update(
         self, existing_qualities: List[dict], quality_to_update: dict,
         is_personal: bool = False, status: Optional[dict] = None
     ) -> List[dict]:
+        from Backend.helper.multipart_video import with_video_part
+        existing_qualities = [with_video_part(q) for q in existing_qualities]
+        quality_to_update = with_video_part(quality_to_update)
         target_quality = quality_to_update.get("quality")
         incoming_group_key = quality_to_update.get("group_key")
         replace_mode = SettingsManager.current().replace_mode
+
+        if not incoming_group_key and any(q.get('id') == quality_to_update.get('id')
+                                         for q in existing_qualities if q.get('id')):
+            if status is not None:
+                status['duplicate_skipped'] = True
+            return existing_qualities
 
         if incoming_group_key:
             #----- Incoming is a split part.
@@ -1504,6 +1629,7 @@ class Database:
                 stale = [
                     q for q in existing_qualities
                     if q.get("quality") == target_quality
+                    and not q.get('video_part')
                     and q.get("group_key") != incoming_group_key
                 ]
                 for q in stale:
@@ -1512,6 +1638,7 @@ class Database:
                     q for q in existing_qualities
                     if not (
                         q.get("quality") == target_quality
+                        and not q.get('video_part')
                         and q.get("group_key") != incoming_group_key
                     )
                 ]
@@ -1520,24 +1647,39 @@ class Database:
         #----- Incoming is a normal (non-split) file; a re-save of the same message is never its own duplicate.
         existing_qualities = [q for q in existing_qualities if q.get("id") != quality_to_update.get("id")]
         if replace_mode:
-            stale = [q for q in existing_qualities if q.get("quality") == target_quality]
+            def same_slot(q):
+                if q.get('quality') != target_quality:
+                    return False
+                if q.get('video_part') or quality_to_update.get('video_part'):
+                    return (q.get('video_part'), q.get('video_group')) == (quality_to_update.get('video_part'), quality_to_update.get('video_group'))
+                return True
+            stale = [q for q in existing_qualities if same_slot(q)]
             for q in stale:
                 await self._queue_quality_deletion(q)
             existing_qualities = [
-                q for q in existing_qualities if q.get("quality") != target_quality
+                q for q in existing_qualities if not same_slot(q)
             ]
             existing_qualities.append(quality_to_update)
             return existing_qualities
 
+        #----- REPLACE_MODE off + Advanced File filtering (beta): keep another file at this
+        #----- resolution only when its tags (cut, source, codec, bit depth, HDR, audio) differ.
+        redundant_with = self._advanced_filter_match(existing_qualities, quality_to_update, is_personal)
+        if redundant_with:
+            LOGGER.info(
+                f"Advanced file filtering: skipped '{quality_to_update.get('name')}' "
+                f"({quality_to_update.get('quality')}); same tags as '{redundant_with}'."
+            )
+            if status is not None:
+                status["duplicate_skipped"] = True
+            return existing_qualities
+
         #----- REPLACE_MODE off: skip exact duplicates when protection is on, else stack.
-        if SettingsManager.current().duplicate_protection and not is_personal:
-            key = self._dup_key(quality_to_update)
-            for q in existing_qualities:
-                if not q.get("group_key") and self._dup_key(q) == key:
-                    LOGGER.info(f"Duplicate protection: skipped existing stream '{quality_to_update.get('name')}'.")
-                    if status is not None:
-                        status["duplicate_skipped"] = True
-                    return existing_qualities
+        if self._matches_protected_duplicate(existing_qualities, quality_to_update, is_personal):
+            LOGGER.info(f"Duplicate protection: skipped existing stream '{quality_to_update.get('name')}'.")
+            if status is not None:
+                status["duplicate_skipped"] = True
+            return existing_qualities
         existing_qualities.append(quality_to_update)
         return existing_qualities
 
@@ -1765,7 +1907,7 @@ class Database:
             
             words = query.split()
             regex_query = {
-                '$regex': '.*'.join(map(re.escape, words)), 
+                '$regex': '.*'.join(map(re.escape, words)),
                 '$options': 'i'
             }
 
@@ -1847,138 +1989,44 @@ class Database:
 
 
     async def get_media_details(
-        self, 
+        self,
         imdb_id: str = None,
-        season_number: Optional[int] = None, 
+        season_number: Optional[int] = None,
         episode_number: Optional[int] = None,
         kitsu_id: Optional[int] = None,
         absolute_episode: Optional[int] = None,
-        tmdb_id: Optional[int] = None,
-        media_type: Optional[str] = None,
+        media_type: str = None,
+        can_view=None,
         projection: Optional[dict] = None,
+        tmdb_id: Optional[int] = None,
     ) -> Optional[dict]:
+        from Backend.helper.series_media import merge_media_documents, select_media
 
-        def _find_doc(col):
-            if imdb_id:
-                return col.find_one({"imdb_id": imdb_id}, projection)
-            if kitsu_id is not None:
-                return col.find_one({"kitsu_id": int(kitsu_id)}, projection)
-            if tmdb_id is not None:
-                return col.find_one({"tmdb_id": int(tmdb_id)}, projection)
+        if imdb_id:
+            query = {"imdb_id": imdb_id}
+        elif kitsu_id is not None:
+            query = {"kitsu_id": int(kitsu_id)}
+        elif tmdb_id is not None:
+            try:
+                query = {"tmdb_id": int(tmdb_id)}
+            except (TypeError, ValueError):
+                return None
+        else:
             return None
-
-        for db_idx in range(self.current_db_index, 0, -1):
-            db_key = f"storage_{db_idx}"
-
-            if absolute_episode is not None and (kitsu_id is not None or imdb_id or tmdb_id is not None):
-                tv_show = await _find_doc(self.dbs[db_key]["tv"])
-                if tv_show:
-                    for season in tv_show.get("seasons", []):
-                        for episode in season.get("episodes", []):
-                            if episode.get("absolute_episode") == absolute_episode:
-                                details = convert_objectid_to_str(episode)
-                                details.update({
-                                    "imdb_id": tv_show.get("imdb_id") or imdb_id,
-                                    "kitsu_id": tv_show.get("kitsu_id") or kitsu_id,
-                                    "type": "tv",
-                                    "title": tv_show.get("title"),
-                                    "is_anime": tv_show.get("is_anime"),
-                                    "season_number": season.get("season_number"),
-                                    "episode_number": episode.get("episode_number"),
-                                    "absolute_episode": absolute_episode,
-                                    "backdrop": episode.get("episode_backdrop"),
-                                    "db_index": db_idx
-                                })
-                                return details
-                    if season_number is None and episode_number is None:
-                        for season in tv_show.get("seasons", []):
-                            for episode in season.get("episodes", []):
-                                if episode.get("episode_number") == absolute_episode and season.get("season_number") == 1:
-                                    details = convert_objectid_to_str(episode)
-                                    details.update({
-                                        "imdb_id": tv_show.get("imdb_id") or imdb_id,
-                                        "kitsu_id": tv_show.get("kitsu_id") or kitsu_id,
-                                        "type": "tv",
-                                        "title": tv_show.get("title"),
-                                        "is_anime": tv_show.get("is_anime"),
-                                        "season_number": 1,
-                                        "episode_number": absolute_episode,
-                                        "absolute_episode": absolute_episode,
-                                        "backdrop": episode.get("episode_backdrop"),
-                                        "db_index": db_idx
-                                    })
-                                    return details
-            
-            if episode_number is not None and season_number is not None:
-                tv_show = await _find_doc(self.dbs[db_key]["tv"])
-                if tv_show:
-                    for season in tv_show.get("seasons", []):
-                        if season.get("season_number") == season_number:
-                            for episode in season.get("episodes", []):
-                                if episode.get("episode_number") == episode_number:
-                                    details = convert_objectid_to_str(episode)
-                                    details.update({
-                                        "imdb_id": tv_show.get("imdb_id") or imdb_id,
-                                        "kitsu_id": tv_show.get("kitsu_id") or kitsu_id,
-                                        "type": "tv",
-                                        "title": tv_show.get("title"),
-                                        "is_anime": tv_show.get("is_anime"),
-                                        "season_number": season_number,
-                                        "episode_number": episode_number,
-                                        "absolute_episode": episode.get("absolute_episode"),
-                                        "backdrop": episode.get("episode_backdrop"),
-                                        "db_index": db_idx
-                                    })
-                                    return details
-            
-            elif season_number is not None and absolute_episode is None:
-                tv_show = await _find_doc(self.dbs[db_key]["tv"])
-                if tv_show:
-                    for season in tv_show.get("seasons", []):
-                        if season.get("season_number") == season_number:
-                            details = convert_objectid_to_str(season)
-                            details.update({
-                                "imdb_id": tv_show.get("imdb_id") or imdb_id,
-                                "kitsu_id": tv_show.get("kitsu_id") or kitsu_id,
-                                "type": "tv",
-                                "season_number": season_number,
-                                "db_index": db_idx
-                            })
-                            return details
-            
-            else:
-                if tmdb_id is not None and media_type == "movie":
-                    movie_doc = await _find_doc(self.dbs[db_key]["movie"])
-                    if movie_doc:
-                        movie_doc = convert_objectid_to_str(movie_doc)
-                        movie_doc["type"] = "movie"
-                        movie_doc["db_index"] = db_idx
-                        return movie_doc
-                    continue
-
-                if tmdb_id is not None and media_type in ("series", "tv"):
-                    tv_doc = await _find_doc(self.dbs[db_key]["tv"])
-                    if tv_doc:
-                        tv_doc = convert_objectid_to_str(tv_doc)
-                        tv_doc["type"] = "tv"
-                        tv_doc["db_index"] = db_idx
-                        return tv_doc
-                    continue
-
-                tv_doc = await _find_doc(self.dbs[db_key]["tv"])
-                if tv_doc:
-                    tv_doc = convert_objectid_to_str(tv_doc)
-                    tv_doc["type"] = "tv"
-                    tv_doc["db_index"] = db_idx
-                    return tv_doc
-                
-                movie_doc = await _find_doc(self.dbs[db_key]["movie"])
-                if movie_doc:
-                    movie_doc = convert_objectid_to_str(movie_doc)
-                    movie_doc["type"] = "movie"
-                    movie_doc["db_index"] = db_idx
-                    return movie_doc
-        
+        collections = [self._collection_for(media_type)] if media_type else ["tv", "movie"]
+        for collection in collections:
+            documents = []
+            for index in range(self.current_db_index, 0, -1):
+                # find(), not find_one(): legacy copies can share a bucket.
+                async for doc in self.dbs[f"storage_{index}"][collection].find(query, projection):
+                    if can_view is not None and not can_view(doc):
+                        continue
+                    doc = convert_objectid_to_str(doc)
+                    doc.update(type=collection, db_index=index)
+                    documents.append(doc)
+            if documents:
+                media = merge_media_documents(documents)
+                return select_media(media, season_number, episode_number, absolute_episode)
         return None
 
     #-----
@@ -2083,6 +2131,12 @@ class Database:
 
     #----- Queue deletion of the Telegram message(s) backing a quality (split or single)
     async def _queue_quality_deletion(self, quality: dict) -> None:
+        from Backend.helper.scan_batch import DEFERRED_DELETIONS
+        pending = DEFERRED_DELETIONS.get()
+        if pending is not None:
+            from copy import deepcopy
+            pending.append(("quality", deepcopy(quality)))
+            return
         parts = quality.get("parts")
         if parts:
             for part in parts:
@@ -2126,6 +2180,54 @@ class Database:
             return True
         LOGGER.info(f"No document found with tmdb_id {tmdb_id}.")
         return False
+
+    async def find_media_by_file(
+        self, stream_id: Optional[str] = None, chat_id: Optional[int] = None, msg_id: Optional[int] = None
+    ) -> List[dict]:
+        """Titles holding one file, found by stream id and/or Telegram message.
+
+        Each hit is ``{"doc", "db_index", "media_type", "file"}`` where ``file`` names the quality
+        plus the season/episode it is filed under, so the dashboard can show where it was assigned.
+        """
+        def _is_it(q: dict) -> bool:
+            if stream_id and q.get("id") == stream_id:
+                return True
+            if chat_id is not None and msg_id is not None:
+                return any(p.get("chat_id") == chat_id and p.get("msg_id") == msg_id for p in q.get("parts") or [])
+            return False
+
+        movie_q, tv_q = [], []
+        if stream_id:
+            movie_q.append({"telegram.id": stream_id})
+            tv_q.append({"seasons.episodes.telegram.id": stream_id})
+        if chat_id is not None and msg_id is not None:
+            movie_q.append({"telegram.parts": {"$elemMatch": {"chat_id": chat_id, "msg_id": msg_id}}})
+            tv_q.append({"seasons.episodes.telegram.parts": {"$elemMatch": {"chat_id": chat_id, "msg_id": msg_id}}})
+        hits: List[dict] = []
+        for i in range(1, self.current_db_index + 1):
+            storage = self.dbs.get(f"storage_{i}")
+            if storage is None:
+                continue
+            for media_type, queries in (("movie", movie_q), ("tv", tv_q)):
+                if not queries:
+                    continue
+                async for doc in storage[media_type].find({"$or": queries}).limit(5):
+                    found = None
+                    if media_type == "movie":
+                        found = next(({"quality": q} for q in doc.get("telegram") or [] if _is_it(q)), None)
+                    else:
+                        for season in doc.get("seasons") or []:
+                            for episode in season.get("episodes") or []:
+                                q = next((q for q in episode.get("telegram") or [] if _is_it(q)), None)
+                                if q:
+                                    found = {"quality": q, "season": season.get("season_number"),
+                                             "episode": episode.get("episode_number")}
+                                    break
+                            if found:
+                                break
+                    if found:
+                        hits.append({"doc": doc, "db_index": i, "media_type": media_type, "file": found})
+        return hits
 
     async def get_title_by_stream_id(self, stream_id_hash: str) -> Optional[str]:
         for i in range(1, self.current_db_index + 1):
@@ -2195,6 +2297,61 @@ class Database:
                                 await db["tv"].replace_one({"_id": tv["_id"]}, tv)
                                 return True
         return False
+
+    #----- Detach one quality from one specific document; the Telegram file is left alone.
+    #----- Pinned by document _id (and season/episode for TV) so it can never hit a
+    #----- same-id quality that was just indexed under a different title.
+    async def remove_quality_entry(
+        self, db_index: int, media_type: str, doc_id, stream_id: str,
+        season: Optional[int] = None, episode: Optional[int] = None,
+    ) -> bool:
+        storage = self.dbs.get(f"storage_{db_index}")
+        if storage is None:
+            return False
+        collection_name = self._collection_for(media_type)
+        collection = storage[collection_name]
+        doc = await collection.find_one({"_id": doc_id})
+        if not doc:
+            return False
+
+        removed = False
+        if collection_name == "movie":
+            current = doc.get("telegram") or []
+            kept = [q for q in current if q.get("id") != stream_id]
+            removed = len(kept) != len(current)
+            doc["telegram"] = kept
+            empty = not kept
+        else:
+            for s in doc.get("seasons") or []:
+                if season is not None and s.get("season_number") != season:
+                    continue
+                for e in s.get("episodes") or []:
+                    if episode is not None and e.get("episode_number") != episode:
+                        continue
+                    current = e.get("telegram") or []
+                    kept = [q for q in current if q.get("id") != stream_id]
+                    if len(kept) != len(current):
+                        removed = True
+                        e["telegram"] = kept
+                s["episodes"] = [
+                    e for e in s.get("episodes") or []
+                    if e.get("telegram") or not (episode is None or e.get("episode_number") == episode)
+                ]
+            doc["seasons"] = [
+                s for s in doc.get("seasons") or []
+                if s.get("episodes") or not (season is None or s.get("season_number") == season)
+            ]
+            empty = not doc["seasons"]
+        if not removed:
+            return False
+
+        if empty:
+            await collection.delete_one({"_id": doc_id})
+            await self.purge_media_from_catalogs(doc.get("tmdb_id"), collection_name)
+        else:
+            doc["updated_on"] = datetime.utcnow()
+            await collection.replace_one({"_id": doc_id}, doc)
+        return True
 
     async def delete_movie_quality(self, tmdb_id: int, db_index: int, id: str) -> bool:
         async def mutate(movie):
@@ -2311,6 +2468,8 @@ class Database:
         }
 
         await self.dbs["tracking"]["api_tokens"].insert_one(token_doc)
+        from Backend.helper import log_channel
+        log_channel.log_token_created(name, user_id)
         return convert_objectid_to_str(token_doc)
 
     #----- Return the user's token, creating one if none exists
@@ -2401,6 +2560,76 @@ class Database:
         doc = await self.dbs["tracking"]["api_tokens"].find_one({"user_id": user_id})
         return convert_objectid_to_str(doc) if doc else None
 
+    #----- Registered addon users for owner inbox and messaging commands
+    async def has_registered_token(self, user_id: int) -> bool:
+        return bool(await self.dbs["tracking"]["api_tokens"].find_one(
+            {"user_id": user_id}, {"_id": 1}
+        ))
+
+    async def get_registered_user_ids(self, user_id: int = None) -> List[int]:
+        query = {"user_id": {"$gt": 0}} if user_id is None else {"user_id": user_id}
+        return await self.dbs["tracking"]["api_tokens"].distinct("user_id", query)
+
+    async def list_registered_token_users(self, page: int = 0, page_size: int = 8) -> List[dict]:
+        return await self.dbs["tracking"]["api_tokens"].aggregate([
+            {"$match": {"user_id": {"$gt": 0}}},
+            {"$group": {"_id": "$user_id", "name": {"$first": "$name"}}},
+            {"$sort": {"_id": 1}}, {"$skip": page * page_size}, {"$limit": page_size + 1},
+        ]).to_list(page_size + 1)
+
+    async def set_user_stream_notice(self, user_id: int, notice: dict = None) -> bool:
+        change = {"$unset": {"stream_notice": ""}} if notice is None else {"$set": {"stream_notice": notice}}
+        result = await self.dbs["tracking"]["api_tokens"].update_many({"user_id": user_id}, change)
+        return result.matched_count > 0
+
+    #----- Title search for private bot cards
+    async def search_media_titles(self, query: str, limit: int = 5) -> List[dict]:
+        query = query.strip()
+        if not 2 <= len(query) <= 100:
+            return []
+        condition = {
+            "$or": [
+                {field: {"$regex": re.escape(query), "$options": "i"}}
+                for field in ("title", "title_english", "original_title")
+            ]
+        }
+        matches = []
+        for key, storage in self.dbs.items():
+            if not key.startswith("storage_"):
+                continue
+            for kind in ("movie", "tv"):
+                async for doc in storage[kind].find(condition).sort("title", 1).limit(limit + 1):
+                    matches.append({**doc, "media_type": kind, "db_index": int(key[8:])})
+        matches.sort(
+            key=lambda d: (
+                not any(
+                    str(d.get(f) or "").casefold() == query.casefold() for f in ("title", "title_english", "original_title")
+                ),
+                str(d.get("title") or "").casefold(),
+                d["media_type"],
+                d["db_index"],
+            )
+        )
+        return matches[: limit + 1]
+
+    #----- Resolve previously published file links into their media record
+    async def find_media_by_announcement_file(self, file_id: str) -> Optional[dict]:
+        source = await self.dbs["tracking"]["announcement_files"].find_one({"_id": file_id})
+        if not source:
+            return None
+
+        channel = int(str(source["chat_id"]).removeprefix("-100"))
+        hashes = [await encode_string({"chat_id": c, "msg_id": source["message_id"]}) for c in (channel, str(channel))]
+        parts = {"$elemMatch": {"chat_id": {"$in": [channel, str(channel)]}, "msg_id": source["message_id"]}}
+        for key, storage in self.dbs.items():
+            if not key.startswith("storage_"):
+                continue
+            for kind, prefix in (("movie", "telegram"), ("tv", "seasons.episodes.telegram")):
+                doc = await storage[kind].find_one({"$or": [{prefix + ".id": {"$in": hashes}}, {prefix + ".parts": parts}]})
+                if doc:
+                    return {**doc, "media_type": kind, "db_index": int(key[8:])}
+        return None
+
     async def get_all_api_tokens(self) -> List[dict]:
         cursor = self.dbs["tracking"]["api_tokens"].find().sort("created_at", DESCENDING)
         tokens = await cursor.to_list(None)
@@ -2472,17 +2701,24 @@ class Database:
             }
         )
 
-    async def update_api_token_limits(self, token: str, daily_limit_gb: float, monthly_limit_gb: float) -> bool:
+    async def update_api_token_limits(
+        self, token: str, daily_limit_gb: float = None, monthly_limit_gb: float = None,
+        session_streaming_allowed: bool = None,
+    ) -> bool:
+        update = {}
+        if daily_limit_gb is not None:
+            update["limits.daily_limit_gb"] = daily_limit_gb or 0
+        if monthly_limit_gb is not None:
+            update["limits.monthly_limit_gb"] = monthly_limit_gb or 0
+        if session_streaming_allowed is not None:
+            update["session_streaming_allowed"] = session_streaming_allowed
+        if not update:
+            return bool(await self.get_api_token(token))
         result = await self.dbs["tracking"]["api_tokens"].update_one(
-            {"token": token},
-            {"$set": {
-                "limits": {
-                    "daily_limit_gb": daily_limit_gb if daily_limit_gb else 0,
-                    "monthly_limit_gb": monthly_limit_gb if monthly_limit_gb else 0
-                }
-            }}
+            {"token": token}, {"$set": update}
         )
-        return result.modified_count > 0
+        return result.modified_count > 0 or result.matched_count > 0
+
 
     #-----
     #----- Admin / Link Checker Methods
@@ -2586,28 +2822,54 @@ class Database:
     #-----
 
     async def log_stream_stats(self, stats: dict) -> None:
-        #----- Persist a finished-stream record to the tracking DB for analytics
+        """Persist one completed HTTP stream request with lightweight viewer context."""
         try:
+            meta = stats.get("meta", {}) or {}
+            try:
+                file_size = int(meta.get("file_size") or 0)
+            except (TypeError, ValueError):
+                file_size = 0
+            try:
+                watched_offset = int(stats.get("file_offset") or 0)
+            except (TypeError, ValueError):
+                watched_offset = 0
+            if watched_offset <= 0:
+                try:
+                    watched_offset = int(meta.get("request_end") or 0) + 1
+                except (TypeError, ValueError):
+                    watched_offset = 0
+            completion = round(min(1.0, watched_offset / file_size), 4) if file_size > 0 and watched_offset > 0 else None
             record = {
-                "stream_id":   stats.get("stream_id"),
-                "msg_id":      stats.get("msg_id"),
-                "chat_id":     stats.get("chat_id"),
-                "dc_id":       stats.get("dc_id"),
-                "title":       stats.get("meta", {}).get("title"),  #----- Added title
-                "user_name":   stats.get("meta", {}).get("user_name"),
-                "token":       stats.get("meta", {}).get("token"),
-                "client_index": stats.get("client_index"),
-                "total_bytes": stats.get("total_bytes", 0),
+                "stream_id": stats.get("stream_id"), "msg_id": stats.get("msg_id"),
+                "chat_id": stats.get("chat_id"), "dc_id": stats.get("dc_id"),
+                "title": meta.get("title"), "filename": meta.get("filename") or meta.get("file_name"),
+                "source_type": meta.get("source_type", "telegram"),
+                "user_name": meta.get("user_name"), "token": meta.get("token"),
+                "token_user_id": meta.get("token_user_id"), "client_ip": meta.get("client_ip"),
+                "client_host": meta.get("client_host"), "user_agent": meta.get("user_agent"),
+                "app": meta.get("app"), "device": meta.get("device"),
+                "media": meta.get("media"), "playback_id": meta.get("playback_id"),
+                "file_size": file_size or None, "watched_offset": watched_offset or None,
+                "completion": completion, "request_path": meta.get("request_path"),
+                "request_range": meta.get("request_range"),
+                "client_index": stats.get("client_index"), "total_bytes": stats.get("total_bytes", 0),
                 "duration_sec": round(stats.get("duration", 0.0), 2),
-                "avg_mbps":    round(stats.get("avg_mbps", 0.0), 3),
-                "peak_mbps":   round(stats.get("peak_mbps", 0.0), 3),
-                "status":      stats.get("status", "finished"),
-                "parallelism": stats.get("parallelism"),
-                "chunk_size":  stats.get("chunk_size"),
-                "logged_at":   datetime.now(timezone.utc),
+                "avg_mbps": round(stats.get("avg_mbps", 0.0), 3),
+                "peak_mbps": round(stats.get("peak_mbps", 0.0), 3),
+                "status": stats.get("status", "finished"),
+                "parallelism": stats.get("parallelism"), "chunk_size": stats.get("chunk_size"),
+                "logged_at": datetime.now(timezone.utc),
             }
+            # Snapshot already-cached IP metadata only; never issue a new lookup here.
+            try:
+                from Backend.helper.analytics import cached_ip_info
+                geo = cached_ip_info(record.get("client_ip"))
+                if geo and (geo.get("country") or geo.get("city") or geo.get("isp")):
+                    record["geo"] = {k: geo.get(k) for k in ("country", "country_code", "city", "isp", "proxy")}
+            except Exception:
+                pass
             await self.dbs["tracking"]["stream_analytics"].insert_one(record)
-            token = stats.get("meta", {}).get("token")
+            token = meta.get("token")
             if token:
                 upd = {"last_active": datetime.now(timezone.utc)}
                 if record.get("title"):
@@ -2619,6 +2881,110 @@ class Database:
                 )
         except Exception as e:
             LOGGER.warning(f"Stream analytics log failed: {e}")
+
+    async def fetch_insight_records(self, days: int = 30, limit: int = 5000, *, token: str = None) -> list:
+        """Fetch bounded, retained playback records; optionally restrict to one token."""
+        try:
+            days = max(1, min(int(days or 30), 30))
+            limit = max(1, min(int(limit or 5000), 5000))
+            query = {"logged_at": {"$gte": datetime.utcnow() - timedelta(days=days)}}
+            if token:
+                query["token"] = str(token)
+            projection = {"_id": 0, "title": 1, "filename": 1, "source_type": 1, "user_name": 1,
+                "token": 1, "token_user_id": 1, "client_ip": 1, "device": 1, "app": 1,
+                "media": 1, "playback_id": 1, "geo": 1, "completion": 1,
+                "watched_offset": 1, "file_size": 1, "total_bytes": 1,
+                "duration_sec": 1, "chat_id": 1, "msg_id": 1, "logged_at": 1, "status": 1}
+            rows = await self.dbs["tracking"]["stream_analytics"].find(
+                query, projection
+            ).sort("logged_at", DESCENDING).limit(limit).to_list(None)
+            tokens = list({str(r.get("token")) for r in rows if r.get("token")})
+            if tokens:
+                activity = await self.dbs["tracking"]["user_activity"].find(
+                    {"_id": {"$in": tokens}},
+                    {"_id": 1, "country": 1, "country_code": 1, "city": 1, "isp": 1, "proxy": 1, "ip": 1, "app": 1, "device": 1, "user_agent": 1}
+                ).to_list(None)
+                activity_by_token = {str(a.get("_id")): a for a in activity}
+                for row in rows:
+                    current = activity_by_token.get(str(row.get("token") or "")) or {}
+                    if not row.get("geo"):
+                        row["geo"] = {
+                            "country": current.get("country"), "country_code": current.get("country_code"),
+                            "city": current.get("city"), "isp": current.get("isp"),
+                            "proxy": bool(current.get("proxy")),
+                        }
+                    if not row.get("client_ip"):
+                        row["client_ip"] = current.get("ip")
+                    if not row.get("app"):
+                        row["app"] = current.get("app")
+                    if not row.get("device"):
+                        row["device"] = current.get("device")
+            return rows
+        except Exception as e:
+            LOGGER.warning("Viewer insights fetch failed: %s", e)
+            return []
+
+    async def get_token_user_map(self) -> dict:
+        """Token-to-registered-user map used by admin insights and /history."""
+        out = {}
+        try:
+            tracking = self.dbs["tracking"]
+            token_docs = await tracking["api_tokens"].find(
+                {}, {"token": 1, "name": 1, "user_id": 1, "limits": 1,
+                     "usage": 1, "session_streaming_allowed": 1, "expires_at": 1, "subscription_exempt": 1, "is_admin": 1}
+            ).to_list(None)
+            user_ids = [t.get("user_id") for t in token_docs if t.get("user_id")]
+            users = {}
+            if user_ids:
+                async for user in tracking["users"].find(
+                    {"_id": {"$in": user_ids}}, {"first_name": 1, "last_name": 1, "username": 1}
+                ):
+                    users[user.get("_id")] = user
+            default_token = str(getattr(Telegram, "DEFAULT_ADDON_TOKEN", "") or "")
+            owner_id = int(getattr(Telegram, "OWNER_ID", 0) or 0)
+            for doc in token_docs:
+                tok = str(doc.get("token") or "")
+                if not tok:
+                    continue
+                uid = doc.get("user_id")
+                user = users.get(uid) or {}
+                full_name = " ".join(x for x in (user.get("first_name"), user.get("last_name")) if x).strip()
+                name = str(doc.get("name") or full_name or "Unknown")
+                out[tok] = {"user_id": int(uid) if uid else None, "name": name,
+                    "full_name": full_name or name, "username": user.get("username"),
+                    "is_owner": bool(uid and owner_id and int(uid) == owner_id),
+                    "shared": (uid is None) or (bool(default_token) and tok == default_token),
+                    "limits": doc.get("limits") or {}, "usage": doc.get("usage") or {},
+                    "session_streaming_allowed": bool(doc.get("session_streaming_allowed")),
+                    "subscription_exempt": bool(doc.get("subscription_exempt")),
+                    "is_admin": bool(doc.get("is_admin")), "expires_at": doc.get("expires_at")}
+        except Exception as e:
+            LOGGER.warning("Insights token map failed: %s", e)
+        return out
+
+    async def find_media_identity_by_stream_id(self, stream_id_hash: str) -> Optional[dict]:
+        """Resolve a stored Telegram quality ID to its movie/episode identity."""
+        if not stream_id_hash:
+            return None
+        for i in range(1, self.current_db_index + 1):
+            storage = self.dbs.get(f"storage_{i}")
+            if storage is None:
+                continue
+            movie = await storage["movie"].find_one({"telegram.id": stream_id_hash},
+                {"imdb_id": 1, "tmdb_id": 1, "title": 1})
+            if movie:
+                return {"imdb_id": movie.get("imdb_id"), "tmdb_id": movie.get("tmdb_id"),
+                    "db_index": i, "media_type": "movie", "title": movie.get("title")}
+            tv = await storage["tv"].find_one({"seasons.episodes.telegram.id": stream_id_hash},
+                {"imdb_id": 1, "tmdb_id": 1, "title": 1, "seasons": 1})
+            if tv:
+                for season in tv.get("seasons") or []:
+                    for episode in season.get("episodes") or []:
+                        if any(q.get("id") == stream_id_hash for q in episode.get("telegram") or []):
+                            return {"imdb_id": tv.get("imdb_id"), "tmdb_id": tv.get("tmdb_id"),
+                                "db_index": i, "media_type": "tv", "title": tv.get("title"),
+                                "season": season.get("season_number"), "episode": episode.get("episode_number")}
+        return None
 
     async def get_stream_analytics(self, limit: int = 200) -> dict:
         #----- Return summary stats + recent stream records from the tracking DB
@@ -2743,23 +3109,32 @@ class Database:
 
     def _merge_season_lists(self, primary: List[dict], secondary: List[dict]) -> List[dict]:
         merged = list(primary or [])
-        season_map = {s.get("season_number"): s for s in merged}
+        def _number_key(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return value
+
+        season_map = {_number_key(s.get("season_number")): s for s in merged}
         for season in (secondary or []):
             season_number = season.get("season_number")
-            target_season = season_map.get(season_number)
+            target_season = season_map.get(_number_key(season_number))
             if not target_season:
                 merged.append(season)
-                season_map[season_number] = season
+                season_map[_number_key(season_number)] = season
                 continue
 
             target_season.setdefault("episodes", [])
-            episode_map = {e.get("episode_number"): e for e in target_season["episodes"]}
+            episode_map = {
+                _number_key(e.get("episode_number")): e
+                for e in target_season["episodes"]
+            }
             for episode in season.get("episodes", []):
                 episode_number = episode.get("episode_number")
-                target_episode = episode_map.get(episode_number)
+                target_episode = episode_map.get(_number_key(episode_number))
                 if not target_episode:
                     target_season["episodes"].append(episode)
-                    episode_map[episode_number] = episode
+                    episode_map[_number_key(episode_number)] = episode
                     continue
                 target_episode["telegram"] = self._merge_telegram_lists(
                     target_episode.get("telegram", []), episode.get("telegram", [])

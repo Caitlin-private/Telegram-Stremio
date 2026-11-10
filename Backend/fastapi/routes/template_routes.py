@@ -13,6 +13,7 @@ from Backend.helper.custom_dl import ACTIVE_STREAMS, RECENT_STREAMS
 from Backend.helper.metadata import resolve_cover_url
 from Backend.helper.pyro import get_readable_time
 from Backend.helper.settings_manager import SettingsManager
+from Backend.helper.tv_coverage import compute_coverage
 from Backend.helper.stream_formatter import PRESETS
 import Backend.pyrofork.bot as botmod
 from Backend.pyrofork.bot import StreamBot, multi_clients, work_loads_summary
@@ -116,8 +117,10 @@ async def dashboard_page(request: Request, _: bool = Depends(require_auth)):
             for stream_id, info in ACTIVE_STREAMS.items()
         ]
 
+        from Backend.helper.stats_display import media_size_stats
         system_stats = {
             "server_status": "running",
+            **await media_size_stats(db),
             "uptime": get_readable_time(now - StartTime),
             "telegram_bot": f"@{StreamBot.username}" if StreamBot and StreamBot.username else "@StreamBot",
             "connected_bots": len(multi_clients),
@@ -159,13 +162,29 @@ async def dashboard_page(request: Request, _: bool = Depends(require_auth)):
     return templates.TemplateResponse("dashboard.html", ctx)
 
 
-#----- Media management shell (movie/tv)
-async def media_management_page(request: Request, media_type: str = "movie", custom: bool = False, _: bool = Depends(require_auth)):
+#----- Media management shell (combined library, movies or series)
+async def media_management_page(request: Request, media_type: str = "all", custom: bool = False, _: bool = Depends(require_auth)):
     ctx = _base_context(request)
     ctx["current_user"] = get_current_user(request)
     ctx["media_type"] = media_type
     ctx["custom"] = custom
     return templates.TemplateResponse("media_management.html", ctx)
+
+
+#----- Episode coverage API (uploaded episodes vs provider episode list)
+async def media_coverage_api(request: Request, tmdb_id: int, db_index: int = 1, refresh: bool = False, _: bool = Depends(require_auth)):
+    doc = await db.get_document("tv", tmdb_id, db_index)
+    if not doc:
+        return {"coverage_pct": 0.0, "total_expected": 0, "total_have": 0, "seasons": []}
+    return await compute_coverage(doc, refresh=refresh)
+
+
+async def media_coverage_refresh_api(request: Request, tmdb_id: int, db_index: int = 1, _: bool = Depends(require_auth)):
+    doc = await db.get_document("tv", tmdb_id, db_index)
+    if not doc:
+        return {"ok": False, "reason": "not_found"}
+    await compute_coverage(doc, refresh=True)
+    return {"ok": True}
 
 
 #----- Media edit page for a single title
@@ -178,6 +197,14 @@ async def edit_media_page(request: Request, tmdb_id: int, db_index: int, media_t
         raise HTTPException(status_code=500, detail=str(e))
 
     api_tokens = await db.get_all_api_tokens()
+    from Backend.helper.multipart_video import part_sort_key, with_video_part
+    def order_parts(qualities):
+        normalized = [with_video_part(q) for q in qualities or []]
+        return sorted(sorted(normalized, key=lambda q: q.get('quality') or ''), key=part_sort_key)
+    media_details['telegram'] = order_parts(media_details.get('telegram'))
+    for season in media_details.get('seasons', []):
+        for episode in season.get('episodes', []):
+            episode['telegram'] = order_parts(episode.get('telegram'))
     ctx = _base_context(request)
     ctx.update({
         "current_user": get_current_user(request),
@@ -202,6 +229,15 @@ async def admin_access_page(request: Request, _: bool = Depends(require_auth)):
     ctx = _base_context(request)
     ctx["current_user"] = get_current_user(request)
     return templates.TemplateResponse("access_manage.html", ctx)
+
+
+
+
+#----- Viewer Insights shell
+async def insights_page(request: Request, _: bool = Depends(require_auth)):
+    ctx = _base_context(request)
+    ctx["current_user"] = get_current_user(request)
+    return templates.TemplateResponse("insights.html", ctx)
 
 
 #----- Content requests shell (admin)

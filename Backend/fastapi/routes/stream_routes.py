@@ -13,7 +13,7 @@ from fastapi.responses import Response as PlainResponse
 from fastapi.responses import StreamingResponse
 
 from Backend import db
-from Backend.fastapi.security.tokens import verify_token
+from Backend.fastapi.security.tokens import can_stream_session, verify_token
 from Backend.helper.bounded import BoundedDict
 from Backend.helper.analytics import client_ip_from, record_stream_start
 from Backend.helper.custom_dl import ACTIVE_STREAMS, RECENT_STREAMS, ByteStreamer
@@ -40,6 +40,29 @@ _rr_counter: int = 0
 
 _title_cache = BoundedDict(2000)
 _TITLE_CACHE_TTL = 300
+
+
+async def _enrich_insights_meta(meta: dict, request: Request, token: str, token_data: dict,
+                                stream_id_hash: str, file_size: int, start: int, end: int,
+                                range_header: str = "") -> None:
+    """Attach cached viewer/media context once per HTTP stream request (never per chunk)."""
+    try:
+        from Backend.helper.insights import enrich_stream_meta, resolve_media_identity
+        meta.update({
+            "filename": meta.get("file_name"),
+            "file_size": int(file_size or 0),
+            "request_range": range_header or None,
+            "request_start": int(start or 0),
+            "request_end": int(end or 0),
+            "request_length": max(0, int(end or 0) - int(start or 0) + 1),
+            "token_user_id": (token_data or {}).get("user_id"),
+            "source_type": meta.get("source_type") or "telegram",
+        })
+        identity = await resolve_media_identity(stream_id_hash)
+        enrich_stream_meta(meta, request=request, token=token, stream_id_hash=stream_id_hash,
+                           media_identity=identity)
+    except Exception as exc:
+        LOGGER.debug("Viewer-insights enrichment skipped: %s", exc)
 
 
 #----- Recursively convert non-JSON-native containers to serializable forms
@@ -134,8 +157,8 @@ def _prefetch_for(index: int) -> tuple[int, int]:
 
 
 #----- Run fetch(streamer) on the Userbot when it is the default streamer, else (or on failure) on the bot pool
-async def _db_client(fetch):
-    if SettingsManager.current().default_streaming == "userbot" and (ub := _get_userbot_streamer()):
+async def _db_client(fetch, token_data=None):
+    if can_stream_session(token_data) and SettingsManager.current().default_streaming == "userbot" and (ub := _get_userbot_streamer()):
         try:
             return USERBOT_CLIENT_INDEX, ub, await fetch(ub)
         except Exception as e:
@@ -273,6 +296,106 @@ async def subtitle_handler(token: str, id: str, name: str, token_data: dict = De
 
 
 #----- Entry point: decode the id and dispatch to the matching streamer
+_STREAM_LOG_SEEN: dict = {}
+_STREAM_LOG_COOLDOWN = 900  # players fire many range requests; log one start per user + file
+
+
+def _device_label(user_agent: str) -> str:
+    ua = (user_agent or "").strip()
+    for needle, label in (("stremio", "Stremio"), ("vlc", "VLC"), ("infuse", "Infuse"), ("kodi", "Kodi"),
+                          ("exoplayer", "ExoPlayer (Android)"), ("mpv", "mpv"), ("nuvio", "Nuvio"),
+                          ("edg/", "Edge"), ("chrome", "Chrome"), ("firefox", "Firefox"), ("safari", "Safari")):
+        if needle in ua.lower():
+            return f"{label} · {ua[:60]}" if label.lower() not in ua[:25].lower() else ua[:70]
+    return ua[:70] or "Unknown"
+
+
+async def _log_stream_start(request: Request, token: str, token_data: dict, stream_id: str, name: str) -> None:
+    """Post a live-stream-start event to the log channel (once per user + file per 15 min)."""
+    try:
+        from Backend.helper import log_channel
+        if not log_channel.enabled():
+            return
+        now = time.monotonic()
+        key = (token, stream_id)
+        pending_stop = _STREAM_STOP_TASKS.pop(key, None)
+        if pending_stop is not None and not pending_stop.done():
+            pending_stop.cancel()
+        if now - _STREAM_LOG_SEEN.get(key, -1e9) < _STREAM_LOG_COOLDOWN:
+            return
+        if len(_STREAM_LOG_SEEN) > 5000:
+            for k in [k for k, t in _STREAM_LOG_SEEN.items() if now - t > _STREAM_LOG_COOLDOWN]:
+                _STREAM_LOG_SEEN.pop(k, None)
+        _STREAM_LOG_SEEN[key] = now
+
+        token_data = token_data or {}
+        user_id = token_data.get("user_id")
+        plan = "Admin" if token_data.get("is_admin") else ("Never expires" if token_data.get("subscription_exempt") else None)
+        if plan is None and user_id:
+            user = await db.get_user(user_id)
+            expiry = (user or {}).get("subscription_expiry")
+            plan = f"Subscriber · until {expiry:%d %b %Y}" if db.is_subscription_active(user) and expiry else "Token"
+        title = await db.get_title_by_stream_id(stream_id)
+        log_channel.log_stream_start(
+            user=token_data.get("name"), user_id=user_id, title=title or "Unknown title",
+            file_name=name, ip=client_ip_from(request),
+            device=_device_label(request.headers.get("user-agent", "")), plan=plan or "Token",
+        )
+    except Exception as exc:
+        LOGGER.debug(f"[LogChannel] stream start log failed: {exc}")
+
+
+_STREAM_STOP_TASKS: dict = {}
+_STREAM_ACTIVE_REQUESTS: dict = {}
+_STREAM_STOP_IDLE_SECONDS = 60
+
+
+async def _emit_stream_stop_after_idle(key, *, token_data, title, file_name):
+    try:
+        await asyncio.sleep(_STREAM_STOP_IDLE_SECONDS)
+        if _STREAM_ACTIVE_REQUESTS.get(key, 0) > 0:
+            return
+        from Backend.helper import log_channel
+        if log_channel.enabled():
+            data = token_data or {}
+            log_channel.log_stream_stop(
+                user=data.get("name"), user_id=data.get("user_id"),
+                title=title or file_name or "Unknown title", file_name=file_name,
+                reason=f"No further playback requests for {_STREAM_STOP_IDLE_SECONDS}s",
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        LOGGER.debug("[LogChannel] playback stop log failed: %s", exc)
+    finally:
+        if _STREAM_STOP_TASKS.get(key) is asyncio.current_task():
+            _STREAM_STOP_TASKS.pop(key, None)
+
+
+async def _tracked_stream_body(body_gen, *, token, stream_id_hash, token_data, title, file_name):
+    """Delay stop until ranged requests have been idle, avoiding false stops on seeks."""
+    key = (str(token), str(stream_id_hash))
+    _STREAM_ACTIVE_REQUESTS[key] = _STREAM_ACTIVE_REQUESTS.get(key, 0) + 1
+    pending = _STREAM_STOP_TASKS.pop(key, None)
+    if pending is not None and not pending.done():
+        pending.cancel()
+    try:
+        async for chunk in body_gen:
+            yield chunk
+    finally:
+        remaining = max(0, _STREAM_ACTIVE_REQUESTS.get(key, 1) - 1)
+        if remaining:
+            _STREAM_ACTIVE_REQUESTS[key] = remaining
+        else:
+            _STREAM_ACTIVE_REQUESTS.pop(key, None)
+            previous = _STREAM_STOP_TASKS.pop(key, None)
+            if previous is not None and not previous.done():
+                previous.cancel()
+            _STREAM_STOP_TASKS[key] = asyncio.create_task(
+                _emit_stream_stop_after_idle(key, token_data=token_data, title=title, file_name=file_name)
+            )
+
+
 @router.get("/dl/{token}/{id}/{name}")
 @router.head("/dl/{token}/{id}/{name}")
 async def stream_handler(request: Request, token: str, id: str, name: str, token_data: dict = Depends(verify_token)):
@@ -283,6 +406,7 @@ async def stream_handler(request: Request, token: str, id: str, name: str, token
             client_ip_from(request),
             request.headers.get("user-agent", ""),
         ))
+        asyncio.create_task(_log_stream_start(request, token, token_data, id, name))
     decoded = await decode_string(id)
 
     if decoded.get("global"):
@@ -324,11 +448,24 @@ async def stream_handler(request: Request, token: str, id: str, name: str, token
 
 #----- Stream a single Telegram file, with optional multi-client parallelism
 async def media_streamer(request: Request, chat_id: int, msg_id: int, token: str, token_data: dict = None, stream_id_hash: str = None):
-    index, streamer, file_id = await _db_client(lambda s: s.get_file_properties(chat_id=chat_id, message_id=msg_id))
+    index, streamer, file_id = await _db_client(lambda s: s.get_file_properties(chat_id=chat_id, message_id=msg_id), token_data)
     file_size = file_id.file_size
     range_header = request.headers.get("Range", "")
     start, end = parse_range_header(range_header, file_size)
     req_length = end - start + 1
+
+    # Lazy, resource-bounded media indexing: only on first real playback request.
+    # No ingestion-time downloads and no index writes to the HF container filesystem.
+    if request.method != "HEAD" and start == 0 and file_size > 1024 * 1024:
+        try:
+            from Backend.helper import media_index
+            if bool(getattr(__import__("Backend.config", fromlist=["Telegram"]).Telegram, "STREAM_INDEX_ENABLED", True)):
+                asyncio.create_task(media_index.build_media_index(
+                    file_id, streamer, chat_id=chat_id, message_id=msg_id
+                ))
+        except Exception as exc:
+            LOGGER.debug("Media index scheduling skipped: %s", exc)
+
     chunk_size = 1024 * 1024
     offset = start - (start % chunk_size)
     first_part_cut = start - offset
@@ -346,6 +483,9 @@ async def media_streamer(request: Request, chat_id: int, msg_id: int, token: str
         "user_name": token_data.get("name", "Unknown") if token_data else "Unknown",
         "token": token,
     }
+    if request.method != "HEAD":
+        await _enrich_insights_meta(meta, request, token, token_data, stream_id_hash,
+                                    file_size, start, end, range_header)
 
     parallelism, prefetch_count = _prefetch_for(index)
     extra_clients_for_stream = []
@@ -389,12 +529,12 @@ async def media_streamer(request: Request, chat_id: int, msg_id: int, token: str
 
     if request.method == "HEAD":
         return PlainResponse(status_code=status, headers=headers)
-    return StreamingResponse(body_gen, headers=headers, status_code=status, media_type=mime_type)
+    return StreamingResponse(_tracked_stream_body(body_gen, token=token, stream_id_hash=stream_id_hash, token_data=token_data, title=meta.get("title"), file_name=meta.get("file_name")), headers=headers, status_code=status, media_type=mime_type)
 
 
 #----- Stream media reconstructed from multiple split parts
 async def virtual_media_streamer(request: Request, parts_payload: list, token: str, token_data: dict = None, stream_id_hash: str = None):
-    index, streamer, (parts, file_size) = await _db_client(lambda s: resolve_virtual_parts(parts_payload, s))
+    index, streamer, (parts, file_size) = await _db_client(lambda s: resolve_virtual_parts(parts_payload, s), token_data)
     if not parts or file_size <= 0:
         raise HTTPException(status_code=404, detail="Split media parts not found")
 
@@ -416,6 +556,9 @@ async def virtual_media_streamer(request: Request, parts_payload: list, token: s
         "token": token,
         "split_parts": len(parts),
     }
+    if request.method != "HEAD":
+        await _enrich_insights_meta(meta, request, token, token_data, stream_id_hash,
+                                    file_size, start, end, range_header)
 
     parallelism, prefetch_count = _prefetch_for(index)
 
@@ -431,7 +574,7 @@ async def virtual_media_streamer(request: Request, parts_payload: list, token: s
         streamer=streamer, client_index=index, request=request, meta=meta,
         stream_id=stream_id, parallelism=parallelism, prefetch_count=prefetch_count,
     )
-    return StreamingResponse(body_gen, headers=common_headers, status_code=status, media_type=mime_type)
+    return StreamingResponse(_tracked_stream_body(body_gen, token=token, stream_id_hash=stream_id_hash, token_data=token_data, title=meta.get("title"), file_name=meta.get("file_name")), headers=common_headers, status_code=status, media_type=mime_type)
 
 
 _userbot_streamer: ByteStreamer = None
@@ -449,6 +592,8 @@ def _get_userbot_streamer() -> ByteStreamer:
 
 #----- Stream a Global Search file through the Userbot session directly
 async def global_media_streamer(request: Request, chat_id: int, msg_id: int, token: str, token_data: dict = None, stream_id_hash: str = None):
+    if not can_stream_session(token_data):
+        raise HTTPException(status_code=403, detail="Session playback is not enabled for this user")
     streamer = _get_userbot_streamer()
     if streamer is None:
         raise HTTPException(status_code=503, detail="Global Search streaming is unavailable (no Userbot configured)")
@@ -481,6 +626,9 @@ async def global_media_streamer(request: Request, chat_id: int, msg_id: int, tok
         "token": token,
         "global_search": True,
     }
+    if request.method != "HEAD":
+        await _enrich_insights_meta(meta, request, token, token_data, stream_id_hash,
+                                    file_size, start, end, range_header)
 
     asyncio.create_task(track_usage(stream_id, token, token_data))
 
@@ -505,11 +653,13 @@ async def global_media_streamer(request: Request, chat_id: int, msg_id: int, tok
         chat_id=chat_id,
         message_id=msg_id,
     )
-    return StreamingResponse(body_gen, headers=headers, status_code=status, media_type=mime_type)
+    return StreamingResponse(_tracked_stream_body(body_gen, token=token, stream_id_hash=stream_id_hash, token_data=token_data, title=meta.get("title"), file_name=meta.get("file_name")), headers=headers, status_code=status, media_type=mime_type)
 
 
 #----- Stream a split Global Search file (multiple parts) through the Userbot session
 async def global_virtual_media_streamer(request: Request, parts_payload: list, token: str, token_data: dict = None, stream_id_hash: str = None):
+    if not can_stream_session(token_data):
+        raise HTTPException(status_code=403, detail="Session playback is not enabled for this user")
     streamer = _get_userbot_streamer()
     if streamer is None:
         raise HTTPException(status_code=503, detail="Global Search streaming is unavailable (no Userbot connected)")
@@ -537,6 +687,9 @@ async def global_virtual_media_streamer(request: Request, parts_payload: list, t
         "global_search": True,
         "split_parts": len(parts),
     }
+    if request.method != "HEAD":
+        await _enrich_insights_meta(meta, request, token, token_data, stream_id_hash,
+                                    file_size, start, end, range_header)
 
     asyncio.create_task(track_usage(stream_id, token, token_data))
 
@@ -550,7 +703,7 @@ async def global_virtual_media_streamer(request: Request, parts_payload: list, t
         streamer=streamer, client_index=USERBOT_CLIENT_INDEX, request=request, meta=meta,
         stream_id=stream_id, parallelism=1, prefetch_count=1,
     )
-    return StreamingResponse(body_gen, headers=headers, status_code=status, media_type=mime_type)
+    return StreamingResponse(_tracked_stream_body(body_gen, token=token, stream_id_hash=stream_id_hash, token_data=token_data, title=meta.get("title"), file_name=meta.get("file_name")), headers=headers, status_code=status, media_type=mime_type)
 
 
 #----- Read a byte range from the concatenated virtual parts into memory
@@ -616,6 +769,9 @@ async def _zip_media_streamer(request, parts_payload, token, token_data, stream_
         "token": token,
         "zip_parts": len(parts),
     }
+    if request.method != "HEAD":
+        await _enrich_insights_meta(meta, request, token, token_data, stream_id_hash,
+                                    inner_size, start, end, range_header)
     asyncio.create_task(track_usage(stream_id, token, token_data))
 
     headers, status = _build_stream_headers(mime_type, inner_name, req_length, range_header, start, end, inner_size)
@@ -627,11 +783,13 @@ async def _zip_media_streamer(request, parts_payload, token, token_data, stream_
         streamer=streamer, client_index=client_index, request=request, meta=meta,
         stream_id=stream_id, parallelism=parallelism, prefetch_count=prefetch_count,
     )
-    return StreamingResponse(body_gen, headers=headers, status_code=status, media_type=mime_type)
+    return StreamingResponse(_tracked_stream_body(body_gen, token=token, stream_id_hash=stream_id_hash, token_data=token_data, title=meta.get("title"), file_name=meta.get("file_name")), headers=headers, status_code=status, media_type=mime_type)
 
 
 #----- ZIP split from Global Search (streamed via the Userbot session)
 async def global_zip_media_streamer(request: Request, parts_payload: list, token: str, token_data: dict = None, stream_id_hash: str = None):
+    if not can_stream_session(token_data):
+        raise HTTPException(status_code=403, detail="Session playback is not enabled for this user")
     return await _zip_media_streamer(
         request, parts_payload, token, token_data, stream_id_hash,
         _get_userbot_streamer(), USERBOT_CLIENT_INDEX, False, 1, 1,
@@ -640,7 +798,7 @@ async def global_zip_media_streamer(request: Request, parts_payload: list, token
 
 #----- ZIP split from the indexed library (streamed via the multi-bot pool)
 async def db_zip_media_streamer(request: Request, parts_payload: list, token: str, token_data: dict = None, stream_id_hash: str = None):
-    index, streamer, _ = await _db_client(lambda s: resolve_virtual_parts(parts_payload[:1], s))
+    index, streamer, _ = await _db_client(lambda s: resolve_virtual_parts(parts_payload[:1], s), token_data)
     parallelism, prefetch_count = _prefetch_for(index)
     return await _zip_media_streamer(
         request, parts_payload, token, token_data, stream_id_hash,
@@ -713,11 +871,17 @@ async def get_stream_stats():
         }
         for info in RECENT_STREAMS
     ]
+    try:
+        from Backend.helper.media_index import get_index_cache_stats
+        index_stats = get_index_cache_stats()
+    except Exception:
+        index_stats = {"enabled": False, "entries": 0, "parsed": 0, "negative": 0, "persistent": False}
     return JSONResponse({
         "active_streams": active,
         "recent_streams": recent,
         "client_dc_map": client_dc_map,
         "work_loads": work_loads,
+        "media_index": index_stats,
     })
 
 

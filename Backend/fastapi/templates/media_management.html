@@ -3,6 +3,8 @@
 {% block title %}Media Management - Telegram Stremio{% endblock %}
 
 {% block content %}
+{% set media_label = 'media' if media_type == 'all' else ('movies' if media_type == 'movie' else 'series') %}
+<script src="/static/media_management.js" defer></script>
 <div class="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
     <!-- Unified toolbar -->
     <section class="glass-panel rounded-3xl p-4 sm:p-5 mb-6 sm:mb-8">
@@ -14,7 +16,7 @@
             <div class="relative flex-1 min-w-0">
                 <i class="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-text-secondary text-sm"></i>
                 <input type="text" id="search-input"
-                       placeholder="Search {{ media_type }}s by title..."
+                       placeholder="Search {{ media_label }} by title, or paste a file / stream / t.me link..."
                        class="w-full pl-11 pr-24 py-3 rounded-2xl bg-background text-text placeholder:text-text-secondary border border-border focus:outline-none focus:ring-2 focus:ring-primary/60 focus:border-primary transition">
                 <div class="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
                     <button onclick="clearSearch()" title="Clear"
@@ -29,6 +31,9 @@
             </div>
 
             <div class="flex flex-wrap items-center gap-2">
+                <a href="/media/manage?media_type=all" class="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-full text-sm font-bold transition border {% if media_type == 'all' and not custom %}bg-primary text-white border-primary{% else %}glass-panel text-text hover:bg-surface-2 border-hairline{% endif %}">
+                    <i class="fa-solid fa-layer-group"></i> All media
+                </a>
                 <a href="/media/manage?media_type=movie{% if custom %}&custom=1{% endif %}"
                    class="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-full text-sm font-bold transition border {% if media_type == 'movie' %}bg-primary text-white border-primary shadow-lg shadow-primary/20{% else %}glass-panel text-text hover:bg-surface-2 border-hairline{% endif %}">
                     <i class="fa-solid fa-film"></i> Movies
@@ -51,12 +56,35 @@
         </div>
     </section>
 
+    <section class="glass-panel rounded-3xl p-4 mb-6 space-y-3" aria-label="Bulk media actions">
+        <div class="flex flex-wrap items-center gap-3">
+            <label class="flex items-center gap-2 text-sm font-bold">
+                <input id="bulk-select-page" type="checkbox" onchange="selectVisibleMedia(this.checked)" class="accent-primary" disabled>
+                Select this page
+            </label>
+            <span id="bulk-count" role="status" aria-live="polite" class="text-sm text-text-secondary">0 selected (maximum 100)</span>
+            <button id="bulk-clear" type="button" onclick="clearMediaSelection()" class="px-3 py-2 rounded-xl glass-panel disabled:opacity-40" disabled>Clear selection</button>
+            <button id="bulk-add" type="button" onclick="runMediaBatch('add_to_catalogs')" class="px-4 py-2 rounded-xl bg-primary text-white font-bold disabled:opacity-40" disabled>Add selected to catalogues</button>
+            <button id="bulk-delete" type="button" onclick="runMediaBatch('delete')" class="px-4 py-2 rounded-xl bg-red-500 text-white font-bold disabled:opacity-40" disabled>Delete selected</button>
+        </div>
+        <fieldset id="bulk-catalog-controls">
+            <legend class="sr-only">Destination catalogues</legend>
+            <details>
+                <summary class="cursor-pointer text-sm font-bold text-primary">Choose destination catalogues</summary>
+                <div id="bulk-catalog-list" class="mt-2 max-h-48 overflow-y-auto text-sm">Loading catalogues…</div>
+                <button type="button" onclick="loadBulkCatalogs()" class="text-xs text-primary mt-2">Refresh catalogues</button>
+            </details>
+        </fieldset>
+        <p class="text-xs text-text-secondary">Selections stay across pages and reset when changing the search or view. Exclusive catalogues cannot be combined. Deletion removes entire titles and their Telegram files.</p>
+        <p id="bulk-result" role="status" aria-live="polite" class="text-sm text-text-secondary whitespace-pre-wrap break-words"></p>
+    </section>
+
     <!-- Loading Indicator -->
     <div id="loading" class="hidden text-center py-16">
         <div class="inline-flex items-center justify-center w-14 h-14 rounded-full border border-hairline glass-panel mb-4">
             <div class="animate-spin rounded-full h-7 w-7 border-b-2 border-primary"></div>
         </div>
-        <p class="text-text-secondary">Loading {{ media_type }}s...</p>
+        <p class="text-text-secondary">Loading {{ media_label }}...</p>
     </div>
 
     <!-- Error Display -->
@@ -91,18 +119,14 @@
             <div class="mx-auto w-16 h-16 rounded-2xl bg-surface flex items-center justify-center mb-4 border border-hairline">
                 <i class="fa-solid fa-box-open text-3xl text-text-secondary"></i>
             </div>
-            <h3 class="text-xl font-bold text-text mb-2">No {{ media_type }}s found</h3>
+            <h3 class="text-xl font-bold text-text mb-2">No {{ media_label }} found</h3>
             <p class="text-sm text-text-secondary mb-6">
-                {% if media_type == 'movie' %}
-                No movies match your search criteria.
-                {% else %}
-                No TV shows match your search criteria.
-                {% endif %}
+                No {{ media_label }} match your search criteria.
             </p>
             <button onclick="clearSearch()"
                     class="inline-flex items-center gap-2 bg-primary hover:bg-primary/90 text-white px-5 py-3 rounded-2xl transition font-bold shadow-lg shadow-primary/20">
                 <i class="fa-solid fa-clapperboard"></i>
-                Show All {{ media_type|title }}s
+                Show all {{ media_label }}
             </button>
         </div>
     </div>
@@ -130,6 +154,7 @@
     let currentSearch = '';
     let isLoading = false;
     const mediaType = '{{ media_type }}';
+    const mediaLabel = '{{ media_label }}';
     const isCustom = {{ 'true' if custom else 'false' }};
 
     function showLoading() {
@@ -168,9 +193,11 @@
     }
 
     async function loadMedia(page = 1, search = '') {
-        if (isLoading) return;
-
+        if (isLoading || bulkBusy) return;
+        if (search !== currentSearch) selectedMedia.clear();
+        visibleMedia = [];
         showLoading();
+        syncMediaSelection();
         currentPage = page;
         currentSearch = search;
         syncPageUrl(page, search);
@@ -198,8 +225,11 @@
             hideLoading();
 
             const grid = document.getElementById('media-grid');
-            const mediaKey = mediaType === 'movie' ? 'movies' : 'tv_shows';
-            const mediaItems = data[mediaKey] || [];
+            const mediaItems = data.items || [];
+            visibleMedia = mediaItems;
+            currentPage = data.current_page || page;
+            syncPageUrl(currentPage, search);
+            syncMediaSelection();
 
             if (mediaItems.length === 0) {
                 grid.innerHTML = '';
@@ -211,14 +241,16 @@
 
             document.getElementById('no-results').classList.add('hidden');
             grid.innerHTML = mediaItems.map(item => createMediaCard(item)).join('');
-            updatePagination(data.current_page || page, data.total_pages || 1);
+            syncMediaSelection();
+            renderLibraryPagination(currentPage, data.total_pages || 1);
             updateMediaInfo(data);
 
         } catch (error) {
             console.error('Error loading media:', error);
             hideLoading();
-            showError(`Failed to load ${mediaType}s: ${error.message}`);
-            showToast(`Failed to load ${mediaType}s.`, 'error', 'Load Error');
+            showError(`Failed to load ${mediaLabel}: ${error.message}`);
+            syncMediaSelection();
+            showToast(`Failed to load ${mediaLabel}.`, 'error', 'Load Error');
         }
     }
 
@@ -278,16 +310,19 @@
     }
 
     function createMediaCard(item) {
-    const title = item.title || item.name || 'Unknown Title';
-    const year = item.release_year || 'Unknown Year';
-    const rating = item.rating ? `⭐ ${parseFloat(item.rating).toFixed(1)}` : '';
-    const poster = item.poster || 'https://via.placeholder.com/300x450/e5e7eb/9ca3af?text=No+Image';
-
-    // Escape title for data attribute safety
-    const safeTitle = title.replace(/"/g, '&quot;');
+    const title = escapeHtml(item.title || item.name || 'Unknown Title');
+    const year = escapeHtml(item.release_year || 'Unknown Year');
+    const poster = escapeHtml(item.poster || 'https://via.placeholder.com/300x450/e5e7eb/9ca3af?text=No+Image');
+    const itemType = item.media_type;
+    const key = mediaSelectionKey(item);
+    const safeTitle = title;
 
     return `
-        <div class="group overflow-hidden rounded-3xl glass-panel border border-hairline hover:border-primary/30 transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl">
+        <div data-media-card class="group overflow-hidden rounded-3xl glass-panel border border-hairline hover:border-primary/30 transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl">
+            <label class="flex items-center gap-2 px-4 py-3 cursor-pointer hover:bg-surface-2 text-sm font-semibold">
+                <input type="checkbox" data-media-select data-key="${key}" onchange="toggleMediaSelection(this)" aria-label="Select ${title}" class="w-4 h-4 accent-primary" ${selectedMedia.has(key) ? 'checked' : ''}>
+                Select
+            </label>
             <div class="relative overflow-hidden">
                 <img src="${poster}" alt="${title}" class="w-full aspect-[2/3] object-cover transition duration-300 group-hover:scale-105" onerror="this.src='https://via.placeholder.com/300x450/e5e7eb/9ca3af?text=No+Image'" loading="lazy">
                 <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
@@ -308,17 +343,26 @@
 
             <div class="p-4">
                 <h3 class="font-bold text-sm sm:text-base text-text line-clamp-2 min-h-[2.75rem]" title="${title}">${title}</h3>
+                ${item.matched_file ? `
+                <div class="mt-2 p-2 rounded-xl bg-primary/10 border border-primary/20 text-[11px] leading-snug">
+                    <div class="font-bold text-primary"><i class="fa-solid fa-link"></i> File assigned to</div>
+                    <div class="font-semibold text-text break-words">${escapeHtml(item.matched_file.assigned)}</div>
+                    <div class="text-text-secondary break-all mt-1">${escapeHtml(item.matched_file.name)}${item.matched_file.quality ? ` · ${escapeHtml(item.matched_file.quality)}` : ''}${item.matched_file.size ? ` · ${escapeHtml(item.matched_file.size)}` : ''}</div>
+                </div>` : ''}
                 <div class="mt-2 flex items-center justify-between text-xs text-text-secondary">
                     <span>DB #${item.db_index ?? '-'}</span>
-                    <span>${mediaType === 'movie' ? 'Movie' : 'TV Show'}</span>
+                    <span>${itemType === 'movie' ? 'Movie' : 'Series'}</span>
+                </div>
+                <div class="mt-2 flex flex-wrap gap-1" aria-label="Catalogue tags">
+                    ${(item.catalog_tags || []).map(tag => `<span class="px-2 py-1 rounded-lg bg-primary/10 text-primary text-[10px] font-bold break-all">${escapeHtml(tag.name)}</span>`).join('')}
                 </div>
 
                 <div class="mt-4 flex gap-2">
-                    <a href="/media/edit?tmdb_id=${encodeURIComponent(item.tmdb_id)}&db_index=${encodeURIComponent(item.db_index)}&media_type=${encodeURIComponent(mediaType)}&page=${currentPage}${currentSearch ? `&search=${encodeURIComponent(currentSearch)}` : ''}"
+                    <a href="/media/edit?tmdb_id=${encodeURIComponent(item.tmdb_id)}&db_index=${encodeURIComponent(item.db_index)}&media_type=${encodeURIComponent(itemType)}&page=${currentPage}${currentSearch ? `&search=${encodeURIComponent(currentSearch)}` : ''}"
                        class="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-2xl bg-primary hover:bg-primary/90 text-white text-xs font-bold transition shadow-lg shadow-primary/20">
                         <i class="fa-solid fa-pen-to-square"></i> Edit
                     </a>
-                    <button onclick="deleteMedia(this)"
+                    <button onclick="deleteMedia(this)" data-single-delete data-media-type="${itemType}" aria-label="Delete ${title}"
                             data-tmdb-id="${item.tmdb_id}" 
                             data-db-index="${item.db_index ?? ''}" 
                             data-title="${safeTitle}"
@@ -329,80 +373,6 @@
             </div>
         </div>
     `;
-    }
-
-    function updatePagination(currentPage, totalPages) {
-        const pagination = document.getElementById('pagination');
-        const paginationInner = document.getElementById('pagination-inner');
-
-        if (totalPages <= 1) {
-            pagination.classList.add('hidden');
-            paginationInner.innerHTML = '';
-            return;
-        }
-
-        pagination.classList.remove('hidden');
-        let paginationHTML = '';
-
-        if (currentPage > 1) {
-            paginationHTML += `
-                <button onclick='loadMedia(${currentPage - 1}, ${JSON.stringify(currentSearch)})'
-                        class="px-4 py-2 rounded-2xl glass-panel hover:bg-surface-2 text-text text-sm font-bold transition border border-hairline">
-                    Previous
-                </button>
-            `;
-        }
-
-        const startPage = Math.max(1, currentPage - 2);
-        const endPage = Math.min(totalPages, currentPage + 2);
-
-        if (startPage > 1) {
-            paginationHTML += `
-                <button onclick='loadMedia(1, ${JSON.stringify(currentSearch)})'
-                        class="px-4 py-2 rounded-2xl glass-panel hover:bg-surface-2 text-text text-sm font-bold transition border border-hairline">
-                    1
-                </button>
-            `;
-            if (startPage > 2) {
-                paginationHTML += `<span class="px-2 text-text-secondary text-sm">...</span>`;
-            }
-        }
-
-        for (let i = startPage; i <= endPage; i++) {
-            const isActive = i === currentPage;
-            paginationHTML += `
-                <button onclick='loadMedia(${i}, ${JSON.stringify(currentSearch)})'
-                        class="px-4 py-2 rounded-2xl text-sm font-bold transition border
-                               ${isActive
-                                   ? 'bg-primary text-white border-primary shadow-lg shadow-primary/20'
-                                   : 'glass-panel hover:bg-surface-2 text-text border-hairline'}">
-                    ${i}
-                </button>
-            `;
-        }
-
-        if (endPage < totalPages) {
-            if (endPage < totalPages - 1) {
-                paginationHTML += `<span class="px-2 text-text-secondary text-sm">...</span>`;
-            }
-            paginationHTML += `
-                <button onclick='loadMedia(${totalPages}, ${JSON.stringify(currentSearch)})'
-                        class="px-4 py-2 rounded-2xl glass-panel hover:bg-surface-2 text-text text-sm font-bold transition border border-hairline">
-                    ${totalPages}
-                </button>
-            `;
-        }
-
-        if (currentPage < totalPages) {
-            paginationHTML += `
-                <button onclick='loadMedia(${currentPage + 1}, ${JSON.stringify(currentSearch)})'
-                        class="px-4 py-2 rounded-2xl glass-panel hover:bg-surface-2 text-text text-sm font-bold transition border border-hairline">
-                    Next
-                </button>
-            `;
-        }
-
-        paginationInner.innerHTML = paginationHTML;
     }
 
     function updateMediaInfo(data) {
@@ -416,7 +386,7 @@
         const startItem = totalCount === 0 ? 0 : ((current - 1) * pageSize) + 1;
         const endItem = Math.min(current * pageSize, totalCount);
 
-        resultsInfo.textContent = `Showing ${startItem}-${endItem} of ${totalCount} ${mediaType}s`;
+        resultsInfo.textContent = `Showing ${startItem}-${endItem} of ${totalCount} ${mediaLabel}`;
 
         if (data.databases_checked && data.databases_checked.length > 0) {
             dbInfo.textContent = `Databases checked: ${data.databases_checked.join(', ')}`;
@@ -443,14 +413,18 @@
     }
 
     async function deleteMedia(buttonElement) {
+    if (bulkBusy || isLoading) return;
+    const itemType = buttonElement.dataset.mediaType;
     const tmdbId = buttonElement.getAttribute('data-tmdb-id');
     const dbIndex = buttonElement.getAttribute('data-db-index');
     const title = buttonElement.getAttribute('data-title');
 
-    if (!confirm(`Are you sure you want to delete "${title}"?\n\nThis action cannot be undone.`)) return;
+    if (!confirm(`Delete "${title}" and all its files?\n\nIts backing Telegram messages will also be deleted. This cannot be undone.`)) return;
 
+    bulkBusy = true;
+    syncMediaSelection();
     try {
-        const response = await fetch(`/api/media/delete?tmdb_id=${encodeURIComponent(tmdbId)}&db_index=${encodeURIComponent(dbIndex)}&media_type=${encodeURIComponent(mediaType)}`, {
+        const response = await fetch(`/api/media/delete?tmdb_id=${encodeURIComponent(tmdbId)}&db_index=${encodeURIComponent(dbIndex)}&media_type=${encodeURIComponent(itemType)}`, {
             method: 'DELETE',
             credentials: 'same-origin',
             headers: {
@@ -460,8 +434,9 @@
         });
 
         if (response.ok) {
+            selectedMedia.delete(`${itemType}:${dbIndex}:${tmdbId}`);
+            syncMediaSelection();
             showToast(`"${title}" deleted successfully`, 'success', 'Deleted');
-            loadMedia(currentPage, currentSearch); // Refresh grid
         } else {
             const error = await response.json().catch(() => ({}));
             showToast(error.detail || `Error deleting "${title}"`, 'error', 'Delete Failed');
@@ -469,6 +444,10 @@
     } catch (error) {
         console.error('Error deleting media:', error);
         showToast(`Error deleting "${title}": ${error.message}`, 'error', 'Network Error');
+    } finally {
+        bulkBusy = false;
+        syncMediaSelection();
+        await loadMedia(currentPage, currentSearch);
     }
 }
 
@@ -569,6 +548,32 @@
             </div>
 
             <div class="px-5 sm:px-6 py-5 space-y-5 max-h-[75vh] overflow-y-auto">
+                <section class="rounded-2xl border border-hairline p-4 space-y-3" aria-label="Auth-channel auto-add">
+                    <label class="flex items-center gap-2 font-bold text-text">
+                        <input id="ma-auto" type="checkbox" onchange="maToggleAuto()" class="accent-emerald-500">
+                        Auto-add new AUTH-channel media
+                    </label>
+                    <p class="text-xs text-text-secondary">Capture every supported incoming media file without requiring metadata or a TMDB match. Reuse the fields below; leave custom details and catalogues empty to use the original filename in Untagged. Each file gets its own entry; split parts are joined.</p>
+                    <div id="ma-auto-options" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label for="ma-auto-duration" class="ma-label">Run for</label>
+                            <select id="ma-auto-duration" class="ma-input">
+                                <option value="5">5 minutes</option><option value="15">15 minutes</option>
+                                <option value="60">1 hour</option><option value="">Until I turn off</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="ma-auto-delay" class="ma-label">Start delay</label>
+                            <select id="ma-auto-delay" class="ma-input">
+                                <option value="0">Start now</option><option value="5">Start in 5 minutes</option>
+                                <option value="15">Start in 15 minutes</option>
+                            </select>
+                        </div>
+                        <p class="sm:col-span-2 text-xs text-text-secondary">No stream links needed. Only new uploads during the active window are captured, even after closing this page. Before the start time and after stopping, normal indexing resumes. Subtitles keep their existing handling.</p>
+                    </div>
+                    <p id="ma-auto-status" role="status" aria-live="polite" class="text-sm text-text-secondary">Checking auto-add status…</p>
+                    <button id="ma-auto-stop" type="button" onclick="maStopAuto()" class="hidden px-4 py-2 rounded-xl bg-red-500 text-white font-bold">Turn off auto-add</button>
+                </section>
                 <!-- Type -->
                 <div>
                     <label class="ma-label">Type</label>
@@ -599,8 +604,8 @@
                 <!-- Title details -->
                 <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
                     <div class="sm:col-span-2">
-                        <label class="ma-label">Title *</label>
-                        <input id="ma-m-title" class="ma-input" placeholder="Custom title">
+                        <label class="ma-label">Title (optional for movie auto-add)</label>
+                        <input id="ma-m-title" class="ma-input" placeholder="Selected show or custom title">
                     </div>
                     <div>
                         <label class="ma-label">Year (optional)</label>
@@ -629,16 +634,25 @@
                         <input id="ma-m-backdrop" type="url" class="ma-input" placeholder="Left empty = generated from title">
                     </div>
                 </div>
-                <p class="text-xs text-text-secondary -mt-2">Only <span class="text-text font-semibold">Title *</span>, stream link and quality are required. Empty optional fields are auto-filled &mdash; poster &amp; backdrop become a random gradient cover with the title text.</p>
+                <p class="text-xs text-text-secondary -mt-2">Enter a title and stream links, or enable auth-channel auto-add. TV needs a title and season; automatic episode modes need no episode field. Selected TV shows receive all incoming episodes under that show. Without a search selection, auto-add creates one custom show per session. Quality is detected when left empty.</p>
 
                 <!-- TV episode fields -->
                 <div id="ma-tv-fields" class="hidden grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div class="col-span-2">
+                        <label class="ma-label">Episode detection</label>
+                        <select id="ma-episode-mode" class="ma-input" onchange="document.getElementById('ma-episode').disabled = this.value !== 'fixed'">
+                            <option value="fixed">Specify episode (existing behavior)</option>
+                            <option value="order">By adding order</option>
+                            <option value="filename">By file / message</option>
+                        </select>
+                        <p class="text-xs text-text-secondary">Works with links and auth-channel auto-add. Order: each incoming file becomes the next episode after those already saved in this season. File/message: a leading number such as 12. The Apothecary Diaries.mkv becomes episode 12. Fixed mode adds files to one episode.</p>
+                    </div>
                     <div>
                         <label class="ma-label">Season *</label>
                         <input id="ma-season" type="number" min="0" class="ma-input" placeholder="1">
                     </div>
                     <div>
-                        <label class="ma-label">Episode *</label>
+                        <label class="ma-label">Episode (fixed mode)</label>
                         <input id="ma-episode" type="number" min="0" class="ma-input" placeholder="1">
                     </div>
                     <div class="col-span-2">
@@ -651,17 +665,17 @@
                 <div class="space-y-3">
                     <div class="flex items-center justify-between gap-2">
                         <label class="ma-label" style="margin-bottom:0">Stream link(s) *</label>
-                        <button type="button" onclick="maAddPart()" class="text-xs font-bold text-primary shrink-0"><i class="fa-solid fa-plus"></i> Add split part</button>
+                        <button type="button" onclick="maAddPart()" class="text-xs font-bold text-primary shrink-0"><i class="fa-solid fa-plus"></i> Add another link</button>
                     </div>
                     <div id="ma-parts" class="space-y-2"></div>
-                    <p class="text-xs text-text-secondary">Add more parts only for a split file (they join into one stream, in order).</p>
+                    <p class="text-xs text-text-secondary">With automatic TV episode detection, each link is a separate episode. In fixed mode, multiple links are joined as split parts of one file.</p>
                     <p id="ma-resolve-state" class="text-xs text-text-secondary hidden"></p>
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div>
-                            <label class="ma-label">Quality *</label>
+                            <label class="ma-label">Quality (optional)</label>
                             <select id="ma-quality" class="ma-input">
-                                <option value="">Select</option>
-                                <option>480p</option><option>720p</option><option selected>1080p</option>
+                                <option value="" selected>Auto-detect</option>
+                                <option>360p</option><option>480p</option><option>540p</option><option>720p</option><option>1080p</option>
                                 <option>2160p</option><option value="__custom">Custom…</option>
                             </select>
                         </div>
@@ -692,9 +706,52 @@
 </div>
 
 <script>
-    let maType = mediaType;
+    let maType = mediaType === 'all' ? 'movie' : mediaType;
     let maSelectedId = null;
     let maSearchList = [];
+    let maAutoTimer = null;
+
+    function maToggleAuto() {
+        const enabled = document.getElementById('ma-auto').checked;
+        document.getElementById('ma-episode-mode').disabled = false;
+        document.getElementById('ma-episode').disabled = document.getElementById('ma-episode-mode').value !== 'fixed';
+        document.getElementById('ma-auto-options').classList.toggle('hidden', !enabled);
+        document.getElementById('ma-submit').textContent = enabled ? 'Start auto-add' : 'Add Content';
+        if (enabled) document.getElementById('ma-quality').value = '';
+        document.getElementById('ma-quality-custom').classList.toggle('hidden', document.getElementById('ma-quality').value !== '__custom');
+    }
+
+    function maRenderAutoStatus(data) {
+        const running = ['active', 'scheduled'].includes(data.status);
+        const status = document.getElementById('ma-auto-status');
+        status.textContent = running
+            ? `Auto-add ${data.status}${data.status === 'scheduled' ? ' — starts ' + new Date(data.starts_at * 1000).toLocaleString() : ''}. ${data.expires_at == null ? 'Runs until turned off.' : 'Stops ' + new Date(data.expires_at * 1000).toLocaleString() + '.'}`
+            : `Auto-add ${data.status === 'expired' ? 'expired' : 'off'}.`;
+        document.getElementById('ma-auto-stop').classList.toggle('hidden', !running);
+    }
+
+    async function maLoadAutoStatus() {
+        try {
+            const res = await fetch('/api/media/auto-add');
+            if (!res.ok) throw new Error('Could not load auto-add status.');
+            maRenderAutoStatus(await res.json());
+        } catch (e) {
+            document.getElementById('ma-auto-status').textContent = e.message;
+        }
+    }
+
+    async function maStopAuto() {
+        const btn = document.getElementById('ma-auto-stop');
+        btn.disabled = true;
+        try {
+            const res = await fetch('/api/media/auto-add', {method: 'DELETE'});
+            if (!res.ok) throw new Error('Could not stop auto-add.');
+            maRenderAutoStatus(await res.json());
+            showToast('Auto-add stopped. An in-progress file may finish; captured files are kept.', 'success', 'Auto-add');
+        } catch (e) {
+            showToast(e.message, 'error', 'Auto-add');
+        } finally { btn.disabled = false; }
+    }
 
     function maEsc(s) {
         return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -849,7 +906,7 @@
         const div = document.createElement('div');
         div.className = 'flex flex-col sm:flex-row gap-2';
         div.setAttribute('data-part', '');
-        div.innerHTML = `<input class="ma-input ma-part-url" placeholder="Split part link (in order)">
+        div.innerHTML = `<input class="ma-input ma-part-url" placeholder="Telegram message link (in order)">
             <button type="button" onclick="this.closest('[data-part]').remove()" class="px-4 py-2.5 rounded-xl border border-hairline text-red-300 font-bold text-sm shrink-0">Remove</button>`;
         document.getElementById('ma-parts').appendChild(div);
     }
@@ -860,10 +917,16 @@
     }
 
     function openManualAdd() {
-        maSetType(mediaType);
+        document.getElementById('ma-episode-mode').value = 'fixed';
+        document.getElementById('ma-auto').checked = false;
+        maToggleAuto();
+        clearInterval(maAutoTimer);
+        maLoadAutoStatus();
+        maAutoTimer = setInterval(maLoadAutoStatus, 5000);
+        maSetType(mediaType === 'all' ? 'movie' : mediaType);
         ['ma-name','ma-season','ma-episode','ma-episode-title','ma-m-title','ma-m-year','ma-m-rating','ma-m-genres','ma-m-description','ma-m-poster','ma-m-backdrop','ma-quality-custom','ma-search-query'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
         maResetParts();
-        document.getElementById('ma-quality').value = '1080p';
+        document.getElementById('ma-quality').value = '';
         document.getElementById('ma-quality-custom').classList.add('hidden');
         document.getElementById('ma-resolve-state').classList.add('hidden');
         document.getElementById('ma-search-state').classList.add('hidden');
@@ -878,6 +941,7 @@
     }
 
     function closeManualAdd() {
+        clearInterval(maAutoTimer);
         document.getElementById('manual-add-modal').classList.add('hidden');
         document.body.style.overflow = '';
     }
@@ -904,19 +968,7 @@
             if (!res.ok) throw new Error(data.detail || 'Could not resolve link');
             const d = data.data || {};
             document.getElementById('ma-name').value = d.name || '';
-            if (d.quality) {
-                const sel = document.getElementById('ma-quality');
-                const custom = document.getElementById('ma-quality-custom');
-                const opt = [...sel.options].find(o => o.value.toLowerCase() === String(d.quality).toLowerCase());
-                if (opt) {
-                    sel.value = opt.value;
-                    custom.classList.add('hidden');
-                } else {
-                    sel.value = '__custom';
-                    custom.value = d.quality;
-                    custom.classList.remove('hidden');
-                }
-            }
+            // Resolving a link must not overwrite Auto-detect or an explicit quality.
             if (maType === 'tv') {
                 if (d.season != null && !document.getElementById('ma-season').value) document.getElementById('ma-season').value = d.season;
                 if (d.episode != null && !document.getElementById('ma-episode').value) document.getElementById('ma-episode').value = d.episode;
@@ -939,9 +991,9 @@
         const parts = maCollectParts();
         const quality = maQuality();
         const title = document.getElementById('ma-m-title').value.trim();
-        if (!title) { showToast('Enter a title.', 'error', 'Error'); return; }
-        if (!parts.length) { showToast('Paste at least one Telegram message link.', 'error', 'Error'); return; }
-        if (!quality) { showToast('Select a quality.', 'error', 'Error'); return; }
+        const auto = document.getElementById('ma-auto').checked;
+        if ((!auto || maType === 'tv') && !title && !maSelectedId) { showToast('Enter a title or select a show.', 'error', 'Error'); return; }
+        if (!auto && !parts.length) { showToast('Paste at least one Telegram message link.', 'error', 'Error'); return; }
 
         const payload = {
             media_type: maType,
@@ -963,23 +1015,36 @@
         if (maType === 'tv') {
             const s = document.getElementById('ma-season').value.trim();
             const e = document.getElementById('ma-episode').value.trim();
-            if (s === '' || e === '') { showToast('Season and episode are required.', 'error', 'Error'); return; }
-            payload.season_number = Number(s);
-            payload.episode_number = Number(e);
+            const mode = document.getElementById('ma-episode-mode').value;
+            if (s === '' || (mode === 'fixed' && e === '')) { showToast('Enter a season and an episode if using fixed mode.', 'error', 'Error'); return; }
+            payload.episode_detection = mode;
+            payload.season_number = s === '' ? null : Number(s);
+            payload.episode_number = mode !== 'fixed' || e === '' ? null : Number(e);
             payload.episode_title = document.getElementById('ma-episode-title').value.trim() || undefined;
         }
 
+        if (auto) {
+            const duration = document.getElementById('ma-auto-duration').value;
+            payload.duration_minutes = duration === '' ? null : Number(duration);
+            payload.delay_minutes = Number(document.getElementById('ma-auto-delay').value);
+            payload.quality = quality;
+        }
         btn.disabled = true;
         try {
-            const res = await fetch('/api/media/manual-add', {
+            const res = await fetch(auto ? '/api/media/auto-add' : '/api/media/manual-add', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(payload)
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.detail || 'Failed to add content');
+            if (auto) {
+                maRenderAutoStatus(data);
+                showToast('Auto-add enabled. You can close this page.', 'success', 'Auto-add');
+                return;
+            }
             showToast(data.message || 'Added successfully.', 'success', 'Added');
             closeManualAdd();
-            if (data.media_type === mediaType) {
+            if (mediaType === 'all' || data.media_type === mediaType) {
                 loadMedia(currentPage, currentSearch);
             }
         } catch (e) {

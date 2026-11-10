@@ -13,10 +13,13 @@ class QualityPart(BaseModel):
 
 
 class QualityDetail(BaseModel):
+    video_part: Optional[int] = None
+    video_group: Optional[str] = None
     quality: str
     id: str
     name: str
     size: str
+    size_bytes: Optional[int] = Field(default=None, ge=0)
     group_key: Optional[str] = None
     parts: Optional[List[QualityPart]] = None
 

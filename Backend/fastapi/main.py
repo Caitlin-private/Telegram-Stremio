@@ -6,7 +6,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from Backend import __version__
+from Backend import __version__, db
+from Backend.helper.digital_release_cleaner import DigitalReleaseCleaner
+
+from Backend.logger import LOGGER
 from Backend.fastapi.themes import DEFAULT_THEME, DEFAULT_STYLE, get_theme
 from Backend.fastapi.routes.api_routes import (
     add_custom_catalog_item_api,
@@ -65,6 +68,7 @@ from Backend.fastapi.routes.api_routes import (
     get_stream_analytics_api,
     get_subscription_plans_api,
     get_settings_api,
+    force_refresh_auth_channel_titles_api,
     get_logs_api,
     get_manual_session_api,
     get_system_stats_api,
@@ -82,6 +86,14 @@ from Backend.fastapi.routes.api_routes import (
     link_token_user_api,
     list_custom_catalogs_api,
     list_media_api,
+    bulk_media_api,
+    ingestion_metrics_api,
+    pause_ingestion_api,
+    channel_ingestion_api,
+    ingestion_start_from_api,
+    channel_auto_add_status_api,
+    channel_auto_add_start_api,
+    channel_auto_add_stop_api,
     manage_subscriber_api,
     manual_add_media_api,
     list_manual_add_catalogs_api,
@@ -112,8 +124,13 @@ from Backend.fastapi.routes.api_routes import (
     update_media_api,
     update_request_api,
     update_settings_api,
+    test_log_channel_api,
     update_subscription_plan_api,
     update_token_limits_api,
+    get_insights_overview_api,
+    get_insights_title_api,
+    get_insights_viewer_api,
+    get_insights_export_api,
 )
 from Backend.fastapi.routes.stream_routes import decay_client_failures
 from Backend.fastapi.routes.stream_routes import router as stream_router
@@ -126,6 +143,7 @@ from Backend.fastapi.routes.template_routes import (
     admin_requests_page,
     admin_subscriptions_page,
     public_request_page,
+    insights_page,
     custom_catalogs_page,
     dashboard_page,
     edit_media_page,
@@ -133,6 +151,8 @@ from Backend.fastapi.routes.template_routes import (
     login_post,
     logout,
     media_management_page,
+    media_coverage_api,
+    media_coverage_refresh_api,
     settings_page,
     set_theme,
     tools_page,
@@ -141,6 +161,8 @@ from Backend.fastapi.security.credentials import require_auth
 from Backend.pyrofork.bot import work_loads_summary
 
 templates = Jinja2Templates(directory="Backend/fastapi/templates")
+
+digital_release_cleaner = DigitalReleaseCleaner(db)
 
 app = FastAPI(
     title="Telegram Stremio Media Server",
@@ -267,6 +289,11 @@ async def public_status():
 @app.get("/open/{app_name}/{media_type}/{content_id}", response_class=HTMLResponse)
 async def open_in_app(app_name: str, media_type: str, content_id: str):
     stremio_type = "series" if media_type in ("series", "tv") else "movie"
+    from Backend.helper.series_media import series_id, SERIES_PREFIX
+    from Backend.helper.settings_manager import SettingsManager
+    if (stremio_type == 'series' and not SettingsManager.current().hide_catalog
+            and not content_id.startswith((SERIES_PREFIX, 'kitsu:'))):
+        content_id = series_id(content_id)
     web = f"https://web.stremio.com/#/detail/{stremio_type}/{content_id}/{content_id}"
     schemes = {
         "nuvio": f"nuvio://meta?type={stremio_type}&id={content_id}",
@@ -297,7 +324,7 @@ async def admin_dashboard(request: Request, _: bool = Depends(require_auth)):
     return await admin_dashboard_page(request, _)
 
 @app.get("/media/manage", response_class=HTMLResponse)
-async def media_management(request: Request, media_type: str = "movie", custom: bool = False, _: bool = Depends(require_auth)):
+async def media_management(request: Request, media_type: str = Query("all", regex="^(all|movie|tv)$"), custom: bool = False, _: bool = Depends(require_auth)):
     return await media_management_page(request, media_type, custom, _)
 
 @app.get("/catalogs", response_class=HTMLResponse)
@@ -308,16 +335,31 @@ async def custom_catalogs(request: Request, _: bool = Depends(require_auth)):
 async def edit_media(request: Request, tmdb_id: int, db_index: int, media_type: str, _: bool = Depends(require_auth)):
     return await edit_media_page(request, tmdb_id, db_index, media_type, _)
 
+@app.get("/api/media/coverage/{tmdb_id}")
+async def api_media_coverage(request: Request, tmdb_id: int, db_index: int = Query(1), refresh: bool = Query(False), _: bool = Depends(require_auth)):
+    return await media_coverage_api(request, tmdb_id, db_index, refresh, _)
+
+
+@app.post("/api/media/coverage/{tmdb_id}/refresh")
+async def api_media_coverage_refresh(request: Request, tmdb_id: int, db_index: int = Query(1), _: bool = Depends(require_auth)):
+    return await media_coverage_refresh_api(request, tmdb_id, db_index, _)
+
+
 @app.get("/api/media/list")
 async def list_media(
-    media_type: str = Query("movie", regex="^(movie|tv)$"),
+    media_type: str = Query("all", regex="^(all|movie|tv)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(24, ge=1, le=100),
-    search: str = Query("", max_length=100),
+    search: str = Query("", max_length=2000),
     custom: bool = Query(False),
     _: bool = Depends(require_auth)
 ):
     return await list_media_api(media_type, page, page_size, search, custom)
+
+@app.post("/api/media/bulk")
+async def bulk_media(payload: dict, _: bool = Depends(require_auth)):
+    return await bulk_media_api(payload)
+
 
 @app.delete("/api/media/delete")
 async def delete_media(tmdb_id: int, db_index: int, media_type: str, _: bool = Depends(require_auth)):
@@ -361,6 +403,26 @@ async def update_token(token: str, payload: dict, _: bool = Depends(require_auth
 @app.delete("/api/tokens/{token}")
 async def revoke_token(token: str, _: bool = Depends(require_auth)):
     return await revoke_token_api(token)
+
+@app.get("/api/system/ingestion")
+async def ingestion_metrics(_: bool = Depends(require_auth)):
+    return JSONResponse(await ingestion_metrics_api(), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/system/ingestion/pause")
+async def pause_ingestion(payload: dict, _: bool = Depends(require_auth)):
+    return await pause_ingestion_api(payload)
+
+
+@app.post("/api/system/ingestion/channel")
+async def channel_ingestion(payload: dict, _: bool = Depends(require_auth)):
+    return await channel_ingestion_api(payload)
+
+
+@app.post("/api/system/ingestion/start-from")
+async def ingestion_start_from(payload: dict, _: bool = Depends(require_auth)):
+    return await ingestion_start_from_api(payload)
+
 
 @app.get("/api/system/stats")
 async def get_system_stats(_: bool = Depends(require_auth)):
@@ -482,6 +544,31 @@ async def request_popular():
 async def request_submit(payload: dict, request: Request):
     client_ip = request.client.host if request.client else None
     return await request_submit_api(payload, client_ip)
+
+
+#----- Viewer Insights (admin-only)
+@app.get("/admin/insights", response_class=HTMLResponse)
+async def admin_insights(request: Request, _: bool = Depends(require_auth)):
+    return await insights_page(request, _)
+
+@app.get("/api/admin/insights/overview")
+async def admin_insights_overview(days: int = 30, _: bool = Depends(require_auth)):
+    return await get_insights_overview_api(days)
+
+@app.get("/api/admin/insights/title")
+async def admin_insights_title(days: int = 30, imdb_id: str = None, tmdb_id: int = None,
+                               db_index: int = None, media_type: str = None, title: str = None,
+                               _: bool = Depends(require_auth)):
+    return await get_insights_title_api(days, imdb_id, tmdb_id, db_index, media_type, title)
+
+@app.get("/api/admin/insights/viewer")
+async def admin_insights_viewer(days: int = 30, viewer_key: str = None, token: str = None,
+                                _: bool = Depends(require_auth)):
+    return await get_insights_viewer_api(days, viewer_key, token)
+
+@app.get("/api/admin/insights/export")
+async def admin_insights_export(scope: str = "plays", days: int = 30, _: bool = Depends(require_auth)):
+    return await get_insights_export_api(scope, days)
 
 
 #----- Admin content requests
@@ -691,6 +778,14 @@ async def admin_settings(request: Request, _: bool = Depends(require_auth)):
 async def get_settings(_: bool = Depends(require_auth)):
     return await get_settings_api()
 
+@app.post("/api/admin/settings/auth-channels/refresh")
+async def refresh_auth_channel_titles(_: bool = Depends(require_auth)):
+    return await force_refresh_auth_channel_titles_api()
+
+@app.post("/api/admin/settings/log-channel/test")
+async def test_log_channel(payload: dict, _: bool = Depends(require_auth)):
+    return await test_log_channel_api(payload)
+
 @app.put("/api/admin/settings")
 async def update_settings(payload: dict, _: bool = Depends(require_auth)):
     return await update_settings_api(payload)
@@ -782,6 +877,22 @@ async def admin_restart(_: bool = Depends(require_auth)):
     return await restart_app_api()
 
 
+#----- Timed auth-channel capture, independent of the browser lifetime.
+@app.get("/api/media/auto-add")
+async def channel_auto_add_status(_: bool = Depends(require_auth)):
+    return await channel_auto_add_status_api()
+
+
+@app.post("/api/media/auto-add")
+async def channel_auto_add_start(payload: dict, _: bool = Depends(require_auth)):
+    return await channel_auto_add_start_api(payload)
+
+
+@app.delete("/api/media/auto-add")
+async def channel_auto_add_stop(_: bool = Depends(require_auth)):
+    return await channel_auto_add_stop_api()
+
+
 #----- Tools (WebUI replacement for /scan, /rescan, /dbcheck bot commands)
 @app.get("/admin/tools", response_class=HTMLResponse)
 async def admin_tools(request: Request, _: bool = Depends(require_auth)):
@@ -827,13 +938,18 @@ async def tools_scan_start(payload: dict, _: bool = Depends(require_auth)):
 async def tools_scan_cancel(_: bool = Depends(require_auth)):
     return await cancel_scan_api()
 
+@app.post("/api/admin/tools/scan/discard")
+async def discard_scan_job(_: bool = Depends(require_auth)):
+    return await cancel_scan_api(discard=True)
+
+
 @app.get("/api/admin/tools/scan/status")
 async def tools_scan_status(_: bool = Depends(require_auth)):
     return await scan_status_api()
 
 @app.post("/api/admin/tools/dbcheck/start")
-async def tools_dbcheck_start(_: bool = Depends(require_auth)):
-    return await start_dbcheck_api()
+async def tools_dbcheck_start(payload: dict | None = None, _: bool = Depends(require_auth)):
+    return await start_dbcheck_api(payload)
 
 @app.post("/api/admin/tools/dbcheck/cancel")
 async def tools_dbcheck_cancel(_: bool = Depends(require_auth)):
@@ -877,3 +993,32 @@ async def auth_exception_handler(request: Request, exc):
             headers.update(exc.headers)
         return JSONResponse(status_code=401, content={"detail": detail}, headers=headers)
     return RedirectResponse(url="/login", status_code=302)
+
+
+@app.post("/api/admin/tools/digital-cleaner/start")
+async def digital_cleaner_start(_: bool = Depends(require_auth)):
+    try:
+        await digital_release_cleaner.start()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"ok": True}
+
+
+@app.post("/api/admin/tools/digital-cleaner/cancel")
+async def digital_cleaner_cancel(_: bool = Depends(require_auth)):
+    await digital_release_cleaner.cancel()
+    return {"ok": True}
+
+
+@app.get("/api/admin/tools/digital-cleaner/status")
+async def digital_cleaner_status(offset: int = Query(0, ge=0), _: bool = Depends(require_auth)):
+    return digital_release_cleaner.status(offset)
+
+
+@app.post("/api/admin/tools/digital-cleaner/purge")
+async def digital_cleaner_purge(payload: dict, _: bool = Depends(require_auth)):
+    try:
+        await digital_release_cleaner.purge(payload.get("scan_id"), payload.get("keys"), payload.get("delete_all", False))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True}

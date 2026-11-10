@@ -22,8 +22,7 @@
     </header>
 
     <div id="setup-card" class="mb-8"></div>
-
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-8">
+    <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3 sm:gap-4 mb-8">
         <div class="glass-panel p-3.5 sm:p-5 rounded-2xl sm:rounded-[2rem] flex items-center gap-3 sm:gap-4 min-w-0">
             <div class="w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-primary/10 flex items-center justify-center text-primary shadow-glow flex-shrink-0">
                 <i class="fa-solid fa-clock"></i>
@@ -61,6 +60,16 @@
             <div class="min-w-0">
                 <p class="text-[9px] sm:text-[10px] uppercase font-bold text-text-secondary tracking-widest">Version</p>
                 <p id="sys-version" class="text-sm sm:text-lg font-bold text-text truncate">v{{ system_stats.version or '1.0.0' }}</p>
+            </div>
+        </div>
+        <div class="glass-panel p-3.5 sm:p-5 rounded-2xl sm:rounded-[2rem] flex items-center gap-3 min-w-0 col-span-2 sm:col-span-1">
+            <div class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary flex-shrink-0">
+                <i class="fa-solid fa-hard-drive"></i>
+            </div>
+            <div class="min-w-0">
+                <p class="text-[9px] sm:text-[10px] uppercase font-bold text-text-secondary tracking-widest">Telegram File Size</p>
+                <p id="sys-media-size" class="text-sm font-bold text-text break-words">{{ system_stats.media_size|default('Unavailable') }}</p>
+                <p id="sys-unknown-files" class="text-xs text-text-secondary mt-1" {% if not system_stats.unknown_size_files %}style="display:none"{% endif %}>Unknown File: {{ system_stats.unknown_size_files|default(0) }}</p>
             </div>
         </div>
     </div>
@@ -182,7 +191,7 @@
                             <div class="space-y-2 min-w-0">
                                 <div class="flex justify-between text-xs font-bold uppercase tracking-widest gap-2 min-w-0">
                                     <span class="text-text-secondary whitespace-nowrap">Disk Usage</span>
-                                    <span class="text-primary truncate">{{ "%.1f"|format(db_stat.storageSize / 1024 / 1024) }} MB</span>
+                                    <span class="text-primary truncate">{{ "%.1f"|format(db_stat.storageSize / 1000 / 1000) }} MB</span>
                                 </div>
                                 <div class="w-full h-1.5 bg-surface rounded-full overflow-hidden">
                                     {% set storage_percent = (db_stat.storageSize / (500 * 1024 * 1024) * 100) | round %}
@@ -317,7 +326,7 @@
                                         </div>
                                         <div class="text-center min-w-0">
                                             <p class="text-[9px] text-text-secondary uppercase tracking-widest font-bold">Total</p>
-                                            <p class="text-xs font-bold text-text truncate">{{ "%.1f"|format((stream.total_bytes or 0) / 1024 / 1024) }} MB</p>
+                                            <p class="text-xs font-bold text-text truncate">{{ "%.1f"|format((stream.total_bytes or 0) / 1000 / 1000) }} MB</p>
                                         </div>
                                         <div class="text-center min-w-0">
                                             <p class="text-[9px] text-text-secondary uppercase tracking-widest font-bold">Duration</p>
@@ -411,8 +420,8 @@
         const value = Number(bytes || 0);
         if (!value) return '0 B';
         const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
-        return (value / Math.pow(1024, index)).toFixed(index === 0 ? 0 : 2) + ' ' + units[index];
+        const index = Math.min(Math.floor(Math.log(value) / Math.log(1000)), units.length - 1);
+        return (value / Math.pow(1000, index)).toFixed(index === 0 ? 0 : 2) + ' ' + units[index];
     }
 
     function formatDuration(seconds) {
@@ -589,6 +598,11 @@
             const response = await fetch('/api/system/stats', { cache: 'no-store' });
             if (response.ok) {
                 const stats = await response.json();
+
+                const elMediaSize = document.getElementById('sys-media-size');
+                if (elMediaSize) elMediaSize.textContent = stats.media_size || 'Unavailable';
+                const unknownEl = document.getElementById('sys-unknown-files');
+                if (unknownEl) { const n = Number(stats.unknown_size_files || 0); unknownEl.style.display = n > 0 ? '' : 'none'; if (n > 0) unknownEl.textContent = 'Unknown File: ' + n.toLocaleString(); }
 
                 const elUptime = document.getElementById('sys-uptime');
                 if (elUptime) elUptime.innerText = stats.uptime || 'N/A';

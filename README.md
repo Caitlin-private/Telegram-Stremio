@@ -1,9 +1,19 @@
+---
+title: Telegram Stremio
+emoji: 🎬
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 8000
+pinned: false
+---
+
 <p align="center">
   <img src="https://iili.io/KhN0ztj.png" alt="Logo" width="400"/>
 </p>
 
 <p align="center">
-  A powerful, self-hosted <b>Telegram Stremio Media Server</b> built with <b>FastAPI</b>, <b>MongoDB</b>, and <b>PyroFork</b> — turn your Telegram channels into a private streaming library you watch in <b>Stremio</b> / <b>Nuvio</b>.
+  A powerful, self-hosted <b>Telegram Stremio Media Server</b> built with <b>FastAPI</b>, <b>MongoDB</b>, and <b>WZGram</b> — turn your Telegram channels into a private streaming library you watch in <b>Stremio</b> / <b>Nuvio</b>.
 </p>
 
 <p align="center">
@@ -15,7 +25,7 @@
   <img src="https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
   <img src="https://img.shields.io/badge/MongoDB-47A248?logo=mongodb&logoColor=white" alt="MongoDB" />
-  <img src="https://img.shields.io/badge/PyroFork-EE3A3A?logo=python&logoColor=white" alt="PyroFork" />
+  <img src="https://img.shields.io/badge/WZGram-EE3A3A?logo=python&logoColor=white" alt="WZGram" />
   <img src="https://img.shields.io/badge/Stremio-8D3DAF?logo=stremio&logoColor=white" alt="Stremio" />
   <img src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" alt="Docker" />
 </p>
@@ -137,62 +147,18 @@ The app is great for personal, single-user use, but it's intentionally lighter t
 
 ## 📱 Nuvio Integration & Collections Setup
 
-`Telegram-Stremio` seamlessly supports **Nuvio** alongside Stremio! To ensure collections load without errors, follow this step-by-step setup order.
+Install the addon manifest first:
 
----
+`https://<YOUR_DOMAIN>/stremio/<TOKEN>/manifest.json`
 
-### ⚠️ Crucial Order of Setup (Avoid Addon Errors)
+Add it in Nuvio under **Addons → Add Addon**. Then import one or more collection URLs from **Settings → Collections → Import → Import from URL**.
 
-> [!IMPORTANT]
-> **Always install the Addon Manifest FIRST before importing Collections!**  
-> Nuvio collections link directly to your server's catalog IDs (`telegram.media.<token>`). If you import a collection without installing the addon manifest first, Nuvio will show blank rows or "Addon not found" errors.
+* **Master Collection:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-collection.json` — includes Live Sports, Streaming Services and Franchises & Universes.
+* **Live Sports:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-sports-collection.json`
+* **Streaming Services:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-ott-collection.json`
+* **Franchises & Universes:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-franchises-collection.json`
 
-```
-Step 1: Install Addon Manifest  ──►  Step 2: Import Collection URL  ──►  Step 3: Enjoy Streaming
-```
-
----
-
-### Step 1: Install Addon Manifest (Stremio & Nuvio)
-* **URL:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/manifest.json`
-* **In Nuvio:** Go to **Addons (🧩)** → click **Add Addon (+)** → paste your Manifest URL → click **Install**.
-* This registers your personal media catalogs with Nuvio's playback engine.
-
----
-
-### Step 2: Import Nuvio Collections & Logo Buttons
-After installing the addon manifest, import your preferred collection layout:
-
-* **Master 4-in-1 Collection URL (Recommended):**  
-  `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-collection.json`  
-  *(Includes Discover, Streaming Platforms, Franchises & Universes, and Regional & Spotlight all in one)*
-
-* **Modular Collection URLs (For Separate Tabs):**
-  * **Discover:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-discover-collection.json`
-  * **Streaming Platforms:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-ott-collection.json`
-  * **Franchises & Universes:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-franchises-collection.json`
-  * **Regional & Spotlight:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-spotlight-collection.json`
-
-**How to Import in Nuvio:**
-1. Open Nuvio and tap **Settings (⚙️)**.
-2. Select **Collections** → tap **Import (+)**.
-3. Choose **Import from URL**, paste your collection link, and tap **Save**.
-4. Return to the Nuvio Home Screen to see your horizontal landscape cards (*Discover, Netflix, Prime Video, JioHotstar, Apple TV+, HBO Max, Sagas, Bollywood, Anime, K-Drama, Seasonal Specials*).
-
----
-
-### Step 3: Server Host Prerequisites & Troubleshooting
-
-> [!TIP]
-> **Why are my OTT or Regional rows empty or showing default movies?**
-> 1. Log in to your **Web Admin Dashboard → Catalogs**.
-> 2. Ensure the built-in **Auto Catalogs** (**Netflix, Prime Video, JioHotstar, Apple TV, Bollywood, Anime, etc.**) are enabled.
-> 3. Click **Sync Catalogs** to index content from your media channels into these collection categories.
->
-> **Encountered an "Addon Error" or "Join Required" card?**
-> * **Join Required:** You must join your admin's Telegram subscription channel/group. Wait 2 minutes after joining for verification.
-> * **Plan Expired:** Your subscription period has ended. Open the Telegram bot and renew your plan.
-> * **Limit Reached:** Your daily or monthly streaming bandwidth limit was reached. Contact the server admin to upgrade your tier.
+Streaming-platform folders are filtered to catalogs available to the current token; empty addon sources are removed before returning the collection.
 
 ---
 
@@ -990,3 +956,67 @@ If Telegram-Stremio is useful to you, you can support its development here:
 <sub>Want to help? Open an issue or a pull request.</sub>
 
 </div>
+
+## Caitlin fork
+
+See [Caitlin features](docs/CAITLIN.md).
+
+### Telegram file sizes and dead-link checks
+
+Settings → System & Maintenance and the owner `/stats` command show **Telegram Files Size** separately from MongoDB's **DB Size**. The total covers indexed movie and episode file references across every connected storage database. Multipart entries contribute each part once; duplicate references in different entries are counted separately. Known sizes remain included until their entries are removed, even if a link is flagged dead.
+
+Newly indexed video/document files save their exact byte sizes. For existing files, run **Tools → Run DB Check**: the checker saves file sizes from the same Telegram messages it fetches to verify links. The scheduled dead-link checker also fills sizes for the non-flagged entries it checks. No media downloads or channel rescans are required.
+
+While sizes are missing, the total displays the known bytes and the number of files with unknown sizes. Rounded legacy size strings are not treated as exact values. Both checkers retain their original alive/dead/unknown decisions, multipart early exits, FloodWait handling, and pacing. Size collection only reads video/document metadata from messages already fetched; photos, voice notes, stickers, audio, animations, and video notes do not contribute sizes. Size-write failures do not stop link checking.
+
+The manual check shows **Size records updated** (database modifications during this run). Updates are saved after each batch and survive cancellation or restart. Starting another check verifies links from the beginning, but does not rewrite unchanged sizes. Existing check concurrency and pacing are retained; this is not a promise of faster processing.
+
+The dashboard's System Overview also shows Telegram Files Size on initial load and when Refresh Data is clicked. WebDAV retains its original lazy initialization and cache behavior; it is not warmed at startup. Private bot searches do not initialize or access WebDAV.
+
+Private title-search and announcement deep-link cards use the same caption, announcement poster-provider selection, and photo framing as channel announcements, with a text fallback if artwork cannot be delivered. Authorized private replies show only the Nuvio button. Channel announcements show Nuvio and Get Addon; no View Media/WebDAV button is added. Nuvio is offered when a base URL and IMDb ID exist; Get Addon requires a configured bot URL.
+
+Both link checkers automatically distribute requests across connected worker bots in round-robin order, without a toggle or increased concurrency. The manual DB check confirms worker missing/error results with its original client before recording the result. The background checker rotates its starting bot while retaining its existing fallback through other clients. Workers need access to the indexed channels to be useful; no extra Telegram request is made solely to collect a size. This spreads the load but does not guarantee a faster scan.
+
+Telegram Files Size is displayed in decimal TB (1 TB = 1,000,000,000,000 bytes) in the dashboard, settings, and `/stats`. The unknown-size count remains visible until those sizes are collected.
+
+### Database scan scheduling
+
+In **Settings → General → Database scan mode**, choose **Automatic** (default)
+for the startup check and checks every 24 hours, or **Manual only** to disable
+background checks. Save Settings to apply; switching to Manual only cancels an
+active automatic check. **Tools → DB Check** remains available in either mode.
+A completed manual check resets the automatic 24-hour timer.
+
+Channel scans (including Quick Scan and Rescan) and DB checks are mutually
+exclusive. A requested channel scan or manual DB check cancels and waits for an
+automatic check to finish cleaning up before starting. If another channel scan
+or manual DB check is active, stop it before starting the other operation.
+Automatic checks wait until the scanner is free. Coordination applies within the
+single application process used by the supplied launcher.
+
+Run the scan regression tests with `python -m unittest discover -s tests -v`.
+
+Channel progress counts checked **message IDs in the selected range**, including
+out-of-order worker completions; deleted IDs and non-media messages are part of
+that range. The Processed counter counts actual messages, so it can be lower.
+Live and paused views show the last completed message ID and channel. Parallel
+workers can complete IDs out of order. Resume retains successful messages from
+partial batches, and the rate measures only work done since the latest start.
+
+
+### Free access requests and approval messages
+
+In **Settings → Subscription**, enable **Allow Free Access Requests** to show a
+**Request Free Access** button alongside the bot's subscription plans (also works
+when no paid plans exist). Set **Free Access Duration (days)** to the duration to
+grant upon approval; the default is 30 days. This option is disabled by default.
+
+Requests notify the configured approvers, or the owner when no approvers are set,
+with a text-only message and Approve/Reject buttons. Users receive a confirmation
+that admins have been notified and must wait for approval before gaining access.
+A pending request cannot be resubmitted or replaced with a payment screenshot.
+
+Set **Custom Approval Message** to send optional welcome text or instructions after
+any paid or free request is approved through the bot. It is sent as a separate
+plain-text message, preserving the normal expiry, group invite, and addon link.
+Leave it blank to disable it (maximum 4000 characters).

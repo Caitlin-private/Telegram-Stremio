@@ -43,6 +43,12 @@ class Telegram:
     HTTP_PROXY_URL                = getenv("HTTP_Proxy_URL", "")
     SHOW_PROXY_AND_NON_PROXY_BOTH = getenv("SHOW_ProxyAndNonProxyBoth", "false").lower() == "true"
 
+    # Bounded, playback-triggered media indexing. No ingest-time prewarming,
+    # disk cache, or Mongo persistence (safe defaults for free container hosting).
+    STREAM_INDEX_ENABLED = getenv("STREAM_INDEX_ENABLED", "true").lower() == "true"
+    STREAM_INDEX_CACHE_MAX_ENTRIES = min(8, max(1, _int_env("STREAM_INDEX_CACHE_MAX_ENTRIES", 8)))
+    STREAM_INDEX_MAX_KEYFRAMES = min(256, max(64, _int_env("STREAM_INDEX_MAX_KEYFRAMES", 256)))
+
     #----- WebDAV (optional env fallback; prefer Settings page)
     WEBDAV_USER     = getenv("WEBDAV_USER", "")
     WEBDAV_PASSWORD = getenv("WEBDAV_PASSWORD", "")

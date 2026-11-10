@@ -1,7 +1,7 @@
 from asyncio import sleep
 from typing import List
 
-from pyrogram.errors import (
+from wzgram.errors import (
     FloodWait,
     ChatAdminRequired,
     ChannelPrivate,
@@ -13,7 +13,7 @@ from pyrogram.errors import (
     SessionRevoked,
     RPCError,
 )
-from pyrogram.enums import ParseMode
+from wzgram.enums import ParseMode
 
 from Backend.logger import LOGGER
 import Backend.pyrofork.bot as botmod

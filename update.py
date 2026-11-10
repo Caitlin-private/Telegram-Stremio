@@ -6,6 +6,15 @@ from dotenv import load_dotenv
 from datetime import datetime
 import pytz
 import shutil
+import sys
+
+# Deployments must run the files that were uploaded. The legacy updater replaces
+# them with the configured upstream using git reset --hard, so require opt-in
+# before even opening logs, querying MongoDB, or removing git metadata.
+load_dotenv("config.env")
+if environ.get("AUTO_UPDATE_ON_START", "false").strip().lower() != "true":
+    print("Startup code updates disabled; running the deployed files. Set AUTO_UPDATE_ON_START=true only to opt into replacing them from upstream.")
+    sys.exit(0)
 
 IST = pytz.timezone("Asia/Kolkata")
 

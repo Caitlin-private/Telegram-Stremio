@@ -112,6 +112,16 @@ def parse_device(user_agent: str) -> str:
     return ""
 
 
+def cached_ip_info(ip: str) -> dict:
+    """Return already-resolved IP metadata without performing network I/O."""
+    if not ip:
+        return {}
+    cached = _IP_CACHE.get(ip)
+    if cached and time.time() - cached[1] < _IP_TTL:
+        return cached[0] or {}
+    return {}
+
+
 async def lookup_ip(ip: str) -> dict:
     if not ip or ip.startswith(("127.", "10.", "192.168.", "172.")) or ip in ("::1", "localhost"):
         return {"country": "Local", "country_code": "", "city": "", "isp": "", "proxy": False}

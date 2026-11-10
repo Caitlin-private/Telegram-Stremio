@@ -220,6 +220,15 @@
                 <!-- Personal title: manual metadata -->
                 <div id="ms-personal-fields" class="hidden mt-3">
                     <div id="ms-tv-fields" class="hidden grid grid-cols-2 gap-3">
+                        <div class="col-span-2">
+                            <label class="s-label">Episode detection</label>
+                            <select id="ms-episode-mode" class="s-input" onchange="document.getElementById('ms-episode').disabled = this.value !== 'fixed'">
+                                <option value="order">By adding order</option>
+                                <option value="filename">By file / message</option>
+                                <option value="fixed">Specify episode</option>
+                            </select>
+                            <p class="hint">File/message reads the leading number: 12. The Apothecary Diaries.mkv → episode 12. Missing numbers are rejected, not guessed.</p>
+                        </div>
                         <div>
                             <label class="s-label">Season <span style="color:#ef4444">*</span></label>
                             <input id="ms-season" type="number" min="0" placeholder="e.g. 1"
@@ -231,8 +240,7 @@
                                    style="width:100%;background:color-mix(in srgb,var(--bg) 60%,transparent);border:1px solid var(--border);border-radius:0.9rem;padding:0.6rem 0.9rem;color:var(--text);outline:none">
                         </div>
                         <p class="hint col-span-2" style="margin-top:-0.25rem">
-                            Set an <strong>episode</strong> to pile every forwarded file onto that one episode (multiple qualities).
-                            Leave it <strong>empty</strong> so each file becomes the next episode (E1, E2, E3…).
+                            Choose <strong>Specify episode</strong> for multiple qualities of one episode, or detect each episode by adding order or file/message.
                         </p>
                     </div>
                     <div class="mt-3">
@@ -260,7 +268,7 @@
         </div>
 
         <p class="hint mt-3 mb-4">
-            Index files from your AUTH channels. Scans resume automatically; use Rescan to re-index from scratch.
+            Index files from your AUTH channels. Interrupted scans can be resumed from saved progress. Use Rescan to re-index from scratch.
         </p>
 
         <label class="s-label">Select channels</label>
@@ -275,6 +283,23 @@
 
         <hr class="divider">
 
+        <div class="flex flex-wrap items-center gap-4 mb-4">
+            <label>Scan workers
+                <select id="scan-worker-limit" class="s-input">
+                    <option value="1">1</option><option value="2">2</option>
+                    <option value="3">3</option><option value="4">4</option>
+                    <option value="8">8</option><option value="0" selected>Auto — all eligible workers</option>
+                </select>
+            </label>
+            <label><input type="checkbox" id="scan-pause-playback" checked> Automatically pause scans during bot playback</label>
+        </div>
+        <p class="hint mb-3">Applies only to channel scans. All modes share bounded worker prefetching, adaptive FloodWait pacing and a processing budget of 16 by default (QUICK_SCAN_CONCURRENCY). With playback priority enabled, scanning resumes after 10 seconds without active bot playback; manual Stop stays stopped. Auto uses all eligible workers, reserving the main bot for live ingestion unless no worker qualifies. Workers need source-channel delete permission; normal scans also require skip-channel post permission when configured. Normal scans retain artwork, skip-channel routing and announcements. Source-message deletion follows the Skip Channel setting.</p>
+        <p id="scan-resources" class="hint mb-3"></p>
+        <div class="flex flex-wrap gap-4 mb-3">
+            <label>Start message ID <input id="scan-start-id" type="number" min="1" max="2147483647" step="1" class="s-input" placeholder="Beginning"></label>
+            <label>End message ID <input id="scan-end-id" type="number" min="1" max="2147483647" step="1" class="s-input" placeholder="Latest message"></label>
+        </div>
+        <p class="hint mb-3">Optional, inclusive range applied to each selected channel using the Scan workers selection above. Leave blank for the full channel. Rescan removes only indexed references inside the chosen range. Cancel the current job to change a saved range.</p>
         <!-- live progress -->
         <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
             <div class="text-sm font-bold" id="scan-current">No scan running</div>
@@ -288,6 +313,7 @@
 
         <div class="stat-grid mb-4">
             <div class="stat-box"><div class="v" id="sc-processed">0</div><div class="l">Processed</div></div>
+            <div class="stat-box"><div class="v" id="sc-rate">0.00</div><div class="l">Messages / sec (average)</div></div>
             <div class="stat-box"><div class="v" style="color:#22c55e" id="sc-indexed">0</div><div class="l">Indexed</div></div>
             <div class="stat-box"><div class="v" id="sc-dup">0</div><div class="l">Skipped (dup)</div></div>
             <div class="stat-box"><div class="v" id="sc-meta">0</div><div class="l">Skipped (meta)</div></div>
@@ -295,11 +321,16 @@
             <div class="stat-box"><div class="v" style="color:#3b82f6" id="sc-sub-added">0</div><div class="l">Subtitles added</div></div>
             <div class="stat-box"><div class="v" id="sc-sub-skipped">0</div><div class="l">Subtitles skipped</div></div>
             <div class="stat-box"><div class="v" style="color:#ef4444" id="sc-errors">0</div><div class="l">Errors</div></div>
+            <div class="stat-box"><div class="v" id="sc-resolution">0</div><div class="l">Resolution Skips</div></div>
+            <div class="stat-box"><div class="v" id="sc-delete-forbidden">0</div><div class="l">Deletion Forbidden</div></div>
         </div>
 
         <div class="flex items-center gap-2 flex-wrap">
-            <button class="btn btn-primary" id="scan-start-btn" onclick="startScan('scan')">
+            <button class="btn btn-primary" id="scan-start-btn" onclick="startScan(scanResumeMode)">
                 <i class="fa-solid fa-play"></i> <span id="scan-start-label">Start Scan</span>
+            </button>
+            <button class="btn btn-warning" id="quick-scan-btn" onclick="startScan('quick')">
+                <i class="fa-solid fa-bolt"></i> Quick Scan
             </button>
             <button class="btn btn-warning" id="rescan-btn" onclick="confirmRescan()">
                 <i class="fa-solid fa-arrows-rotate"></i> Rescan (wipe & re-index)
@@ -307,7 +338,12 @@
             <button class="btn btn-danger" id="scan-cancel-btn" onclick="cancelScan()" disabled>
                 <i class="fa-solid fa-stop"></i> Stop
             </button>
+            <button class="btn btn-danger" id="scan-discard-btn" onclick="discardScan()" disabled>
+                <i class="fa-solid fa-xmark"></i> Cancel Scan
+            </button>
         </div>
+        <p class="hint mt-3">Stop saves progress for Resume. Cancel Scan clears the current job so you can start any mode; already indexed media is kept.</p>
+        <p class="hint mt-3">Quick Scan suppresses individual media announcements, thumbnail uploads and skip-channel copies. Import start, stop and finish notices still go to the announcement channel. Rejected, skipped, and unrecognized files are left untouched in the source channel. Pause live ingestion during a bulk scan to avoid overlapping activity.</p>
         <p class="hint mt-3" id="scan-error" style="color:#ef4444;display:none"></p>
     </div>
 
@@ -401,7 +437,11 @@
         </div>
 
         <p class="hint mt-3 mb-4">
-            Verify indexed files still exist on Telegram, then purge dead entries below.
+            Verify indexed files and save their exact sizes using the same Telegram requests.
+            Saved sizes survive stops and restarts; rerunning checks all links again. Purge dead entries below.
+            <br><b>Verify Media</b> re-reads every indexed file with all worker bots and re-matches it with the current
+            title detection: files filed under the wrong title or episode are re-indexed under the right one, and files
+            that match nothing are forwarded to the skip channel; source deletion follows your Skip Channel setting.
         </p>
 
         <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
@@ -411,6 +451,11 @@
                 <i class="fa-regular fa-clock"></i> <span id="dbc-elapsed">0s</span>
             </div>
         </div>
+        <details class="mb-3" id="dbc-info"><summary style="cursor:pointer;font-weight:600"><i class="fa-solid fa-circle-info"></i> Check history / Info</summary>
+            <div class="hint mt-2">Last successful manual check: <span id="dbc-manual-history">Not recorded</span></div>
+            <div class="hint">Last successful automatic check: <span id="dbc-auto-history">Not recorded</span></div>
+            <div class="hint">Automatic checks pause during worker-bot playback and resume after 10 seconds without playback.</div>
+        </details>
         <div class="progress-track mb-4">
             <div class="progress-fill" id="dbc-bar"></div>
         </div>
@@ -420,6 +465,7 @@
             <div class="stat-box"><div class="v" style="color:#22c55e" id="dbc-alive">0</div><div class="l">Alive</div></div>
             <div class="stat-box"><div class="v" style="color:#ef4444" id="dbc-dead">0</div><div class="l">Dead</div></div>
             <div class="stat-box"><div class="v" id="dbc-errors">0</div><div class="l">Errors</div></div>
+            <div class="stat-box"><div class="v" id="dbc-sizes">0</div><div class="l">Size records updated</div></div>
             <div class="stat-box"><div class="v" id="dbc-purged">0</div><div class="l">Purged</div></div>
         </div>
 
@@ -427,9 +473,37 @@
             <button class="btn btn-primary" id="dbc-start-btn" onclick="startDbCheck()">
                 <i class="fa-solid fa-play"></i> Run DB Check
             </button>
+            <button class="btn btn-primary" id="dbc-verify-btn" onclick="startVerifyMedia()">
+                <i class="fa-solid fa-clipboard-check"></i> Verify Media
+            </button>
             <button class="btn btn-danger" id="dbc-cancel-btn" onclick="cancelDbCheck()" disabled>
                 <i class="fa-solid fa-stop"></i> Stop
             </button>
+        </div>
+        <div class="flex items-center gap-4 flex-wrap mt-3">
+            <label class="hint" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                <input type="checkbox" id="vfy-dry"> Preview only (list what would change, modify nothing)
+            </label>
+            <label class="hint" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                <input type="checkbox" id="vfy-episodes" checked> Also fix season / episode placement
+            </label>
+            <label class="hint" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                <input type="checkbox" id="vfy-pause" checked> Pause while bot streams are playing
+            </label>
+        </div>
+
+        <div id="vfy-panel" style="display:none">
+            <hr class="divider">
+            <label class="s-label">Verify Media <span id="vfy-mode" class="hint"></span></label>
+            <div class="stat-grid mb-3">
+                <div class="stat-box"><div class="v" id="vfy-verified">0</div><div class="l">Verified</div></div>
+                <div class="stat-box"><div class="v" style="color:#22c55e" id="vfy-matched">0</div><div class="l">Correct</div></div>
+                <div class="stat-box"><div class="v" style="color:#f59e0b" id="vfy-reassigned">0</div><div class="l" id="vfy-reassigned-l">Re-assigned</div></div>
+                <div class="stat-box"><div class="v" style="color:#ef4444" id="vfy-unmatched">0</div><div class="l" id="vfy-unmatched-l">Sent to skip channel</div></div>
+                <div class="stat-box"><div class="v" id="vfy-duplicates">0</div><div class="l">Duplicates dropped</div></div>
+                <div class="stat-box"><div class="v" id="vfy-held">0</div><div class="l">Held (provider outage?)</div></div>
+            </div>
+            <div class="dead-list" id="vfy-changes"></div>
         </div>
 
         <hr class="divider">
@@ -452,6 +526,26 @@
         </div>
     </div>
 
+    <!-- Digital release cleaner -->
+    <div class="tool-card">
+        <h2><i class="fa-solid fa-film"></i> Digital Release Cleaner</h2>
+        <p class="hint mb-3">Find CAMRip, TELESYNC, HDTC and HDTS movie files when a separate WEBRip, AMZN, BluRay, WEB or HDRip copy is indexed for the same movie. This uses filename tags, not official release dates or a live file check.</p>
+        <p class="hint mb-3">Review the theatrical files below. Deletion removes their database entries and queues the Telegram files for deletion, keeping digital copies.</p>
+        <div class="flex items-center gap-2 flex-wrap mb-3">
+            <button class="btn btn-primary" id="drc-start" onclick="drcAction('start')">Scan movies</button>
+            <button class="btn btn-danger" id="drc-stop" onclick="drcAction('cancel')" disabled>Stop scan</button>
+            <button class="btn btn-danger" id="drc-selected" onclick="drcDelete(false)" disabled>Delete selected</button>
+            <button class="btn btn-danger" id="drc-all" onclick="drcDelete(true)" disabled>Delete all listed</button>
+        </div>
+        <p id="drc-status" class="hint mb-3" role="status">Idle</p>
+        <div class="dead-list" id="drc-list"></div>
+        <div class="flex items-center gap-2 mt-3">
+            <button class="btn btn-ghost" id="drc-prev" onclick="drcPage(-1)" disabled>Previous</button>
+            <span id="drc-page" class="hint"></span>
+            <button class="btn btn-ghost" id="drc-next" onclick="drcPage(1)" disabled>Next</button>
+        </div>
+    </div>
+
     <!-- Duplicate check & cleanup -->
     <div class="tool-card">
         <div class="flex items-center justify-between flex-wrap gap-2">
@@ -460,7 +554,7 @@
         </div>
 
         <p class="hint mt-3 mb-4">
-            Find and remove streams stored more than once. Deleting also removes the Telegram file.
+            Find and remove files indexed more than once. Deleting also removes the Telegram file.
         </p>
 
         <div class="stat-grid mb-4">
@@ -581,6 +675,8 @@ function pickManualResult(i) {
 
     document.getElementById('ms-season').value = '';
     document.getElementById('ms-episode').value = '';
+    document.getElementById('ms-episode-mode').value = 'order';
+    document.getElementById('ms-episode').disabled = true;
     document.getElementById('ms-quality').value = '';
     document.getElementById('ms-real-season').value = '';
     document.getElementById('ms-selected-box').classList.remove('hidden');
@@ -605,8 +701,12 @@ async function startManualSession() {
             const s = document.getElementById('ms-season').value.trim();
             if (s === '') { showToast('Season number is required for personal TV shows.', 'error', 'Session'); return; }
             payload.season = s;
+            payload.episode_detection = document.getElementById('ms-episode-mode').value;
             const ep = document.getElementById('ms-episode').value.trim();
-            if (ep !== '') payload.episode = ep;
+            if (payload.episode_detection === 'fixed') {
+                if (ep === '') { showToast('Enter an episode for fixed mode.', 'error', 'Session'); return; }
+                payload.episode = ep;
+            }
         }
         const q = document.getElementById('ms-quality').value.trim();
         if (q !== '') payload.quality = q;
@@ -663,7 +763,7 @@ function renderManualSession(session) {
                 detail += ` · Season ${session.season}`;
                 detail += (session.episode !== null && session.episode !== undefined)
                     ? ` · Episode ${session.episode} (all files → this episode)`
-                    : ' · each file → next episode';
+                    : (session.episode_detection === 'filename' ? ' · episode from file/message' : ' · each file → next episode');
             } else {
                 detail += ' · each file → a new quality';
             }
@@ -745,9 +845,17 @@ function getSelectedChannels() {
 }
 
 /* ─────────────── Scan control ─────────────── */
+let scanResumeMode = 'scan';
+let scanOptionsLoaded = false;
 async function startScan(mode) {
+    const parseRange = id => document.getElementById(id).value.trim() === '' ? null : Number(document.getElementById(id).value);
+    const start_id = parseRange('scan-start-id'), end_id = parseRange('scan-end-id');
+    if ([start_id, end_id].some(n => n !== null && (!Number.isInteger(n) || n < 1 || n > 2147483647)) ||
+        (start_id !== null && end_id !== null && start_id > end_id)) {
+        showToast('Enter valid message IDs with start no greater than end.', 'error', 'Invalid range'); return;
+    }
     const channels = getSelectedChannels();
-    if (mode === 'scan' && !channels.length) {
+    if (!channels.length) {
         // allow plain resume with no selection only if resumable
         showToast('Select at least one channel to scan.', 'error', 'No channels');
         return;
@@ -756,7 +864,9 @@ async function startScan(mode) {
         const res = await fetch('/api/admin/tools/scan/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode, channels })
+            body: JSON.stringify({ mode, channels, start_id, end_id,
+                worker_limit: Number(document.getElementById('scan-worker-limit').value),
+                pause_for_playback: document.getElementById('scan-pause-playback').checked })
         });
         const data = await res.json();
         if (res.ok) {
@@ -776,7 +886,8 @@ function confirmRescan() {
         showToast('Select the channels you want to rescan.', 'error', 'No channels');
         return;
     }
-    if (!confirm(`Rescan will DELETE all existing DB entries for ${channels.length} selected channel(s) and re-index from scratch.\n\nProceed?`)) return;
+    const range = `${document.getElementById('scan-start-id').value || 'beginning'} to ${document.getElementById('scan-end-id').value || 'latest'}`;
+    if (!confirm(`Rescan will remove indexed file references in message range ${range} for ${channels.length} selected channel(s), then re-index that range.\n\nProceed?`)) return;
     startScan('rescan');
 }
 
@@ -796,15 +907,33 @@ function startScanPolling() {
     scanTimer = setInterval(pollScan, 1500);
 }
 
+async function discardScan() {
+    if (!confirm('Cancel this scan and clear its resume progress? Already indexed media stays in the library.')) return;
+    try {
+        const res = await fetch('/api/admin/tools/scan/discard', {method:'POST'});
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.detail || data.message || 'Could not cancel scan.');
+        showToast(data.message, 'info', 'Scanner');
+        startScanPolling();
+    } catch (error) { showToast(error.message, 'error', 'Scanner'); }
+}
+
 async function pollScan() {
     try {
         const res = await fetch('/api/admin/tools/scan/status');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        renderScan(data.data || {});
-    } catch (e) { /* ignore transient errors */ }
+        if (!data.data || typeof data.data.is_running !== 'boolean') throw new Error('Invalid scan status response');
+        renderScan(data.data);
+    } catch (e) {
+        const err = document.getElementById('scan-error');
+        if (err) { err.style.display = ''; err.textContent = `Cannot refresh scan status: ${e.message}. The scan may still be running.`; }
+    }
 }
 
 function renderScan(s) {
+    scanResumeMode = s.resumable && s.mode === 'quick' ? 'quick' : 'scan';
+    document.getElementById('quick-scan-btn').disabled = !!s.is_running;
     const pill = document.getElementById('scan-status-pill');
     const status = s.status || 'idle';
     pill.className = 'status-pill status-' + status;
@@ -812,6 +941,7 @@ function renderScan(s) {
 
     const c = s.counters || {};
     setText('sc-processed', c.processed || 0);
+    setText('sc-rate', Number(s.messages_per_second || 0).toFixed(2));
     setText('sc-indexed', c.indexed || 0);
     setText('sc-dup', c.skipped_dup || 0);
     setText('sc-meta', c.skipped_meta || 0);
@@ -819,7 +949,23 @@ function renderScan(s) {
     setText('sc-sub-added', c.subtitles_added || 0);
     setText('sc-sub-skipped', c.subtitles_skipped || 0);
     setText('sc-errors', c.errors || 0);
+    setText('sc-resolution', c.skipped_resolution || 0);
+    setText('sc-delete-forbidden', c.skipped_delete_forbidden || 0);
     setText('scan-elapsed', s.elapsed || '0s');
+    document.getElementById('scan-discard-btn').disabled = !!s.cancelling || !(s.is_running || s.resumable);
+    document.getElementById('scan-worker-limit').disabled = !!s.is_running;
+    document.getElementById('scan-pause-playback').disabled = !!s.is_running;
+    if (!scanOptionsLoaded || s.is_running) {
+        document.getElementById('scan-start-id').value = s.start_id ?? '';
+        document.getElementById('scan-end-id').value = s.end_id ?? '';
+        document.getElementById('scan-worker-limit').value = String(s.worker_limit ?? 0);
+        document.getElementById('scan-pause-playback').checked = s.pause_for_playback !== false;
+        scanOptionsLoaded = true;
+    }
+    document.getElementById('scan-start-id').disabled = !!s.is_running || !!s.resumable;
+    document.getElementById('scan-end-id').disabled = !!s.is_running || !!s.resumable;
+    const timing = s.timings || {};
+    setText('scan-resources', `${s.active_workers || 0} eligible worker(s) · accumulated work time: Telegram ${timing.telegram_seconds || 0}s · metadata ${timing.metadata_seconds || 0}s · DB ${timing.db_seconds || 0}s · DB lock ${timing.db_lock_seconds || 0}s · duplicate lookup ${timing.duplicate_seconds || 0}s · catalog ${timing.catalog_seconds || 0}s · ${s.catalog_pending_count || 0} catalog updates pending${!s.is_running && s.catalog_pending_count ? " (retry on next scan)" : ""}`);
 
     const bar = document.getElementById('scan-bar');
     const startBtn = document.getElementById('scan-start-btn');
@@ -830,27 +976,38 @@ function renderScan(s) {
 
     if (s.is_running) {
         const name = s.current_channel_name || s.current_channel || '';
-        if (s.has_progress && s.current_target_id) {
+        if (s.has_progress) {
             bar.classList.remove('indeterminate');
             bar.style.width = (s.progress || 0) + '%';
             document.getElementById('scan-current').textContent =
-                `Scanning ${name} · ${s.current_id}/${s.current_target_id} (${s.progress || 0}%)`;
+                `Scanning ${name} · ${s.scanned_ids}/${s.total_ids} message IDs checked (${s.progress || 0}%)`;
         } else {
             bar.classList.add('indeterminate');
             document.getElementById('scan-current').textContent =
-                `Scanning ${name}` + (s.current_id ? ` · up to msg #${s.current_id}` : '');
+                `Scanning ${name}` + (s.current_id ? ` · next checkpoint msg #${s.current_id}` : '');
         }
         startBtn.disabled = true; rescanBtn.disabled = true; cancelBtn.disabled = false;
+        if (s.playback_paused) {
+            document.getElementById('scan-current').textContent += ` · Scan paused for playback — resumes automatically after 10 idle seconds.`;
+        }
+        if (s.flood_wait_seconds > 0 && !s.playback_paused) {
+            document.getElementById('scan-current').textContent += ` · Telegram cooldown: up to ${s.flood_wait_seconds}s. Other eligible workers can continue within the checkpoint window.`;
+        }
+        if (s.cancelling) {
+            document.getElementById('scan-current').textContent += ' · Cancelling — waiting for in-flight work to finish safely…';
+            cancelBtn.disabled = true;
+        }
         errEl.style.display = 'none';
     } else {
         bar.classList.remove('indeterminate');
         startBtn.disabled = false; rescanBtn.disabled = false; cancelBtn.disabled = true;
 
         if (s.resumable) {
-            startLabel.textContent = 'Resume Scan';
-            bar.style.width = '60%';
+            startLabel.textContent = scanResumeMode === 'quick' ? 'Resume Quick Scan' : 'Resume Scan';
+            bar.style.width = (s.has_progress ? s.progress || 0 : 0) + '%';
             document.getElementById('scan-current').textContent =
-                `Paused — ${ (s.pending||[]).length } channel(s) remaining. Resume to continue.`;
+                `Paused — ${ (s.pending||[]).length } channel(s) remaining.` +
+                (s.has_progress ? ` ${s.scanned_ids}/${s.total_ids} message IDs checked (${s.progress || 0}%).` : '') + ' Resume to continue.';
         } else {
             startLabel.textContent = 'Start Scan';
             bar.style.width = (status === 'completed') ? '100%' : '0%';
@@ -862,9 +1019,14 @@ function renderScan(s) {
         if (s.error) { errEl.style.display = ''; errEl.textContent = s.error; }
         else errEl.style.display = 'none';
 
-        if (scanTimer && ['completed','cancelled','error','paused','idle'].includes(status)) {
-            clearInterval(scanTimer); scanTimer = null;
-        }
+        // Keep polling even when idle: background scans can start in another session.
+
+    }
+    if (s.last_processed_message_id != null) {
+        document.getElementById('scan-current').textContent +=
+            ` Last processed message: #${s.last_processed_message_id} (channel ${s.last_processed_channel}).`;
+    } else if (s.is_running || ['cancelled', 'paused', 'error'].includes(status)) {
+        document.getElementById('scan-current').textContent += ' No messages processed in this channel yet.';
     }
 }
 
@@ -880,6 +1042,57 @@ async function startDbCheck() {
             showToast(data.detail || 'Could not start.', 'error', 'Error');
         }
     } catch (e) { showToast('Network error.', 'error', 'Error'); }
+}
+
+async function startVerifyMedia() {
+    const dry = document.getElementById('vfy-dry').checked;
+    if (!dry && !confirm('Re-check every indexed file against the current title detection?\n\n' +
+        'Wrongly filed files will be moved to the correct title. Files that match nothing are forwarded to the ' +
+        'skip channel (and deleted if your settings say so) and removed from the library.\n\n' +
+        'Tip: tick "Preview only" first to see what would change.')) return;
+    try {
+        const res = await fetch('/api/admin/tools/dbcheck/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'verify', dry_run: dry,
+                                   check_episodes: document.getElementById('vfy-episodes').checked,
+                                   pause_for_playback: document.getElementById('vfy-pause').checked })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showToast(data.message || 'Verification started.', 'success', 'Verify Media');
+            startDbcPolling();
+        } else {
+            showToast(data.detail || 'Could not start.', 'error', 'Error');
+        }
+    } catch (e) { showToast('Network error.', 'error', 'Error'); }
+}
+
+function renderVerify(s) {
+    const panel = document.getElementById('vfy-panel');
+    const v = s.verify;
+    if (s.mode !== 'verify' || !v) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    const dry = !!s.dry_run;
+    setText('vfy-mode', dry ? '· preview only, nothing is modified' : '');
+    setText('vfy-verified', v.verified || 0);
+    setText('vfy-matched', v.matched || 0);
+    setText('vfy-reassigned', dry ? (v.mismatched || 0) : (v.reassigned || 0));
+    setText('vfy-reassigned-l', dry ? 'Would re-assign' : 'Re-assigned');
+    setText('vfy-unmatched', dry ? (v.unmatched || 0) : (v.moved_to_skip || 0));
+    setText('vfy-unmatched-l', dry ? 'Would send to skip' : 'Sent to skip channel');
+    setText('vfy-duplicates', v.duplicates || 0);
+    setText('vfy-held', v.held || 0);
+    const icons = { reassign: 'fa-arrow-right-arrow-left', duplicate: 'fa-clone', unmatched: 'fa-triangle-exclamation' };
+    const changes = s.changes || [];
+    document.getElementById('vfy-changes').innerHTML = changes.length ? changes.map(c => `
+        <div class="dead-row">
+            <span class="min-w-0 truncate">
+                <i class="fa-solid ${icons[c.action] || 'fa-arrow-right'}" style="color:#f59e0b"></i>
+                ${escapeHtml(c.name || '')}
+                <span class="c-id">· ${escapeHtml(c.from)} → ${escapeHtml(c.to || '')}</span>
+            </span>
+        </div>`).join('') : '<div class="hint">Nothing to change so far.</div>';
 }
 
 async function cancelDbCheck() {
@@ -905,12 +1118,16 @@ async function pollDbc() {
 }
 
 function renderDbc(s) {
+    const historyText = h => h && h.finished_at ? `${new Date(h.finished_at * 1000).toLocaleString()} · ${Math.round(h.duration_seconds)}s` : 'Not recorded';
+    setText('dbc-manual-history', historyText(s.last_manual_success));
+    setText('dbc-auto-history', historyText(s.last_auto_success));
     const pill = document.getElementById('dbc-status-pill');
     const status = s.status || 'idle';
     pill.className = 'status-pill status-' + status;
     pill.textContent = status.charAt(0).toUpperCase() + status.slice(1);
 
     setText('dbc-checked', s.checked || 0);
+    setText('dbc-sizes', s.sizes_updated || 0);
     setText('dbc-alive', s.alive || 0);
     setText('dbc-dead', s.dead || 0);
     setText('dbc-errors', s.errors || 0);
@@ -921,19 +1138,30 @@ function renderDbc(s) {
     const bar = document.getElementById('dbc-bar');
     const startBtn = document.getElementById('dbc-start-btn');
     const cancelBtn = document.getElementById('dbc-cancel-btn');
+    const verifyBtn = document.getElementById('dbc-verify-btn');
+    const verifying = s.mode === 'verify';
+    renderVerify(s);
 
     if (s.is_running) {
-        document.getElementById('dbc-current').textContent = `Checking… ${s.checked || 0} verified`;
+        document.getElementById('dbc-current').textContent = verifying
+            ? `Verifying media… ${s.checked || 0} files read`
+            : `Checking… ${s.checked || 0} verified`;
         bar.classList.add('indeterminate');
-        startBtn.disabled = true; cancelBtn.disabled = false;
+        startBtn.disabled = true; verifyBtn.disabled = true; cancelBtn.disabled = false;
     } else {
         bar.classList.remove('indeterminate');
         bar.style.width = (status === 'completed' || status === 'cancelled') ? '100%' : '0%';
-        startBtn.disabled = false; cancelBtn.disabled = true;
-        document.getElementById('dbc-current').textContent =
-            status === 'completed' ? `Done — ${s.dead || 0} dead found.` :
-            status === 'cancelled' ? 'Stopped.' :
-            status === 'error' ? 'Check failed.' : 'No check running';
+        startBtn.disabled = false; verifyBtn.disabled = false; cancelBtn.disabled = true;
+        const vv = s.verify || {};
+        document.getElementById('dbc-current').textContent = verifying
+            ? (status === 'completed' ? (s.dry_run
+                    ? `Preview done — ${vv.mismatched || 0} to re-assign, ${vv.unmatched || 0} unmatched.`
+                    : `Done — ${vv.reassigned || 0} re-assigned, ${vv.moved_to_skip || 0} sent to skip channel.`) :
+               status === 'cancelled' ? 'Stopped.' :
+               status === 'error' ? (s.error || 'Verification failed.') : 'No check running')
+            : (status === 'completed' ? `Done — ${s.dead || 0} dead found.` :
+               status === 'cancelled' ? 'Stopped.' :
+               status === 'error' ? 'Check failed.' : 'No check running');
 
         if (dbcTimer && ['completed','cancelled','error','idle'].includes(status)) {
             clearInterval(dbcTimer); dbcTimer = null;
@@ -1437,13 +1665,78 @@ function escapeHtmlAttr(str) {
     return String(str || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;');
 }
 
+
+/* Digital Release Cleaner: selection survives polling and pagination. */
+let drcOffset = 0, drcState = null, drcTimer = null, drcBusy = false;
+const drcSelection = new Set();
+async function drcRequest(action, body) {
+    const response = await fetch('/api/admin/tools/digital-cleaner/' + action, body === undefined ? {} : {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || 'Cleaner request failed.');
+    return result;
+}
+function drcButtons() {
+    const active = drcBusy || ['running', 'deleting'].includes(drcState?.status);
+    document.getElementById('drc-start').disabled = active;
+    document.getElementById('drc-stop').disabled = drcBusy || drcState?.status !== 'running';
+    document.getElementById('drc-selected').disabled = active || !drcSelection.size;
+    document.getElementById('drc-all').disabled = active || !drcState?.count;
+}
+async function drcPoll() {
+    clearTimeout(drcTimer);
+    try {
+        const state = await drcRequest('status?offset=' + drcOffset);
+        if (drcState && drcState.scan_id !== state.scan_id) drcSelection.clear();
+        drcState = state;
+        if (drcOffset && drcOffset >= state.count) { drcOffset = 0; return await drcPoll(); }
+        setText('drc-status', `${state.status} · ${state.scanned} movies scanned · ${state.count} theatrical files listed · ${state.removed} removed · ${state.skipped} skipped · ${state.failed} failed` +
+            (state.status === 'deleting' ? ` · Deleting ${state.processed}/${state.total}` : '') +
+            (state.error ? ` · ${state.error}` : ''));
+        const list = document.getElementById('drc-list');
+        list.replaceChildren();
+        for (const entry of state.entries) {
+            const row = document.createElement('div'); row.className = 'mb-3';
+            const label = document.createElement('label');
+            const cb = document.createElement('input'); cb.type = 'checkbox';
+            cb.checked = drcSelection.has(entry.key);
+            cb.disabled = ['running', 'deleting'].includes(state.status);
+            cb.onchange = () => { cb.checked ? drcSelection.add(entry.key) : drcSelection.delete(entry.key); drcButtons(); };
+            label.append(cb, document.createTextNode(' ' + entry.title + (entry.year ? ` (${entry.year})` : '') + ' — ' + entry.name));
+            const proof = document.createElement('div'); proof.className = 'hint';
+            proof.textContent = 'Digital copies kept: ' + entry.replacements.join(' · ');
+            row.append(label, proof); list.append(row);
+        }
+        if (!state.entries.length) list.textContent = state.status === 'idle' ? 'Run a scan to find eligible theatrical copies.' : 'No eligible theatrical files listed.';
+        setText('drc-page', state.count ? `${drcOffset + 1}–${Math.min(drcOffset + 100, state.count)} of ${state.count}` : '');
+        document.getElementById('drc-prev').disabled = !drcOffset;
+        document.getElementById('drc-next').disabled = drcOffset + 100 >= state.count;
+        drcButtons();
+    } catch (error) { setText('drc-status', error.message + ' Retrying…'); }
+    drcTimer = setTimeout(drcPoll, 2500);
+}
+async function drcAction(action, body = {}) {
+    drcBusy = true; drcButtons();
+    try {
+        await drcRequest(action, body);
+        if (action !== 'cancel') { drcSelection.clear(); drcOffset = 0; }
+        await drcPoll();
+    } catch (error) { showToast(error.message, 'error', 'Digital Release Cleaner'); }
+    finally { drcBusy = false; drcButtons(); }
+}
+function drcDelete(all) {
+    const count = all ? drcState.count : drcSelection.size;
+    if (!confirm(`Remove ${count} theatrical file(s) from the database and queue their Telegram messages for deletion? Digital copies will be kept.`)) return;
+    drcAction('purge', {scan_id: drcState.scan_id, keys: [...drcSelection], delete_all: all});
+}
+function drcPage(direction) { drcOffset = Math.max(0, drcOffset + direction * 100); drcPoll(); }
+drcPoll();
+
 /* ─────────────── Init ─────────────── */
 loadManualSession();
 loadChannels();
-pollScan().then(() => {
-    const pill = document.getElementById('scan-status-pill');
-    if (pill.classList.contains('status-running')) startScanPolling();
-});
+startScanPolling();
 pollDbc().then(() => {
     const pill = document.getElementById('dbc-status-pill');
     if (pill.classList.contains('status-running')) startDbcPolling();

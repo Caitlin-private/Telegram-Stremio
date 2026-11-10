@@ -68,12 +68,14 @@ def quality_ext(name: str) -> str:
 
 
 def pick_best_quality(qualities: Optional[List[dict]]) -> Optional[dict]:
+    from Backend.helper.multipart_video import with_video_part
     if not qualities:
         return None
+    qualities = [with_video_part(q) for q in qualities]
     order = {"2160p": 0, "4k": 0, "1440p": 1, "1080p": 2, "720p": 3, "480p": 4, "360p": 5}
     def key(q):
         ql = str(q.get("quality") or "").lower()
-        return order.get(ql, 50)
+        return (bool(q.get('video_part')), order.get(ql, 50), q.get('video_part') or 0)
     return sorted(qualities, key=key)[0]
 
 
@@ -118,6 +120,8 @@ class VNode:
     # stream payload
     stream_id: Optional[str] = None    # QualityDetail.id (encoded stream hash)
     stream_name: Optional[str] = None
+    video_part: Optional[int] = None
+    video_group: Optional[str] = None
     parts: Optional[List[dict]] = None
     # nfo body (generated on demand if empty)
     nfo_body: Optional[bytes] = None
@@ -189,7 +193,7 @@ class WebDAVFilesystem:
         node = await self.resolve(path)
         if node is None or not node.is_dir:
             return []
-        return list(node.children.values())
+        return sorted(node.children.values(), key=lambda n: (not n.is_dir, bool(n.video_part), n.video_group or '', n.video_part or 0, n.name.lower()))
 
     async def _build_tree(self) -> VNode:
         LOGGER.info("[WebDAV] Building virtual filesystem tree…")
@@ -360,11 +364,18 @@ class WebDAVFilesystem:
         return root
 
     def _movie_video_node(self, folder_path: str, folder: str, doc: dict, qual: dict) -> Optional[VNode]:
+        from Backend.helper.multipart_video import with_video_part
+        qual = with_video_part(qual)
+        from Backend.helper.settings_manager import SettingsManager
+        if qual.get('video_part') and not SettingsManager.current().allow_multipart_video:
+            return None
         qlabel = safe_name(str(qual.get("quality") or "Unknown"), 20)
         raw_name = qual.get("name") or folder
         ext = quality_ext(raw_name)
         fname = f"{folder} - {qlabel}{ext}"
-        size = parse_size_bytes(qual.get("size"), qual.get("parts"))
+        if qual.get('video_part'):
+            fname = f"{safe_name(raw_name.rsplit('.', 1)[0])} [Multi-Part - Part {qual['video_part']}]{ext}"
+        size = parse_size_bytes(qual.get("size_bytes") or qual.get("size"), qual.get("parts"))
         return VNode(
             path=f"{folder_path}/{fname}",
             name=fname,
@@ -372,6 +383,8 @@ class WebDAVFilesystem:
             size=size or 1,
             content_type=_mime_for_ext(ext),
             kind="movie_video",
+            video_part=qual.get('video_part'),
+            video_group=qual.get('video_group'),
             stream_id=qual.get("id"),
             stream_name=raw_name,
             parts=qual.get("parts"),
@@ -391,11 +404,18 @@ class WebDAVFilesystem:
         ep: dict,
         qual: dict,
     ) -> Optional[VNode]:
+        from Backend.helper.multipart_video import with_video_part
+        qual = with_video_part(qual)
+        from Backend.helper.settings_manager import SettingsManager
+        if qual.get('video_part') and not SettingsManager.current().allow_multipart_video:
+            return None
         qlabel = safe_name(str(qual.get("quality") or "Unknown"), 20)
         raw_name = qual.get("name") or f"{show_short}.S{sn:02d}E{en:02d}"
         ext = quality_ext(raw_name)
         fname = f"{show_short} S{sn:02d}E{en:02d} - {ep_title} - {qlabel}{ext}"
-        size = parse_size_bytes(qual.get("size"), qual.get("parts"))
+        if qual.get('video_part'):
+            fname = f"{safe_name(raw_name.rsplit('.', 1)[0])} [Multi-Part - Part {qual['video_part']}]{ext}"
+        size = parse_size_bytes(qual.get("size_bytes") or qual.get("size"), qual.get("parts"))
         return VNode(
             path=f"{season_path}/{fname}",
             name=fname,
@@ -403,6 +423,8 @@ class WebDAVFilesystem:
             size=size or 1,
             content_type=_mime_for_ext(ext),
             kind="episode_video",
+            video_part=qual.get('video_part'),
+            video_group=qual.get('video_group'),
             stream_id=qual.get("id"),
             stream_name=raw_name,
             parts=qual.get("parts"),

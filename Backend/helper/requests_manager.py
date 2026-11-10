@@ -232,7 +232,9 @@ async def media_exists(media_type: str, tmdb_id, imdb_id, title: str, year=None)
 
 
 #----- Public submit: de-duplicated per title, honouring banned/denied/uploaded state
-async def submit_request(*, media_type, tmdb_id, imdb_id, title, year, poster, client_ip) -> dict:
+async def submit_request(*, media_type, tmdb_id, imdb_id, title, year, poster, client_ip,
+                         library_checked: bool = False, season_number=None, episode_number=None,
+                         requester_user_id=None, backdrop="", description="", rate=0, genres=None) -> dict:
     media_type = _norm_type(media_type)
     try:
         tmdb_id = int(tmdb_id) if tmdb_id else None
@@ -250,13 +252,26 @@ async def submit_request(*, media_type, tmdb_id, imdb_id, title, year, poster, c
         ors.append({"tmdb_id": tmdb_id})
     now = datetime.utcnow()
     iphash = _hash_ip(client_ip)
-    existing = await _coll().find_one({"media_type": media_type, "$or": ors})
+    episode_scoped = season_number is not None and episode_number is not None
+    request_filter = {"media_type": media_type, "$or": ors}
+    if episode_scoped:
+        request_filter.update({"season_number": int(season_number), "episode_number": int(episode_number)})
+    else:
+        # A title-level request must never collide with an individual episode request.
+        request_filter["episode_number"] = {"$exists": False}
+    existing = await _coll().find_one(request_filter)
 
     if existing:
         if existing.get("status") == "banned":
             return {"ok": False, "reason": "banned", "title": existing.get("title")}
 
-        update = {"$addToSet": {"requesters": iphash}, "$set": {"last_requested_at": now, "updated_at": now}}
+        add_to_set = {"requesters": iphash}
+        if requester_user_id is not None:
+            try:
+                add_to_set["requester_user_ids"] = int(requester_user_id)
+            except (TypeError, ValueError):
+                pass
+        update = {"$addToSet": add_to_set, "$set": {"last_requested_at": now, "updated_at": now}}
         if imdb_id and not existing.get("imdb_id"):
             update["$set"]["imdb_id"] = imdb_id
         if tmdb_id and not existing.get("tmdb_id"):
@@ -270,10 +285,11 @@ async def submit_request(*, media_type, tmdb_id, imdb_id, title, year, poster, c
             reason = "reopened"
 
         await _coll().update_one({"_id": existing["_id"]}, update)
-        return {"ok": True, "reason": reason, "title": existing.get("title")}
+        return {"ok": True, "reason": reason, "title": existing.get("title"),
+                "request_id": str(existing["_id"])}
 
     #----- Not requested before: if it's already in the library, no request needed
-    if await media_exists(media_type, tmdb_id, imdb_id, title, year):
+    if not library_checked and await media_exists(media_type, tmdb_id, imdb_id, title, year):
         return {"ok": True, "reason": "already_available", "title": title}
 
     doc = {
@@ -283,20 +299,34 @@ async def submit_request(*, media_type, tmdb_id, imdb_id, title, year, poster, c
         "title": (title or "Untitled")[:200],
         "year": year,
         "poster": poster or "",
+        "backdrop": backdrop or "",
+        "description": description or "",
+        "rate": rate or 0,
+        "genres": list(genres or []),
+        **({"season_number": int(season_number), "episode_number": int(episode_number)} if episode_scoped else {}),
         "status": "pending",
         "requesters": [iphash],
+        "admin_messages": [],
         "created_at": now,
         "updated_at": now,
         "last_requested_at": now,
     }
-    await _coll().insert_one(doc)
-    return {"ok": True, "reason": "created", "title": doc["title"]}
+    if requester_user_id is not None:
+        try:
+            doc["requester_user_ids"] = [int(requester_user_id)]
+        except (TypeError, ValueError):
+            pass
+    inserted = await _coll().insert_one(doc)
+    return {"ok": True, "reason": "created", "title": doc["title"],
+            "request_id": str(inserted.inserted_id)}
 
 
 def _shape(doc: dict) -> dict:
     doc["_id"] = str(doc["_id"])
     doc["request_count"] = len(doc.get("requesters") or [])
     doc.pop("requesters", None)
+    doc.pop("requester_user_ids", None)
+    doc.pop("admin_messages", None)
     return doc
 
 
@@ -313,15 +343,40 @@ async def popular_pending(limit: int = 12) -> list:
     return items[:limit]
 
 
-async def set_status(request_id: str, status: str):
+async def get_request(request_id: str) -> dict | None:
+    try:
+        doc = await _coll().find_one({"_id": ObjectId(request_id)})
+    except Exception:
+        return None
+    if not doc:
+        return None
+    # Keep requester IDs available to the Telegram delivery workflow.
+    doc["_id"] = str(doc["_id"])
+    return doc
+
+
+async def add_admin_message(request_id: str, chat_id: int, message_id: int) -> None:
+    try:
+        await _coll().update_one(
+            {"_id": ObjectId(request_id)},
+            {"$addToSet": {"admin_messages": {"chat_id": int(chat_id), "message_id": int(message_id)}}},
+        )
+    except Exception as exc:
+        LOGGER.warning(f"[REQUEST] Could not store admin message reference: {exc}")
+
+
+async def set_status(request_id: str, status: str, *, only_pending: bool = False):
     if status not in STATUSES:
         return None
     try:
         oid = ObjectId(request_id)
     except Exception:
         return None
+    status_filter = {"_id": oid}
+    if only_pending:
+        status_filter["status"] = "pending"
     doc = await _coll().find_one_and_update(
-        {"_id": oid},
+        status_filter,
         {"$set": {"status": status, "updated_at": datetime.utcnow()}},
         return_document=ReturnDocument.AFTER,
     )
@@ -338,7 +393,8 @@ async def delete_request(request_id: str) -> bool:
 
 
 #----- Mark matching pending requests as uploaded when a title is added to a channel
-async def auto_fulfill(tmdb_id=None, imdb_id=None, media_type: str = "movie") -> int:
+async def auto_fulfill(tmdb_id=None, imdb_id=None, media_type: str = "movie",
+                       season_number=None, episode_number=None) -> int:
     media_type = _norm_type(media_type)
     ors = []
     if tmdb_id:
@@ -350,10 +406,27 @@ async def auto_fulfill(tmdb_id=None, imdb_id=None, media_type: str = "movie") ->
         ors.append({"imdb_id": imdb_id})
     if not ors:
         return 0
+    fulfill_filter = {"media_type": media_type, "status": "pending", "$or": ors}
+    if media_type == "tv" and season_number is not None and episode_number is not None:
+        # An uploaded episode fulfills only its matching episode request.
+        fulfill_filter.update({"season_number": int(season_number), "episode_number": int(episode_number)})
+    # Stremio-originated requests have a Telegram requester to notify. Keep
+    # their admin action pending even after ingestion detects the media, so an
+    # admin can press Done and trigger the private poster announcement.
+    stremio_filter = {**fulfill_filter, "requester_user_ids": {"$exists": True}}
+    detected = await _coll().update_many(
+        stremio_filter,
+        {"$set": {"content_detected_at": datetime.utcnow(), "updated_at": datetime.utcnow()}},
+    )
+    ordinary_filter = {**fulfill_filter, "requester_user_ids": {"$exists": False}}
     result = await _coll().update_many(
-        {"media_type": media_type, "status": "pending", "$or": ors},
+        ordinary_filter,
         {"$set": {"status": "uploaded", "updated_at": datetime.utcnow()}},
     )
-    if result.modified_count:
-        LOGGER.info(f"[REQUEST] auto-fulfilled {result.modified_count} request(s) for {media_type} tmdb={tmdb_id} imdb={imdb_id}")
-    return result.modified_count
+    if result.modified_count or detected.modified_count:
+        LOGGER.info(
+            f"[REQUEST] auto-fulfilled {result.modified_count} ordinary request(s); "
+            f"detected {detected.modified_count} Stremio request(s) awaiting admin confirmation "
+            f"for {media_type} tmdb={tmdb_id} imdb={imdb_id}"
+        )
+    return result.modified_count + detected.modified_count

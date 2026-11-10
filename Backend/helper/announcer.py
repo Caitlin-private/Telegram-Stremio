@@ -1,14 +1,65 @@
-from asyncio import create_task
-from datetime import datetime
+import asyncio
+from asyncio import create_task, Lock, sleep
+from io import BytesIO
+import re
 
-from pyrogram.enums import ParseMode
-from pyrogram.errors import FloodWait, MessageDeleteForbidden, MessageIdInvalid
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+import httpx
+from PIL import Image, ImageOps
+from datetime import datetime
+from html import escape
+
+from wzgram.enums import ParseMode
+from wzgram.errors import FloodWait, MessageDeleteForbidden, MessageIdInvalid
+from wzgram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from Backend import db
 from Backend.helper.settings_manager import SettingsManager
 from Backend.logger import LOGGER
 from Backend.pyrofork.bot import StreamBot, get_streambot_url
+from Backend.helper.pyro import artwork_available, defer_artwork
+from Backend.helper.poster_provider import _poster_url, _abs_media_url
+from Backend.helper.fanart import fanart_artwork
+
+_announcement_lock = Lock()
+
+MAX_BYTES = 8 * 1024 * 1024
+MAX_PIXELS = 12_000_000
+FRAME_SIZE = 960
+
+
+def frame_poster(data: bytes) -> BytesIO:
+    with Image.open(BytesIO(data)) as source:
+        if source.width * source.height > MAX_PIXELS:
+            raise ValueError('Announcement poster dimensions exceed the limit')
+        # Contain, never fit/crop: all provider badges and title text survive.
+        image = ImageOps.exif_transpose(source)
+        image.thumbnail((FRAME_SIZE, FRAME_SIZE), Image.Resampling.LANCZOS)
+        image = image.convert('RGBA')
+        with Image.new('RGB', image.size, (24, 24, 32)) as canvas:
+            canvas.paste(image, (0, 0), image)
+            output = BytesIO()
+            canvas.save(output, format='JPEG', quality=85)
+        image.close()
+    output.name = 'caitlin-poster.jpg'
+    output.seek(0)
+    return output
+
+
+async def announcement_photo(url: str) -> BytesIO:
+    async def download():
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+            async with client.stream('GET', url) as response:
+                response.raise_for_status()
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(data) + len(chunk) > MAX_BYTES:
+                        raise ValueError('Announcement poster download exceeds the limit')
+                    data.extend(chunk)
+                return bytes(data)
+    data = await asyncio.wait_for(download(), timeout=25)
+    # Image processing must not block ingestion/playback on the event loop.
+    return await asyncio.to_thread(frame_poster, data)
+
 
 
 #----- Accept either a numeric channel id (-100...) or an @username
@@ -49,10 +100,12 @@ async def _store_announcement_msg(media_type: str, tmdb_id, chat_id, message_id:
 
 def _build_caption(info: dict) -> str:
     is_tv = info.get("media_type") == "tv"
-    title = info.get("title") or "Unknown"
+    title = escape(str(info.get("title") or "Unknown"))
     header = f"{'📺' if is_tv else '🎬'} <b>{title}</b>"
-    if info.get("year"):
-        header += f" ({info['year']})"
+    year = str(info.get("year") or "").strip()
+    # Metadata titles sometimes already contain the release year.
+    if year and not re.search(r"(?<!\d)" + re.escape(year) + r"(?!\d)", str(info.get("title") or "")):
+        header += f" ({escape(year)})"
 
     lines = [header, "", f"🗂 <b>Type:</b> {'Series' if is_tv else 'Movie'}"]
     if info.get("rate"):
@@ -62,35 +115,77 @@ def _build_caption(info: dict) -> str:
             pass
     genres = info.get("genres") or []
     if genres:
-        lines.append(f"🎭 <b>Genres:</b> {', '.join(genres[:4])}")
-    if info.get("quality"):
-        lines.append(f"📶 <b>Quality:</b> {info['quality']}")
+        lines.append(f"🎭 <b>Genres:</b> {escape(', '.join(str(g) for g in genres[:4]))}")
 
     desc = (info.get("description") or "").strip()
     if desc:
         if len(desc) > 320:
             desc = desc[:317].rstrip() + "..."
-        lines += ["", f"<i>{desc}</i>"]
+        lines += ["", f"<i>{escape(desc)}</i>"]
     return "\n".join(lines)
 
 
-def _build_markup(info: dict):
+def _build_markup(info: dict, include_addon: bool = True):
+    from Backend.helper.search_bot_links import search_bot_link
     rows = []
+    playback_buttons = []
     base = SettingsManager.current().base_url
     imdb_id = str(info.get("imdb_id") or "").strip()
     stremio_type = "series" if info.get("media_type") == "tv" else "movie"
     if base and imdb_id:
-        rows.append([
-            InlineKeyboardButton("▶️ Stremio", url=f"{base}/open/stremio/{stremio_type}/{imdb_id}"),
-            InlineKeyboardButton("📱 Nuvio", url=f"{base}/open/nuvio/{stremio_type}/{imdb_id}"),
-        ])
+        playback_buttons.append(InlineKeyboardButton("📱 Nuvio", url=f"{base}/open/nuvio/{stremio_type}/{imdb_id}"))
+    search_url = search_bot_link(SettingsManager.current().search_bot_username, info.get("title"))
+    if search_url:
+        playback_buttons.append(InlineKeyboardButton("📁 Get File", url=search_url))
     bot_url = get_streambot_url()
-    if bot_url and bot_url != "https://t.me/":
+    if playback_buttons:
+        rows.append(playback_buttons)
+    if include_addon and bot_url and bot_url != "https://t.me/":
         rows.append([InlineKeyboardButton("🤖 Get Addon", url=bot_url)])
     return InlineKeyboardMarkup(rows) if rows else None
 
 
+async def _apply_announcement_fanart(artwork: dict, info: dict) -> None:
+    try:
+        art = await fanart_artwork(info.get('imdb_id'), info.get('tmdb_id'), info.get('media_type'))
+        artwork.update({key: value for key, value in art.items() if key in ('poster', 'background') and value})
+    except Exception as exc:
+        LOGGER.warning(f'Announcement fanart lookup failed: {exc}')
+
+
+async def announcement_image_url(info: dict):
+    """Use one provider/fallback policy for announcements and private title cards."""
+    settings = SettingsManager.current()
+    provider = settings.announcement_poster_provider
+    if provider == 'same':
+        provider = ('pictorium' if settings.pictorium_poster_enabled else
+                    'spatial' if settings.spatial_poster_enabled else
+                    'fanart' if settings.fanart_enabled else
+                    'better' if settings.better_poster_enabled else
+                    'rpdb' if settings.rpdb_enabled else 'default')
+    fallback = info.get('backdrop') or info.get('poster')
+    if provider == 'fanart':
+        artwork = {'poster': _abs_media_url(fallback),
+                   'background': _abs_media_url(info.get('backdrop'))}
+        await _apply_announcement_fanart(artwork, info)
+        image_url = artwork.get('background') or artwork.get('poster')
+    else:
+        image_url = _poster_url(
+            info.get('imdb_id'), fallback, info.get('tmdb_id'),
+            info.get('media_type'),
+            shape='poster',
+            provider=provider,
+        )
+    return image_url
+
+
 async def _announce(info: dict) -> None:
+    # Prevent concurrent photo attempts from racing past the same cooldown.
+    async with _announcement_lock:
+        await _announce_serial(info)
+
+
+async def _announce_serial(info: dict) -> None:
     settings = SettingsManager.current()
     chat = _resolve_chat(settings.announcement_channel)
     if not settings.announce_new_content or chat is None:
@@ -99,34 +194,77 @@ async def _announce(info: dict) -> None:
         return
 
     caption = _build_caption(info)
-    poster = info.get("backdrop") or info.get("poster")
     markup = _build_markup(info)
 
     try:
         sent = None
-        if poster:
+        if artwork_available(StreamBot):
             try:
-                sent = await StreamBot.send_photo(chat, poster, caption=caption,
-                                           parse_mode=ParseMode.HTML, reply_markup=markup)
-            except FloodWait:
-                raise
-            except Exception:
+                image_url = await announcement_image_url(info)
+                if image_url:
+                    photo = await announcement_photo(image_url)
+                    try:
+                        sent = await StreamBot.send_photo(chat, photo, caption=caption,
+                                               parse_mode=ParseMode.HTML, reply_markup=markup)
+                    finally:
+                        photo.close()
+            except FloodWait as e:
+                defer_artwork(StreamBot, e.value)
+            except Exception as exc:
+                LOGGER.warning('Announcement artwork unavailable: %s: %s; sending text', type(exc).__name__, exc)
                 sent = None
         if sent is None:
-            sent = await StreamBot.send_message(chat, caption, parse_mode=ParseMode.HTML,
-                                     reply_markup=markup, disable_web_page_preview=True)
+            while True:
+                try:
+                    sent = await StreamBot.send_message(chat, caption, parse_mode=ParseMode.HTML,
+                                             reply_markup=markup, disable_web_page_preview=True)
+                    break
+                except FloodWait as e:
+                    defer_artwork(StreamBot, e.value)
+                    await sleep(max(1, e.value) + 1)
         if sent is not None:
             await _store_announcement_msg(info.get("media_type"), info.get("tmdb_id"), chat, sent.id)
-    except FloodWait as e:
-        LOGGER.warning(f"Announcement FloodWait for {e.value}s")
     except Exception as e:
+        # A failed delivery must not permanently consume the deduplication claim.
+        try:
+            await db.dbs['tracking']['announced'].delete_one({
+                '_id': f'{info.get("media_type")}:{info.get("tmdb_id")}',
+                'message_id': {'$exists': False},
+            })
+        except Exception as cleanup_error:
+            LOGGER.warning(f'Could not release announcement claim: {cleanup_error}')
         LOGGER.error(f"Announcement failed for '{info.get('title')}': {e}")
 
 
-#----- Fire-and-forget announcement for a freshly added title
+#----- Fire-and-forget announcement for a freshly added title.
+#----- Callers (live ingestion, scans, Verify Media) only enqueue and return at once; one
+#----- background worker does the poster download, image work and Telegram post, so a slow
+#----- announcement channel or a FloodWait can never hold up indexing.
+_ANNOUNCE_QUEUE_MAX = 5000
+_announce_queue: "asyncio.Queue | None" = None
+_announce_worker: "asyncio.Task | None" = None
+
+
+async def _announce_worker_loop() -> None:
+    while True:
+        info = await _announce_queue.get()
+        try:
+            await _announce(info)
+        except Exception as exc:
+            LOGGER.error(f"Announcement worker error: {type(exc).__name__}: {exc}")
+
+
 def announce_new_media(info: dict) -> None:
+    global _announce_queue, _announce_worker
     try:
-        create_task(_announce(dict(info)))
+        loop = asyncio.get_running_loop()
+        if _announce_queue is None:
+            _announce_queue = asyncio.Queue(maxsize=_ANNOUNCE_QUEUE_MAX)
+        if _announce_worker is None or _announce_worker.done():
+            _announce_worker = loop.create_task(_announce_worker_loop())
+        _announce_queue.put_nowait(dict(info))
+    except asyncio.QueueFull:
+        LOGGER.warning("Announcement queue is full; skipping an announcement.")
     except RuntimeError:
         LOGGER.warning("Announcement skipped: no running event loop.")
 

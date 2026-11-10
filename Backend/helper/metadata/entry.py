@@ -48,11 +48,12 @@ def _is_anime_channel(channel) -> bool:
 
 
 def _resolve_default_id(override_id, filename) -> str | None:
-    for source in (override_id, getattr(Backend, "USE_DEFAULT_ID", None), filename):
+    # Explicit override first, then IDs embedded in the filename, then global fallback.
+    for source in (override_id, filename, getattr(Backend, "USE_DEFAULT_ID", None)):
         if not source:
             continue
         try:
-            found = extract_default_id(source) or (override_id if source is override_id else None)
+            found = extract_default_id(source)
         except Exception:
             found = None
         if found:
@@ -66,6 +67,7 @@ async def metadata(
     msg_id,
     override_id: str = None,
     season_hint: int = None,
+    quality_hint: str = None,
 ) -> dict | None:
     if is_multipart_video(filename):
         LOGGER.info(f"Skipping {filename}: split video file not meant to be combined in Stremio")
@@ -92,7 +94,7 @@ async def metadata(
     season = parsed.get("season")
     episode = parsed.get("episode")
     year = parsed.get("year")
-    quality = parsed.get("quality")
+    quality = parsed.get("quality") or quality_hint
 
     if season_hint is not None and episode and not season and not isinstance(episode, list):
         season = season_hint

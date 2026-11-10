@@ -229,9 +229,54 @@
         </button>
     </div>
 
+    <div class="settings-card">
+        <h2><i class="fa-solid fa-pause"></i> Live Ingestion</h2>
+        <div class="flex flex-wrap items-center gap-3 mt-3">
+            <button id="ingestion-toggle" type="button" disabled onclick="toggleIngestion()" class="px-4 py-2 rounded-xl bg-primary/10 font-bold">Loading ingestion…</button>
+            <span id="ingestion-state" class="text-sm" role="status"></span>
+        </div>
+        <p class="text-xs text-text-secondary mt-2">Pause state and pending AUTH-channel message IDs are saved in MongoDB. The current file may finish after pausing. New bot uploads are declined while paused. Playback continues.</p>
+        <p id="ingestion-error" class="text-sm text-red-400 mt-2" role="alert"></p>
+        <p class="hint mt-3">Disable live ingestion for individual AUTH channels below. This is a permanent live-ingestion boundary: the current channel head is saved and pending jobs are discarded, so enabling the channel later will not index its backlog. Only files posted after re-enabling are processed. Manual scans remain available. A file already running may finish. Changes here save immediately.</p>
+<div id="ingestion-channel-switches" class="space-y-3 my-3"></div>
+<details class="mt-3">
+            <summary class="cursor-pointer font-bold text-sm">Channel checkpoints &amp; earlier backlog</summary>
+            <div id="ingestion-channels" class="text-sm space-y-2 my-3"></div>
+            <p class="text-xs text-text-secondary">On first installation, monitoring begins at the current channel position. To recover an earlier backlog, pause, choose its first message ID below, and resume. Already-indexed source messages are skipped. This reads only from that ID forward.</p>
+            <div class="flex flex-wrap gap-2 mt-3">
+                <select id="ingestion-channel" class="rounded-lg bg-surface p-2" aria-label="AUTH channel"></select>
+                <input id="ingestion-start-id" class="rounded-lg bg-surface p-2" type="number" min="1" placeholder="First message ID" aria-label="Starting message ID">
+                <button type="button" onclick="setIngestionStart()" class="px-3 py-2 rounded-lg bg-primary/10">Set starting ID</button>
+            </div>
+        </details>
+    </div>
+
     <!-- ── General ─────────────────────────────────────────────────────── -->
     <div class="settings-card">
+        <h2><i class="fa-solid fa-film"></i> Media Resolution Management</h2>
+        <p class="hint">Choose resolutions to ingest from AUTH channels and user bot uploads. This filters new ingestion; it does not remove existing media or change video quality.</p>
+        <div class="flex flex-wrap gap-4 my-4">
+            {% for resolution in ['360p', '480p', '720p', '1080p', '1440p', '2160p', 'other'] %}
+            <label><input type="checkbox" class="ingest-resolution" value="{{ resolution }}" {% if resolution in settings.ingestion_resolutions %}checked{% endif %}> {{ 'Rest (including 540p, 576p and 4320p)' if resolution == 'other' else resolution }}</label>
+            {% endfor %}
+        </div>
+        <label class="toggle-wrap">
+            <input type="checkbox" class="toggle-input" id="allow_unknown_resolution" {% if settings.allow_unknown_resolution %}checked{% endif %}>
+            <span class="toggle-track"></span>
+            <span class="toggle-label"><strong>Allow files without a resolution label</strong><span class="hint block">Accept files with no recognised resolution in the filename or caption. They are listed as Unknown when no resolution can be determined. Nuvio does not require a resolution label to play a supported file.</span></span>
+        </label>
+        <p class="hint mt-3">Save Settings to apply. Newly ingested AUTH-channel files excluded by these rules are copied to the skip channel with a reason, then deleted from the source channel. Configure the skip channel and grant the bot copy/post/delete permissions. Bot uploads are rejected with a reason before copying.</p>
+    </div>
+    <div class="settings-card">
         <h2><i class="fa-solid fa-sliders"></i> General</h2>
+        <div class="mb-4">
+            <label for="db_scan_mode">Database scan mode</label>
+            <select id="db_scan_mode" class="s-input">
+                <option value="auto" {% if settings.db_scan_mode == 'auto' %}selected{% endif %}>Automatic</option>
+                <option value="manual" {% if settings.db_scan_mode == 'manual' %}selected{% endif %}>Manual only</option>
+            </select>
+            <p class="hint">Automatic checks run after startup and every 24 hours. Manual only stops automatic checks; run a DB check from Tools when needed. Channel scans and DB checks run one at a time.</p>
+        </div>
         <div class="space-y-4">
             <label class="toggle-wrap">
                 <input type="checkbox" class="toggle-input" id="replace_mode"
@@ -255,6 +300,30 @@
                     </span>
                 </span>
             </label>
+            <label class="toggle-wrap" id="adv-filter-wrap">
+                <input type="checkbox" class="toggle-input" id="advanced_file_filtering"
+                    {% if settings.advanced_file_filtering %}checked{% endif %}>
+                <span class="toggle-track"></span>
+                <span class="toggle-label">
+                    <strong>Advanced File filtering <span style="font-size:0.65rem;font-weight:700;letter-spacing:.04em;padding:1px 6px;border-radius:999px;background:var(--primary);color:#fff;vertical-align:middle">BETA</span></strong>
+                    <span style="color:var(--text-sec);font-size:0.8rem;display:block">
+                        Keep another file at the same resolution only when its tags differ: cut (IMAX, uncut, extended, remastered&hellip;),
+                        source (BluRay, WEB-DL, WEBRip, remux&hellip;), codec (x264, x265, AV1), 10-bit, SDR / HDR / Dolby Vision, Atmos / TrueHD, audio language (Dual / Multi / Hindi / English&hellip;) or subtitles (ESub / MSub / Sub).
+                        For example, with an uncut x264 file stored, another uncut file is only added if it is x265. Skipped files are
+                        removed from the channel like Duplicate Protection. Files forwarded directly to the main bot are never filtered.
+                        Only active when Replace Mode is off.
+                    </span>
+                </span>
+            </label>
+            <label class="toggle-wrap">
+                <input type="checkbox" class="toggle-input" id="allow_multipart_video"
+                    {% if settings.allow_multipart_video %}checked{% endif %}>
+                <span class="toggle-track"></span>
+                <span class="toggle-label">
+                    <strong>Allow multi part video split files</strong>
+                    <span style="color:var(--text-sec);font-size:0.8rem;display:block">These files can't be merged into a single stream so will be listed as parts separately</span>
+                </span>
+            </label>
             <label class="toggle-wrap">
                 <input type="checkbox" class="toggle-input" id="hide_catalog"
                     {% if settings.hide_catalog %}checked{% endif %}>
@@ -263,6 +332,17 @@
                     <strong>Hide Catalog</strong>
                     <span style="color:var(--text-sec);font-size:0.8rem;display:block">
                         Hide the public Stremio catalog from unauthenticated users
+                    </span>
+                </span>
+            </label>
+            <label class="toggle-wrap">
+                <input type="checkbox" class="toggle-input" id="allow_user_uploads"
+                    {% if settings.allow_user_uploads %}checked{% endif %}>
+                <span class="toggle-track"></span>
+                <span class="toggle-label">
+                    <strong>Allow User Uploads</strong>
+                    <span style="color:var(--text-sec);font-size:0.8rem;display:block">
+                        Allow approved subscribers to upload media files via bot DM
                     </span>
                 </span>
             </label>
@@ -326,6 +406,12 @@
                 — users must be a member of at least one. Tick <strong>Anime</strong> on a
                 channel to index its files with Kitsu → TVDB → TMDB → Cinemeta priority.</span>
         </label>
+        <div style="display:flex;align-items:center;gap:.65rem;flex-wrap:wrap;margin:.55rem 0 .8rem">
+            <button type="button" class="add-btn" id="refresh-auth-channel-names-btn" onclick="forceRefreshAuthChannelNames()">
+                <i class="fa-solid fa-arrows-rotate"></i> Force refresh channel names
+            </button>
+            <span id="auth-channel-refresh-status" style="font-size:.78rem;color:var(--text-sec)">Refreshes names from Telegram on demand; does not scan or modify media records.</span>
+        </div>
         {% set anime_norm = settings.anime_channels | map('string') | map('replace', '-100', '') | list %}
         {% set titles = settings.channel_titles or {} %}
         <div class="multi-list-items" id="auth_channels_items">
@@ -394,7 +480,18 @@
 
     <!-- ── Poster Provider ─────────────────────────────────────────────── -->
     <div class="settings-card">
-        <h2><i class="fa-solid fa-image"></i> Poster Provider</h2>
+        <h2><i class="fa-solid fa-image"></i> Poster Provider for Listing</h2>
+        <label class="toggle-wrap" style="margin-bottom:0.75rem">
+            <input type="checkbox" class="toggle-input" id="pictorium_poster_enabled"
+                {% if settings.pictorium_poster_enabled %}checked{% endif %} onchange="togglePosterProvider('pictorium')">
+            <span class="toggle-track"></span><span class="toggle-label"><strong>Pictorium</strong></span>
+        </label>
+        <div id="pictorium-poster-wrap" style="margin-bottom:1.25rem;{% if not settings.pictorium_poster_enabled %}display:none{% endif %}">
+            <label class="s-label" for="pictorium_poster_url">Pictorium poster template or instance URL</label>
+            <input type="text" id="pictorium_poster_url" class="s-input" value="{{ settings.pictorium_poster_url }}"
+                placeholder="https://your-pictorium.example" autocomplete="off" spellcheck="false">
+            <p class="hint">Paste the “Follow my space” poster template exported by Pictorium to use your saved artwork and styling, or enter your configured instance base URL. Keep the template placeholders and query parameters intact. Do not paste a configure or manifest link. Titles without the required ID keep their stored poster. Pictorium replaces SpatialPosters; configure this new provider before enabling it. <a href="https://github.com/Eful97/Pictorium" target="_blank" rel="noopener">Setup instructions</a></p>
+        </div>
         <p style="font-size:0.83rem;color:var(--text-sec);margin-bottom:1rem">
             Replace catalog posters with textless artwork. Only one provider can be active at a time.
         </p>
@@ -570,7 +667,7 @@
             <span style="font-weight:400;text-transform:none;letter-spacing:0">
                 — files sent here are <strong>not</strong> auto-indexed with TMDb/IMDb.
                 Add them by hand from Media Management by pasting a message link.
-                Listing a channel here also cleans up its streams when a file is deleted.</span>
+                Listing a channel here also cleans up its file entries when a file is deleted.</span>
         </label>
         <div class="multi-list-items" id="manual_channels_items">
             {% for ch in settings.manual_channels %}
@@ -615,6 +712,30 @@
                     placeholder="-100xxxxxxxx">
                 <span style="color:var(--text-sec);font-size:0.78rem;display:block;margin-top:0.4rem">
                     Users are pointed back to your bot automatically for renewals and joining.
+                </span>
+            </div>
+
+            <label class="toggle-wrap" style="margin-bottom:1rem">
+                <input type="checkbox" class="toggle-input" id="free_access_requests"
+                    {% if settings.free_access_requests %}checked{% endif %}>
+                <span class="toggle-track"></span>
+                <span class="toggle-label"><strong>Allow Free Access Requests</strong>
+                    <span style="color:var(--text-sec);font-size:0.8rem;display:block">
+                        Show Request Free Access in the bot. Approvers (or the owner) must approve each request.
+                    </span>
+                </span>
+            </label>
+            <div style="margin-bottom:1rem">
+                <label class="s-label" for="free_access_days">Free Access Duration (days)</label>
+                <input type="number" id="free_access_days" class="s-input" min="1" max="36500" step="1"
+                    value="{{ settings.free_access_days }}">
+            </div>
+            <div style="margin-bottom:1rem">
+                <label class="s-label" for="subscription_approval_message">Custom Approval Message</label>
+                <textarea id="subscription_approval_message" class="s-input" rows="4" maxlength="4000"
+                    placeholder="Optional welcome message or instructions">{{ settings.subscription_approval_message }}</textarea>
+                <span style="color:var(--text-sec);font-size:0.78rem;display:block;margin-top:0.4rem">
+                    Sent as a separate plain-text bot message after paid or free access is approved. Leave blank to disable.
                 </span>
             </div>
 
@@ -1001,9 +1122,59 @@ document.addEventListener('DOMContentLoaded', sessLoadStatus);
                 <i class="fa-solid fa-xmark"></i>
             </button>
         </div>
+        <label class="s-label" for="search_bot_username" style="margin-top:1rem">CAITLIN SEARCH BOT</label>
+        <input type="text" id="search_bot_username" class="s-input" value="{{ settings.search_bot_username }}" placeholder="@YourSearchBot or https://t.me/YourSearchBot">
+        <p class="hint">Adds Get File beside Nuvio in new announcements. Opens the search bot with the title ready to send. Leave blank to hide.</p>
+        <label class="s-label" for="announcement_poster_provider" style="margin-top:1rem">POSTER PROVIDER FOR ANNOUNCEMENTS</label>
+        <select id="announcement_poster_provider" class="s-input">
+            {% for value, name in [('same', 'Same as Listing'), ('pictorium', 'Pictorium'), ('better', 'BetterPoster'), ('rpdb', 'RPDB'), ('spatial', 'SpatialPosters'), ('fanart', 'Fanart.tv'), ('default', 'Original / Default')] %}
+            <option value="{{ value }}" {% if settings.announcement_poster_provider == value %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+        </select>
+        <p class="hint">Overrides the listing provider only for Telegram announcement images. Provider URLs and API keys are configured under Poster Provider for Listing.</p>
+        <label class="toggle-wrap" style="margin-top:1rem">
+            <input type="checkbox" class="toggle-input" id="announce_scan_titles"
+                {% if settings.announce_scan_titles %}checked{% endif %}>
+            <span class="toggle-track"></span>
+            <span class="toggle-label">
+                <strong>Also announce titles added by Scan and Verify Media</strong>
+                <span style="color:var(--text-sec);font-size:0.8rem;display:block">
+                    Posts new titles with their poster exactly like live ingestion, for normal scans and for titles created by
+                    Verify Media re-assignments. Quick Scan never announces. Each title is still announced only once, and
+                    posting runs in the background so scans never wait for the channel.
+                </span>
+            </span>
+        </label>
     </div>
 </div>
 
+
+    <!-- ── Log Channel (separate bot) ──────────────────────────────────── -->
+    <div class="settings-card">
+        <h2><i class="fa-solid fa-clipboard-list"></i> Log Channel</h2>
+        <p class="hint" style="margin-top:0">
+            A <strong>separate bot</strong> posts operational events here: scan / DB check / verify start, stop and finish,
+            new users, live stream starts, live-ingestion title assignments (file &rarr; title, with the metadata API used)
+            and Verify Media re-assignments. Create a bot in @BotFather, add it as an <strong>admin</strong> of the channel,
+            and paste its token below. While this is set, scan notices go here instead of the announcement channel.
+        </p>
+        <label class="s-label" for="log_channel">LOG CHANNEL ID</label>
+        <input type="text" id="log_channel" class="s-input" placeholder="-1001234567890 or @channelname"
+               value="{{ settings.log_channel }}" autocomplete="off" spellcheck="false">
+        <label class="s-label" for="log_bot_token" style="margin-top:1rem">LOG BOT TOKEN</label>
+        <input type="password" id="log_bot_token" class="s-input"
+               placeholder="{% if settings.log_bot_token %}Saved — leave blank to keep{% else %}123456:ABC-DEF…{% endif %}"
+               autocomplete="new-password" spellcheck="false">
+        <div style="display:flex;gap:.5rem;margin-top:.75rem;flex-wrap:wrap">
+            <button type="button" class="sess-btn primary" id="log-test-btn" onclick="testLogChannel()">
+                <i class="fa-solid fa-paper-plane"></i> Send test message
+            </button>
+            <button type="button" class="sess-btn danger" id="log-clear-btn" onclick="clearLogBot()"
+                    style="{% if not settings.log_bot_token %}display:none{% endif %}">
+                <i class="fa-solid fa-trash"></i> Remove bot token
+            </button>
+        </div>
+    </div>
 
     <!-- ── Skip Channel (metadata failures) ────────────────────────────── -->
     <div class="settings-card">
@@ -1035,9 +1206,9 @@ document.addEventListener('DOMContentLoaded', sessLoadStatus);
                 {% if settings.delete_on_metadata_fail %}checked{% endif %}>
             <span class="toggle-track"></span>
             <span class="toggle-label">
-                <strong>Delete original on metadata fail</strong>
+                <strong>Delete original after Skip copy</strong>
                 <span style="color:var(--text-sec);font-size:0.8rem;display:block">
-                    After a failed file is copied to the skip channel, remove it from the main channel.
+                    Applies to live ingestion, channel scans and Verify. When disabled, rejected files are copied to Skip with a reason but remain in their source channel.
                 </span>
             </span>
         </label>
@@ -1331,6 +1502,11 @@ function toggleDuplicateProtection() {
     input.disabled = replaceOn;
     wrap.style.opacity = replaceOn ? '0.5' : '';
     wrap.style.pointerEvents = replaceOn ? 'none' : '';
+    const adv = document.getElementById('advanced_file_filtering');
+    const advWrap = document.getElementById('adv-filter-wrap');
+    adv.disabled = replaceOn;
+    advWrap.style.opacity = replaceOn ? '0.5' : '';
+    advWrap.style.pointerEvents = replaceOn ? 'none' : '';
 }
 
 /* ── Toggle sub-fields visibility ─────────────────────────────────────── */
@@ -1392,6 +1568,7 @@ function toggleSkipDeleteField() {
 
 function togglePosterProvider(which) {
     const els = {
+        pictorium: document.getElementById('pictorium_poster_enabled'),
         better: document.getElementById('better_poster_enabled'),
         rpdb: document.getElementById('rpdb_enabled'),
         spatial: document.getElementById('spatial_poster_enabled'),
@@ -1401,6 +1578,7 @@ function togglePosterProvider(which) {
         for (const k in els) if (k !== which) els[k].checked = false;
     }
     document.getElementById('better-poster-wrap').style.display = els.better.checked ? '' : 'none';
+    document.getElementById('pictorium-poster-wrap').style.display = els.pictorium.checked ? '' : 'none';
     document.getElementById('rpdb-wrap').style.display = els.rpdb.checked ? '' : 'none';
     document.getElementById('spatial-poster-wrap').style.display = els.spatial.checked ? '' : 'none';
     document.getElementById('fanart-wrap').style.display = els.fanart.checked ? '' : 'none';
@@ -1459,6 +1637,7 @@ async function renderPreview() {
 }
 
 document.addEventListener('DOMContentLoaded', schedulePreview);
+
 
 function toggleFanartShuffle() {
     const on = document.getElementById('fanart_shuffle').checked;
@@ -1629,6 +1808,57 @@ function toggleWebdavPwdVisibility() {
     }
 }
 
+async function testLogChannel() {
+    const btn = document.getElementById('log-test-btn');
+    btn.disabled = true;
+    try {
+        const res = await fetch('/api/admin/settings/log-channel/test', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                log_channel: document.getElementById('log_channel').value.trim(),
+                log_bot_token: document.getElementById('log_bot_token').value.trim(),
+            }),
+        });
+        const data = await res.json();
+        showToast(res.ok ? data.message : (data.detail || 'Test failed'), res.ok ? 'success' : 'error', 'Log channel');
+    } catch (e) { showToast('Network error.', 'error', 'Log channel'); }
+    finally { btn.disabled = false; }
+}
+
+async function clearLogBot() {
+    if (!confirm('Remove the log bot token? Logging stops until a new token is saved.')) return;
+    const res = await fetch('/api/admin/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ log_bot_token_clear: true }),
+    });
+    const data = await res.json();
+    showToast(res.ok ? 'Log bot token removed.' : (data.detail || 'Failed'), res.ok ? 'success' : 'error', 'Log channel');
+    if (res.ok) await refreshSettingsFromServer();
+}
+
+async function forceRefreshAuthChannelNames() {
+    const btn = document.getElementById('refresh-auth-channel-names-btn');
+    const status = document.getElementById('auth-channel-refresh-status');
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    const old = btn.innerHTML;
+    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Refreshing…';
+    status.textContent = 'Resolving configured AUTH channel names from Telegram…';
+    try {
+        const response = await fetch('/api/admin/settings/auth-channels/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'Refresh failed');
+        status.textContent = data.message || 'Channel names refreshed.';
+        if (typeof loadSettings === 'function') await loadSettings();
+        else window.location.reload();
+    } catch (error) {
+        status.textContent = 'Refresh failed: ' + (error.message || error);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = old;
+    }
+}
+
 async function saveSettings() {
     const btn   = document.getElementById('save-btn');
     const label = document.getElementById('save-label');
@@ -1663,9 +1893,15 @@ async function saveSettings() {
     label.textContent = 'Saving…';
 
     const payload = {
+        db_scan_mode:                  document.getElementById('db_scan_mode').value,
         replace_mode:                  document.getElementById('replace_mode').checked,
         duplicate_protection:          document.getElementById('duplicate_protection').checked,
+        advanced_file_filtering:       document.getElementById('advanced_file_filtering').checked,
+        allow_multipart_video:         document.getElementById('allow_multipart_video').checked,
+        ingestion_resolutions:         [...document.querySelectorAll('.ingest-resolution:checked')].map(el => el.value),
+        allow_unknown_resolution:      document.getElementById('allow_unknown_resolution').checked,
         hide_catalog:                  document.getElementById('hide_catalog').checked,
+        allow_user_uploads:            document.getElementById('allow_user_uploads').checked,
         admin_username:                document.getElementById('admin_username').value.trim(),
         admin_password:                document.getElementById('admin_password').value,  // blank = keep
         session_secret:                document.getElementById('session_secret').value,  // blank = keep
@@ -1673,6 +1909,8 @@ async function saveSettings() {
         tvdb_api:                      (document.getElementById('tvdb_api') || {}).value?.trim() || '',
         base_url:                      document.getElementById('base_url').value.trim(),
         better_poster_enabled:         document.getElementById('better_poster_enabled').checked,
+        pictorium_poster_enabled:        document.getElementById('pictorium_poster_enabled').checked,
+        pictorium_poster_url:            document.getElementById('pictorium_poster_url').value.trim(),
         better_poster:                 document.getElementById('better_poster').value.trim(),
         rpdb_enabled:                  document.getElementById('rpdb_enabled').checked,
         rpdb_api_key:                  document.getElementById('rpdb_api_key').value.trim(),
@@ -1692,6 +1930,9 @@ async function saveSettings() {
         anime_channels:                collectAnimeChannels(),
         subscription:                  document.getElementById('subscription').checked,
         subscription_group_id:         parseInt(document.getElementById('subscription_group_id').value || '0', 10),
+        free_access_requests:          document.getElementById('free_access_requests').checked,
+        free_access_days:              Number(document.getElementById('free_access_days').value),
+        subscription_approval_message: document.getElementById('subscription_approval_message').value.trim(),
         payment_instructions:          document.getElementById('payment_instructions').value.trim(),
         payment_qr_url:                document.getElementById('payment_qr_url').value.trim(),
         approver_ids:                  collectList('approver_ids').map(Number),
@@ -1710,6 +1951,11 @@ async function saveSettings() {
         global_search_channels:        collectList('global_search_channels'),
         manual_channels:               collectList('manual_channels'),
         announce_new_content:          document.getElementById('announce_new_content').checked,
+        announce_scan_titles:          document.getElementById('announce_scan_titles').checked,
+        log_channel:                   document.getElementById('log_channel').value.trim(),
+        log_bot_token:                 document.getElementById('log_bot_token').value.trim(),
+        search_bot_username: document.getElementById('search_bot_username').value.trim(),
+        announcement_poster_provider: document.getElementById('announcement_poster_provider').value,
         announcement_channel:          (function(){const el=document.getElementById('announcement_channel');return el.dataset.id||extractChannelId(el.value.trim());})(),
         skip_channel:                  (function(){const el=document.getElementById('skip_channel');return el.dataset.id||extractChannelId(el.value.trim());})(),
         delete_on_metadata_fail:       document.getElementById('delete_on_metadata_fail').checked,
@@ -1812,16 +2058,30 @@ async function refreshSettingsFromServer() {
 
 function renderSettings(s) {
     // Toggles
+    document.getElementById('db_scan_mode').value = s.db_scan_mode || 'auto';
     document.getElementById('replace_mode').checked = !!s.replace_mode;
     document.getElementById('duplicate_protection').checked = !!s.duplicate_protection;
+    document.getElementById('advanced_file_filtering').checked = !!s.advanced_file_filtering;
+    document.getElementById('allow_multipart_video').checked = !!s.allow_multipart_video;
+    document.querySelectorAll('.ingest-resolution').forEach(el => { el.checked = (s.ingestion_resolutions ?? ['360p','480p','720p','1080p','1440p','2160p','other']).includes(el.value); });
+    document.getElementById('allow_unknown_resolution').checked = !!s.allow_unknown_resolution;
     toggleDuplicateProtection();
     document.getElementById('hide_catalog').checked = !!s.hide_catalog;
+    document.getElementById('allow_user_uploads').checked = !!s.allow_user_uploads;
     document.getElementById('subscription').checked = !!s.subscription;
     document.getElementById('show_proxy_and_non_proxy_both').checked = !!s.show_proxy_and_non_proxy_both;
     document.getElementById('global_search').checked = !!s.global_search;
     const dsEl = document.getElementById('default_streaming');
     if (dsEl) dsEl.checked = s.default_streaming === 'userbot';
     document.getElementById('announce_new_content').checked = !!s.announce_new_content;
+    document.getElementById('search_bot_username').value = s.search_bot_username || '';
+    document.getElementById('announcement_poster_provider').value = s.announcement_poster_provider || 'same';
+    document.getElementById('announce_scan_titles').checked = !!s.announce_scan_titles;
+    document.getElementById('log_channel').value = s.log_channel || '';
+    const lt = document.getElementById('log_bot_token');
+    lt.value = '';
+    lt.placeholder = s.log_bot_token_set ? 'Saved — leave blank to keep' : '123456:ABC-DEF…';
+    document.getElementById('log-clear-btn').style.display = s.log_bot_token_set ? '' : 'none';
     document.getElementById('delete_on_metadata_fail').checked = !!s.delete_on_metadata_fail;
     toggleSubFields();
     toggleGlobalSearchFields();
@@ -1834,6 +2094,8 @@ function renderSettings(s) {
     if (document.getElementById('tvdb_api')) document.getElementById('tvdb_api').value = s.tvdb_api || '';
     document.getElementById('base_url').value = s.base_url || '';
     document.getElementById('better_poster_enabled').checked = !!s.better_poster_enabled;
+    document.getElementById('pictorium_poster_enabled').checked = !!s.pictorium_poster_enabled;
+    document.getElementById('pictorium_poster_url').value = s.pictorium_poster_url || '';
     document.getElementById('better_poster').value = s.better_poster || '';
     document.getElementById('rpdb_enabled').checked = !!s.rpdb_enabled;
     document.getElementById('rpdb_api_key').value = s.rpdb_api_key || '';
@@ -1853,6 +2115,9 @@ function renderSettings(s) {
     document.getElementById('upstream_repo').value = s.upstream_repo || '';
     document.getElementById('upstream_branch').value = s.upstream_branch || '';
     document.getElementById('subscription_group_id').value = s.subscription_group_id || 0;
+    document.getElementById('free_access_requests').checked = !!s.free_access_requests;
+    document.getElementById('free_access_days').value = s.free_access_days ?? 30;
+    document.getElementById('subscription_approval_message').value = s.subscription_approval_message || '';
     document.getElementById('http_proxy_url').value = s.http_proxy_url || '';
     document.getElementById('mediaflow_proxy').checked = !!s.mediaflow_proxy;
     document.getElementById('mediaflow_password').value = s.mediaflow_password || '';
@@ -1960,10 +2225,81 @@ function rebuildDatabaseList(dbList) {
     });
 }
 
+    let ingestionRefreshBusy = false;
+    let ingestionPaused = false;
+    let ingestionControlBusy = false;
+    function renderIngestionControl(d) {
+        ingestionPaused = !!d.paused;
+        const button = document.getElementById('ingestion-toggle');
+        button.disabled = ingestionControlBusy;
+        button.textContent = d.paused ? '▶ Resume ingestion' : '⏸ Pause ingestion';
+        document.getElementById('ingestion-state').textContent = d.paused ? (d.active ? 'Pausing — current file finishing' : 'Paused') : 'Live ingestion enabled';
+        const failures = (d.failures || []).map(f => `${f.channel}/${f.message_id}: ${f.reason}`).join('\n');
+        document.getElementById('ingestion-error').textContent = [d.error, failures].filter(Boolean).join('\n');
+        document.getElementById('ingestion-channels').innerHTML = (d.channels || []).map(c => `<p>${escapeHtml(String(c.channel))}: last completed ${c.last_completed_id ?? '—'}, discovered through ${c.discovered_id ?? '—'}, latest known ${c.target_id ?? '—'}</p>`).join('');
+        const switches = document.getElementById('ingestion-channel-switches');
+        switches.replaceChildren();
+        for (const channel of d.channels || []) {
+            const label = document.createElement('label');
+            label.className = 'flex items-center gap-3';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.checked = channel.enabled !== false;
+            input.disabled = ingestionControlBusy;
+            input.onchange = () => changeIngestion('channel', {channel:channel.channel, enabled:input.checked});
+            label.append(input, document.createTextNode(`Live ingestion · ${channel.channel}`));
+            switches.append(label);
+        }
+        const select = document.getElementById('ingestion-channel');
+        const current = select.value;
+        select.innerHTML = (d.channels || []).map(c => `<option value="${escapeHtml(String(c.channel))}">${escapeHtml(String(c.channel))}</option>`).join('');
+        if ([...select.options].some(o => o.value === current)) select.value = current;
+    }
+    async function changeIngestion(path, payload) {
+        if (ingestionControlBusy) return;
+        ingestionControlBusy = true;
+        document.getElementById('ingestion-toggle').disabled = true;
+        document.querySelectorAll('#ingestion-channel-switches input').forEach(el => el.disabled = true);
+        try {
+            const res = await fetch(`/api/system/ingestion/${path}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+            const result = await res.json();
+            if (!res.ok) throw new Error(result.detail || 'Could not save ingestion state');
+            renderIngestionControl(result);
+            showToast('Ingestion state saved.', 'success', 'Saved');
+        } catch (e) { showToast(e.message, 'error', 'Ingestion'); }
+        finally { ingestionControlBusy = false; await refreshIngestion(); }
+    }
+    async function toggleIngestion() { await changeIngestion('pause', {paused:!ingestionPaused}); }
+    async function setIngestionStart() {
+        const value = document.getElementById('ingestion-start-id').value.trim();
+        if (!ingestionPaused || !/^\d+$/.test(value) || Number(value) < 1) {
+            showToast('Pause ingestion and enter a positive message ID.', 'error', 'Ingestion'); return;
+        }
+        await changeIngestion('start-from', {channel:document.getElementById('ingestion-channel').value, message_id:Number(value)});
+    }
+    async function refreshIngestion() {
+        if (document.hidden || ingestionRefreshBusy) return;
+        ingestionRefreshBusy = true;
+        try {
+            const res = await fetch('/api/system/ingestion', {cache: 'no-store'});
+            if (!res.ok) throw new Error(`Ingestion API returned HTTP ${res.status}. Check the running build and server logs.`);
+            const stats = await res.json();
+            if (!ingestionControlBusy) renderIngestionControl(stats.durable || {});
+        } catch (error) {
+            document.getElementById('ingestion-error').textContent = error.message || 'Could not load ingestion controls.';
+            document.getElementById('ingestion-toggle').textContent = 'Ingestion controls unavailable';
+            document.getElementById('ingestion-toggle').disabled = true;
+        } finally {
+            ingestionRefreshBusy = false;
+        }
+    }
+
+
 /* ── System & Maintenance ───────────────────────────────────────────────── */
 const STAT_FIELDS = [
+    ['ram_display', 'RAM Free / Total'],
     ['movies', 'Movies'], ['tv_shows', 'TV Shows'], ['episodes', 'Episodes'],
-    ['streams', 'Streams'], ['db_size', 'DB Size'],
+    ['files', 'Files'], ['media_size', 'Telegram File Size'], ['titles', 'Total titles'], ['db_size', 'DB Size'],
     ['auth_channels', 'AUTH Channels'], ['version', 'Version'],
 ];
 let logLiveTimer = null;
@@ -1982,8 +2318,8 @@ async function loadDbStats(btn) {
         const data = await res.json();
         if (data.status !== 'success') throw new Error(data.message || 'failed');
         const s = data.data;
-        grid.innerHTML = STAT_FIELDS.map(([k, label]) =>
-            `<div class="stat-box"><div class="v">${escapeHtml(String(s[k] ?? '—'))}</div><div class="l">${label}</div></div>`
+        grid.innerHTML = STAT_FIELDS.concat(Number(s.unknown_size_files || 0) > 0 ? [['unknown_size_files', 'Unknown File']] : []).map(([k, label]) =>
+            `<div class="stat-box"><div class="v">${escapeHtml(String(k === 'ram_display' ? (s.ram?.display ?? 'Unavailable') : (s[k] ?? '—')))}</div><div class="l">${label}</div></div>`
         ).join('');
     } catch (e) {
         grid.innerHTML = `<div class="hint" style="grid-column:1/-1;color:#ef4444">Failed to load stats.</div>`;
@@ -2072,6 +2408,8 @@ window.addEventListener('DOMContentLoaded', () => {
     toggleMediaflowFields();
     loadDbStats();
     loadLogs();
+    refreshIngestion();
+    setInterval(refreshIngestion, 5000);
 });
 </script>
 
