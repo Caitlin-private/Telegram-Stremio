@@ -792,10 +792,25 @@ class Database:
             try:
                 #----- Unlocking is metadata-only: keep updated_on so titles slot back into
                 #----- their original place in Latest (auto.synced reset lets sync re-add)
+                query = {"tmdb_id": {"$in": ids}}
+                # Legacy/manual imports may contain auto_catalog=None. MongoDB
+                # cannot create a dotted child beneath an explicit null value.
+                # Initialize those documents first, then update existing objects.
                 await self.dbs[db_key][collection].update_many(
-                    {"tmdb_id": {"$in": ids}},
+                    {**query, "auto_catalog": None},
+                    {"$unset": {"exclusive_catalog_id": "", "exclusive_searchable": ""},
+                     "$set": {"auto_catalog": {"synced": False}}},
+                )
+                await self.dbs[db_key][collection].update_many(
+                    {**query, "auto_catalog": {"$type": "object"}},
                     {"$unset": {"exclusive_catalog_id": "", "exclusive_searchable": ""},
                      "$set": {"auto_catalog.synced": False}},
+                )
+                # Also clear exclusivity for any unusual scalar legacy value;
+                # leave that value untouched rather than issuing an invalid path update.
+                await self.dbs[db_key][collection].update_many(
+                    {**query, "auto_catalog": {"$exists": False}},
+                    {"$unset": {"exclusive_catalog_id": "", "exclusive_searchable": ""}},
                 )
             except Exception as e:
                 LOGGER.error(f"_clear_exclusivity_from_docs failed for {db_key}.{collection}: {e}")

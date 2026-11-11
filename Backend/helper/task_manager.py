@@ -1,4 +1,4 @@
-from asyncio import sleep
+from asyncio import Lock, sleep
 from typing import List
 
 from wzgram.errors import (
@@ -30,10 +30,44 @@ _FALLBACK_WORTHY = (
 )
 _SESSION_DEAD = (AuthKeyUnregistered, SessionRevoked)
 _userbot_session_dead = False
+_userbot_start_lock = Lock()
 
 
 def _userbot_usable() -> bool:
     return botmod.Userbot is not None and not _userbot_session_dead
+
+
+async def _ensure_userbot_ready() -> bool:
+    """Load and start the saved user session when a bot-side delete fails."""
+    global _userbot_session_dead
+    if _userbot_session_dead:
+        return False
+
+    async with _userbot_start_lock:
+        client = botmod.Userbot
+        if client is None:
+            try:
+                from Backend.helper.session_auth import get_active_session_string
+                session_string = await get_active_session_string()
+            except Exception as e:
+                LOGGER.warning(f"[USERBOT] Could not load saved session for delete fallback: {e}")
+                return False
+            if not session_string:
+                return False
+            client = botmod.build_userbot(session_string)
+
+        if getattr(client, "is_connected", False):
+            return True
+
+        try:
+            await client.start()
+            client.username = getattr(client.me, "username", None)
+            _userbot_session_dead = False
+            LOGGER.info("[USERBOT] Saved session connected for Telegram delete fallback.")
+            return True
+        except Exception as e:
+            LOGGER.error(f"[USERBOT] Could not start saved session for delete fallback: {e}")
+            return False
 
 
 async def _resolve_peer(client, chat_id) -> bool:
@@ -120,7 +154,7 @@ async def delete_messages_batch(chat_id: int, msg_ids: List[int]):
 
         remaining = await _delete_chunk(StreamBot, "StreamBot", chat_id, chunk)
 
-        if remaining and _userbot_usable():
+        if remaining and await _ensure_userbot_ready():
             LOGGER.info(f"[USERBOT] Fallback triggered: deleting {len(remaining)} message(s) in {chat_id}")
             remaining = await _delete_chunk(botmod.Userbot, "Userbot", chat_id, remaining)
 

@@ -721,6 +721,8 @@ async def run_auto_catalog_sync(db, *, force: bool = False, force_refresh: bool 
 
     async with _auto_sync_lock:
         started_at = datetime.utcnow()
+        sync_label = "Scheduled Catalogue Sync" if not force else "Manual Catalogue Sync"
+        LOGGER.info("%s started (force_refresh=%s)", sync_label, force_refresh)
         await _write_status(db, {
             "running": True,
             "mode": "sync",
@@ -763,7 +765,7 @@ async def run_auto_catalog_sync(db, *, force: bool = False, force_refresh: bool 
             return summary
 
         from Backend.helper import log_channel
-        log_channel.log_task("start", "Scheduled Catalogue Sync" if not force else "Catalogue Sync", [
+        log_channel.log_task("start", sync_label, [
             ("🔄", "Mode", "Full catalog rebuild"),
             ("🏷️", "Version", __import__("Backend").__version__),
         ], emoji="📚")
@@ -841,8 +843,8 @@ async def run_auto_catalog_sync(db, *, force: bool = False, force_refresh: bool 
                 "error": None,
             }
             await _write_status(db, summary)
-            LOGGER.info(f"Auto catalog sync complete: {summary}")
-            log_channel.log_task("finish", "Scheduled Catalogue Sync" if not force else "Catalogue Sync", [
+            LOGGER.info("%s completed: %s", sync_label, summary)
+            log_channel.log_task("finish", sync_label, [
                 ("📚", "Catalogues", len(enabled_names)),
                 ("🔎", "Scanned", scanned),
                 ("🏷️", "Classified", classified),
@@ -866,8 +868,8 @@ async def run_auto_catalog_sync(db, *, force: bool = False, force_refresh: bool 
                 "error": str(exc),
             }
             await _write_status(db, summary)
-            LOGGER.error(f"Auto catalog sync failed: {summary}")
-            log_channel.log_task("stop", "Scheduled Catalogue Sync" if not force else "Catalogue Sync", [
+            LOGGER.error("%s failed: %s", sync_label, summary)
+            log_channel.log_task("stop", sync_label, [
                 ("🔎", "Scanned", scanned),
                 ("⚠️", "Error", str(exc)[:240]),
             ], emoji="📚")

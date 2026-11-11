@@ -1534,13 +1534,27 @@ async def manual_add_media_api(payload: dict) -> dict:
         message = f'Added {len(resolved_parts)} separate episode stream(s).'
     if catalogs_added:
         message += f" Added to: {', '.join(catalogs_added)}."
-    return {
+    result = {
         "status": "success",
         "message": message,
         "tmdb_id": result_tmdb_id,
         "db_index": result_db_index,
         "media_type": media_type,
     }
+    if not payload.get("_batch_import"):
+        from Backend.helper import log_channel
+        title_label = base.get("title") or name
+        rows = [
+            ("🎬", "Title", title_label),
+            ("🎞️", "Type", "Series" if media_type == "tv" else "Movie"),
+            ("📺", "Files", len(resolved_parts)),
+            ("🆔", "TMDB ID", result_tmdb_id),
+            ("🗄️", "Storage", result_db_index),
+        ]
+        LOGGER.info("Manual media import completed: %s (%s), files=%s, tmdb_id=%s, storage=%s",
+                    title_label, media_type, len(resolved_parts), result_tmdb_id, result_db_index)
+        log_channel.log_task("finish", "Manual Media Import", rows, emoji="📥")
+    return result
 
 
 async def manual_add_media_batch_api(payload: dict) -> dict:
@@ -1558,15 +1572,25 @@ async def manual_add_media_batch_api(payload: dict) -> dict:
             results.append({"index": index, "ok": False, "error": "Each item must be a JSON object."})
             continue
         try:
-            result = await manual_add_media_api(item)
+            batch_item = dict(item)
+            batch_item["_batch_import"] = True
+            result = await manual_add_media_api(batch_item)
             results.append({"index": index, "ok": True, **result})
         except HTTPException as exc:
             results.append({"index": index, "ok": False, "error": exc.detail, "status_code": exc.status_code})
         except Exception as exc:
             results.append({"index": index, "ok": False, "error": str(exc)})
     succeeded = sum(1 for item in results if item["ok"])
+    failed = len(results) - succeeded
+    LOGGER.info("Manual JSON media import completed: total=%s, succeeded=%s, failed=%s", len(results), succeeded, failed)
+    from Backend.helper import log_channel
+    log_channel.log_task("finish" if failed == 0 else "stop", "Manual JSON Media Import", [
+        ("📄", "Entries", len(results)),
+        ("✅", "Imported", succeeded),
+        ("❌", "Failed", failed),
+    ], emoji="📥")
     return {"status": "success" if succeeded == len(results) else "partial", "total": len(results),
-            "succeeded": succeeded, "failed": len(results) - succeeded, "results": results}
+            "succeeded": succeeded, "failed": failed, "results": results}
 
 
 #----- Custom catalog APIs
@@ -1791,6 +1815,7 @@ async def remove_custom_catalog_item_api(
 async def auto_sync_custom_catalogs_api(force_refresh: bool = False):
     try:
         result = await start_auto_catalog_sync_background(db, force=True, force_refresh=force_refresh)
+        LOGGER.info("Manual catalogue sync requested: force_refresh=%s, result=%s", force_refresh, result.get("message"))
         return {"message": result.get("message", "Auto sync started."), "result": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

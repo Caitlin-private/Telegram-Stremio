@@ -4,7 +4,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-THEATRICAL = re.compile(r"(?<![a-z0-9])(?:CAMRip|TELESYNC|HDTC|HDTS)(?![a-z0-9])", re.I)
+THEATRICAL = re.compile(r"(?<![a-z0-9])(?:CAMRip|HDCAM|TELESYNC|HDTC|HDTS)(?![a-z0-9])", re.I)
 DIGITAL = re.compile(r"(?<![a-z0-9])(?:WEBRip|AMZN|BluRay|WEB|HDRip)(?![a-z0-9])", re.I)
 
 
