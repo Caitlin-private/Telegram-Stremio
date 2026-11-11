@@ -153,10 +153,11 @@ Install the addon manifest first:
 
 Add it in Nuvio under **Addons → Add Addon**. Then import one or more collection URLs from **Settings → Collections → Import → Import from URL**.
 
-* **Master Collection:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-collection.json` — includes Live Sports, Streaming Services and Franchises & Universes.
+* **Master Collection:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-collection.json` — includes Live Sports, Discover, Streaming Services and Franchises & Universes.
 * **Live Sports:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-sports-collection.json`
+* **Discover:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-discover-collection.json` — Trending Now, Latest Releases, Popular Hits and Recently Added.
 * **Streaming Services:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-ott-collection.json`
-* **Franchises & Universes:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-franchises-collection.json`
+* **Franchises & Universes:** `https://<YOUR_DOMAIN>/stremio/<TOKEN>/nuvio-franchises-collection.json` (legacy `/nuvio-explore-collection.json` remains supported)
 
 Streaming-platform folders are filtered to catalogs available to the current token; empty addon sources are removed before returning the collection.
 

@@ -17,6 +17,7 @@ import httpx
 
 from Backend import __version__, db
 from Backend.helper.database import META_PROJECTION
+from Backend.helper.async_cache import TTLCache, cached_call
 from Backend.config import Telegram
 from Backend.helper.analytics import client_ip_from, record_client
 from Backend.fastapi.security.tokens import can_stream_session, verify_token
@@ -85,14 +86,26 @@ async def _external_meta_for_id(id: str, parsed: dict, media_type: str) -> Optio
             meta_id = original_id(id)
             videos = []
             if not is_movie:
-                yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+                last = getattr(item, "last_episode_to_air", None)
+                last_aired = (
+                    (getattr(last, "season_number", 0) or 0, getattr(last, "episode_number", 0) or 0)
+                    if last else None
+                )
                 for season in (getattr(item, "seasons", None) or []):
                     season_num = getattr(season, "season_number", 0)
                     if not season_num:
                         continue
-                    for ep in range(1, (getattr(season, "episode_count", 0) or 0) + 1):
-                        videos.append({"id": f"{meta_id}:{season_num}:{ep}", "title": f"Episode {ep}",
-                                       "season": season_num, "episode": ep, "released": yesterday})
+                    air = getattr(season, "air_date", None)
+                    released = f"{str(air)[:10]}T00:00:00.000Z" if air else None
+                    ep_count = getattr(season, "episode_count", 0) or 0
+                    for ep in range(1, ep_count + 1):
+                        if last_aired and (season_num, ep) > last_aired:
+                            break
+                        video = {"id": f"{meta_id}:{season_num}:{ep}", "title": f"Episode {ep}",
+                                 "season": season_num, "episode": ep}
+                        if released:
+                            video["released"] = released
+                        videos.append(video)
             return {
                 "id": meta_id, "type": "movie" if is_movie else "series", "name": name,
                 "description": getattr(item, "overview", "") or "", "year": year_str,
@@ -123,6 +136,17 @@ async def _external_meta_for_id(id: str, parsed: dict, media_type: str) -> Optio
     except Exception as exc:
         LOGGER.warning(f"[EXTERNAL META] Failed to resolve fallback meta for {id}: {exc}")
     return None
+
+_EXTERNAL_META_CACHE = TTLCache(maxsize=500, ttl=6 * 3600)
+
+
+async def _cached_external_meta(id: str, parsed: dict, media_type: str) -> Optional[dict]:
+    key = (id, media_type)
+    return await cached_call(
+        _EXTERNAL_META_CACHE, key, "external-meta",
+        lambda: _external_meta_for_id(id, parsed, media_type),
+    )
+
 
 def build_proxy_url(original_url: str) -> str | None:
     settings = SettingsManager.current()
@@ -689,7 +713,7 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
             {
                 "type": "movie",
                 "id": "latest_movies",
-                "name": "Latest",
+                "name": "Recently Added",
                 "extra": [
                     {"name": "genre", "isRequired": False, "options": GENRES},
                     {"name": "skip"}
@@ -710,7 +734,7 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
             {
                 "type": "series",
                 "id": "latest_series",
-                "name": "Latest",
+                "name": "Recently Added",
                 "extra": [
                     {"name": "genre", "isRequired": False, "options": GENRES},
                     {"name": "skip"}
@@ -1108,6 +1132,8 @@ async def build_nuvio_collection_data(token: str, collection_type: str = "full",
     kdrama_series = get_cat_id("k-drama", "auto_kdrama", "series", strict=True) or get_cat_id("korean", "auto_korean", "series", strict=True)
     anime_movie = get_cat_id("anime", "auto_anime", "movie", strict=True)
     anime_series = get_cat_id("anime", "auto_anime", "series", strict=True)
+    latest_releases_movie = get_cat_id("latest releases", "auto_latest_releases", "movie", strict=True)
+    latest_releases_series = get_cat_id("latest releases", "auto_latest_releases", "series", strict=True)
 
     # =========================================================================
     # 02 ✦ STREAMING PLATFORMS (Upstream collection behavior)
@@ -1252,6 +1278,76 @@ async def build_nuvio_collection_data(token: str, collection_type: str = "full",
     K_IMG = "https://raw.githubusercontent.com/Kaoxt/The-Kollection/main/images"
     NUVIO_CDN = "https://cdn.jsdelivr.net/gh/weebzone/Telegram-Stremio@master/assets/nuvio"
 
+    discover_collection = {
+        "id": "collection-discover-main",
+        "title": "Discover",
+        "folders": [
+            {
+                "id": "folder-discover-trending",
+                "title": "Trending Now",
+                "sources": [
+                    {"type": "movie", "addonId": addon_id, "provider": "addon", "catalogId": "trending_movies"},
+                    {"type": "series", "addonId": addon_id, "provider": "addon", "catalogId": "trending_series"},
+                ],
+                "hideTitle": False, "tileShape": "landscape", "focusGifUrl": "",
+                "catalogSources": [
+                    {"type": "movie", "addonId": addon_id, "catalogId": "trending_movies"},
+                    {"type": "series", "addonId": addon_id, "catalogId": "trending_series"},
+                ],
+                "focusGifEnabled": False,
+            },
+            {
+                "id": "folder-discover-latest-releases",
+                "title": "Latest Releases",
+                "sources": [
+                    {"type": "movie", "addonId": addon_id, "provider": "addon", "catalogId": latest_releases_movie},
+                    {"type": "series", "addonId": addon_id, "provider": "addon", "catalogId": latest_releases_series},
+                ],
+                "hideTitle": False, "tileShape": "landscape", "focusGifUrl": "",
+                "titleLogoUrl": f"{K_IMG}/Discover/Premieres/logo.webp",
+                "coverImageUrl": f"{K_IMG}/Discover/Premieres/cover.webp",
+                "heroBackdropUrl": f"{K_IMG}/Discover/Premieres/backdrop.webp",
+                "catalogSources": [
+                    {"type": "movie", "addonId": addon_id, "catalogId": latest_releases_movie},
+                    {"type": "series", "addonId": addon_id, "catalogId": latest_releases_series},
+                ],
+                "focusGifEnabled": False,
+            },
+            {
+                "id": "folder-discover-popular",
+                "title": "Popular Hits",
+                "sources": [
+                    {"type": "movie", "addonId": addon_id, "provider": "addon", "catalogId": "top_movies"},
+                    {"type": "series", "addonId": addon_id, "provider": "addon", "catalogId": "top_series"},
+                ],
+                "hideTitle": False, "tileShape": "landscape", "focusGifUrl": "",
+                "catalogSources": [
+                    {"type": "movie", "addonId": addon_id, "catalogId": "top_movies"},
+                    {"type": "series", "addonId": addon_id, "catalogId": "top_series"},
+                ],
+                "focusGifEnabled": False,
+            },
+            {
+                "id": "folder-discover-recently-added",
+                "title": "Recently Added",
+                "sources": [
+                    {"type": "movie", "addonId": addon_id, "provider": "addon", "catalogId": "latest_movies"},
+                    {"type": "series", "addonId": addon_id, "provider": "addon", "catalogId": "latest_series"},
+                ],
+                "hideTitle": False, "tileShape": "landscape", "focusGifUrl": "",
+                "titleLogoUrl": f"{NUVIO_CDN}/RecentlyAdded_logo.webp",
+                "coverImageUrl": f"{NUVIO_CDN}/RecentlyAdded_cover.webp",
+                "heroBackdropUrl": f"{NUVIO_CDN}/RecentlyAdded_backdrop.webp",
+                "catalogSources": [
+                    {"type": "movie", "addonId": addon_id, "catalogId": "latest_movies"},
+                    {"type": "series", "addonId": addon_id, "catalogId": "latest_series"},
+                ],
+                "focusGifEnabled": False,
+            },
+        ],
+        "pinToTop": True, "viewMode": "TABBED_GRID", "showAllTab": True, "focusGlowEnabled": True,
+    }
+
     franchises_collection = {
         "id": "collection-franchises-main",
         "title": "Franchises & Universes",
@@ -1371,15 +1467,18 @@ async def build_nuvio_collection_data(token: str, collection_type: str = "full",
         result = dict(coll); result["folders"] = clean
         return result
 
+    discover_collection = _sanitize_collection(discover_collection, auto_hide_empty=True)
     ott_collection = _sanitize_collection(ott_collection, auto_hide_empty=True)
     franchises_collection = _sanitize_collection(franchises_collection)
 
+    if collection_type == "discover":
+        return [discover_collection]
     if collection_type == "ott":
         return [ott_collection]
     if collection_type in {"franchises", "explore"}:
         return [franchises_collection]
-    # Master collection contains exactly the three independently importable collections.
-    return [_sports_collection(), ott_collection, franchises_collection]
+    # Keep Caitlin Live Sports and add the upstream Discover collection to the master bundle.
+    return [_sports_collection(), discover_collection, ott_collection, franchises_collection]
 
 
 
@@ -1394,11 +1493,17 @@ async def get_nuvio_sports_collection(token: str, token_data: dict = Depends(ver
     return await build_nuvio_collection_data(token, "sports", token_data)
 
 
+@router.get("/{token}/nuvio-discover-collection.json")
+async def get_nuvio_discover_collection(token: str, token_data: dict = Depends(verify_token)):
+    return await build_nuvio_collection_data(token, "discover", token_data)
+
+
 @router.get("/{token}/nuvio-ott-collection.json")
 async def get_nuvio_ott_collection(token: str, token_data: dict = Depends(verify_token)):
     return await build_nuvio_collection_data(token, "ott", token_data)
 
 
+@router.get("/{token}/nuvio-explore-collection.json")
 @router.get("/{token}/nuvio-franchises-collection.json")
 async def get_nuvio_franchises_collection(token: str, token_data: dict = Depends(verify_token)):
     return await build_nuvio_collection_data(token, "franchises", token_data)
@@ -1608,7 +1713,7 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
         projection={"telegram": 0, "seasons.episodes.telegram": 0},
     )
     if not media:
-        fallback_meta = await _external_meta_for_id(id, parsed, media_type)
+        fallback_meta = await _cached_external_meta(id, parsed, media_type)
         return JSONResponse({"meta": fallback_meta or {}}, headers={"Cache-Control": "private, no-store"})
 
     if not _token_can_view(media.get("visibility") or "public", media.get("allowed_tokens") or [], token_data):
@@ -2345,15 +2450,15 @@ async def configure_addon(token: str, request: Request):
 #----- Catalogs this token can see, in effective (token or global) order
 async def _addon_catalogs_for_token(token_data: dict) -> list:
     entries = [
-        {"id": "latest_movies", "name": "Latest Movies", "type": "movie"},
+        {"id": "latest_movies", "name": "Recently Added Movies", "type": "movie"},
         {"id": "top_movies", "name": "Popular Movies", "type": "movie"},
-        {"id": "latest_series", "name": "Latest Series", "type": "series"},
+        {"id": "latest_series", "name": "Recently Added Series", "type": "series"},
         {"id": "top_series", "name": "Popular Series", "type": "series"},
         {"id": "trending_movies", "name": "Trending Movies", "type": "movie"},
         {"id": "trending_series", "name": "Trending Series", "type": "series"},
     ]
     try:
-        for c in await db.get_custom_catalogs(slim=True):
+        for c in await db.get_custom_catalogs(slim=True, item_fields=("media_type", "visibility", "allowed_tokens")):
             items = [i for i in (c.get("items") or []) if _token_can_view(*_effective_visibility(c, i), token_data)]
             if not items:
                 continue

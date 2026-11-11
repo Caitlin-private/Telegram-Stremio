@@ -46,8 +46,8 @@ async def _cleanup_stale_streams():
                         entry["end_ts"] = now
                         RECENT_STREAMS.appendleft(entry)
                         idx = entry.get("client_index")
-                        if idx is not None and idx in work_loads:
-                            work_loads[idx] = max(0, work_loads[idx] - 1)
+                        if entry.pop("load_held", False) and idx is not None:
+                            work_loads[idx] = max(0, work_loads.get(idx, 0) - 1)
                 except Exception:
                     pass
         except Exception:
@@ -146,6 +146,7 @@ class ByteStreamer:
             "part_count": part_count,
             "prefetch": prefetch,
             "meta": meta or {},
+            "load_held": True,
         }
 
         ACTIVE_STREAMS[stream_id] = registry_entry
@@ -468,10 +469,8 @@ class ByteStreamer:
 
                     asyncio.create_task(delayed_pop())
                 finally:
-                    try:
-                        work_loads[client_index] -= 1
-                    except Exception:
-                        pass
+                    if stream_entry.pop("load_held", False):
+                        work_loads[client_index] = max(0, work_loads.get(client_index, 0) - 1)
 
                 stop_event.set()
 

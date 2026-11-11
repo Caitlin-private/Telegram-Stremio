@@ -1,5 +1,6 @@
 from Backend.helper.async_cache import TTLCache, cached_call
 import asyncio
+import re
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -27,7 +28,7 @@ AUTO_CATALOG_DEFINITIONS = [
     {"key": "korean", "name": "Korean", "group": "Language"},
 
     {"key": "top_rated", "name": "Top Rated", "group": "Smart"},
-    {"key": "recently_added", "name": "Recently Added", "group": "Smart"},
+    {"key": "latest_releases", "name": "Latest Releases", "group": "Smart"},
 
     {"key": "netflix", "name": "Netflix", "group": "OTT"},
     {"key": "prime_video", "name": "Prime Video", "group": "OTT"},
@@ -115,6 +116,71 @@ def _doc_item(doc: dict) -> dict:
     }
 
 
+RECENT = "Latest Releases"
+_LEGACY_RECENT = "Recently Added"
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def release_date(doc: dict, details: Optional[dict] = None) -> Optional[str]:
+    """Choose the newest known, non-future release date for a title."""
+    details = details or {}
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    aired = sorted(
+        (d for d in (str(e.get("released") or "")[:10]
+                     for season in (doc.get("seasons") or [])
+                     for e in (season.get("episodes") or []))
+         if _DATE_RE.match(d)),
+        reverse=True,
+    )
+    candidates = [
+        *aired, details.get("release_date"), details.get("last_air_date"),
+        details.get("first_air_date"), doc.get("release_date"),
+    ]
+    known = next((str(d)[:10] for d in candidates if d and _DATE_RE.match(str(d)[:10]) and str(d)[:10] <= today), None)
+    if known:
+        return known
+    year = doc.get("release_year")
+    return f"{year}-01-01" if year else None
+
+
+def _stored_tags(doc: dict) -> List[str]:
+    return [RECENT if tag == _LEGACY_RECENT else tag for tag in (doc.get("auto_tags") or [])]
+
+
+def _catalog_item(doc: dict, tag: str) -> dict:
+    item = _doc_item(doc)
+    if tag == RECENT and doc.get("release_date"):
+        item["release_date"] = doc["release_date"]
+    return item
+
+
+def catalog_sort_key(item: dict) -> str:
+    return str(item.get("release_date") or item.get("updated_on") or item.get("added_at") or "")
+
+
+async def _settings_state(db) -> dict:
+    """Migrate the legacy Recently Added smart catalog on first settings access."""
+    col = db.dbs["tracking"]["state"]
+    state = await col.find_one({"_id": "auto_catalog_settings"}) or {}
+    if state.get("latest_releases_default"):
+        return state
+    keys = {"latest_releases" if k == "recently_added" else k for k in (state.get("enabled_keys") or [])}
+    # Preserve an explicit selection; for an unconfigured installation this key
+    # will remain disabled until the admin saves their catalog choices.
+    keys.add("latest_releases")
+    new_state = {**state, "enabled_keys": sorted(keys), "latest_releases_default": True}
+    await col.update_one(
+        {"_id": "auto_catalog_settings"},
+        {"$set": {"enabled_keys": new_state["enabled_keys"], "latest_releases_default": True}},
+        upsert=True,
+    )
+    await db.dbs["tracking"]["custom_catalogs"].update_one(
+        {"auto_key": "auto_recently_added"},
+        {"$set": {"auto_key": "auto_latest_releases", "name": RECENT}},
+    )
+    return new_state
+
+
 def _provider_bucket(provider_name: str) -> Optional[str]:
     value = (provider_name or "").strip().lower()
     if not value:
@@ -148,18 +214,20 @@ def _is_already_synced(doc: dict) -> bool:
 
     if not synced_at:
         return False
+    if RECENT in _stored_tags(doc) and not doc.get("release_date"):
+        return False
     if doc_updated_on and source_updated_on and doc_updated_on != source_updated_on:
         return False
     return True
 
 
 async def has_auto_catalog_settings(db) -> bool:
-    state = await db.dbs["tracking"]["state"].find_one({"_id": "auto_catalog_settings"})
+    state = await _settings_state(db)
     return bool(state and isinstance(state.get("enabled_keys"), list))
 
 
 async def get_auto_catalog_settings(db) -> dict:
-    state = await db.dbs["tracking"]["state"].find_one({"_id": "auto_catalog_settings"}) or {}
+    state = await _settings_state(db)
     configured = isinstance(state.get("enabled_keys"), list)
 
     enabled_keys = state.get("enabled_keys") if configured else []
@@ -239,11 +307,12 @@ def classify_media_from_tmdb(doc: dict, details: dict, watch_data: dict, enabled
     except Exception:
         pass
 
-    if doc.get("release_year"):
+    release = release_date(doc, details)
+    if release:
         try:
-            if int(doc.get("release_year")) >= datetime.utcnow().year - 1:
-                tags.add("Recently Added")
-        except Exception:
+            if int(release[:4]) >= datetime.utcnow().year - 1:
+                tags.add(RECENT)
+        except (TypeError, ValueError):
             pass
 
     provider_names = _extract_provider_names(watch_data)
@@ -355,7 +424,10 @@ async def _classify_one(db, client: httpx.AsyncClient, semaphore: asyncio.Semaph
             classification = classify_media_from_tmdb(doc, details or {}, watch_data or {}, enabled_names)
 
             now = datetime.utcnow()
+            doc_release_date = release_date(doc, details or {})
+            doc["release_date"] = doc_release_date
             update_data = {
+                "release_date": doc_release_date,
                 "original_language": classification.get("original_language"),
                 "origin_country": classification.get("origin_country", []),
                 "production_countries": classification.get("production_countries", []),
@@ -381,7 +453,7 @@ async def _classify_one(db, client: httpx.AsyncClient, semaphore: asyncio.Semaph
             return doc, classification
         except Exception as e:
             LOGGER.warning(f"Auto catalog classification failed for {doc.get('title')} ({doc.get('tmdb_id')}): {e}")
-            return doc, {"auto_tags": doc.get("auto_tags", []) or []}
+            return doc, {"auto_tags": _stored_tags(doc)}
 
 
 async def sync_scan_media(db, pending, playback_gate):
@@ -432,6 +504,7 @@ async def sync_scan_media(db, pending, playback_gate):
                     update = {field: classification.get(field, []) for field in
                               ('origin_country', 'production_countries', 'watch_providers', 'auto_tags')}
                     update.update(original_language=classification.get('original_language'),
+                                  release_date=release_date(doc, details or {}),
                                   auto_tags_updated_at=now,
                                   auto_catalog={'synced': True, 'synced_at': now,
                                                 'source_updated_on': doc.get('updated_on')})
@@ -504,8 +577,7 @@ async def sync_single_media(db, *, tmdb_id, media_type: str) -> dict:
         tag for tag in (classification.get("auto_tags") or []) if tag in enabled_names
     ]
     if tags:
-        item = _doc_item(media_doc)
-        await _flush_quick_items(db, {tag: [item] for tag in tags})
+        await _flush_quick_items(db, {tag: [_catalog_item(media_doc, tag)] for tag in tags})
 
     LOGGER.info(
         f"Auto catalog instant index: '{media_doc.get('title')}' "
@@ -577,6 +649,14 @@ async def _flush_quick_items(db, catalog_items: Dict[str, List[dict]]) -> None:
                     "$inc": {"item_count": 1},
                 },
             )
+            if name == RECENT and item.get("release_date"):
+                await collection.update_one(
+                    {"auto_key": auto_key, "items": {"$elemMatch": {
+                        "tmdb_id": item["tmdb_id"], "db_index": item["db_index"],
+                        "media_type": item["media_type"],
+                    }}},
+                    {"$set": {"items.$.release_date": item["release_date"]}},
+                )
 
 
 async def _rebuild_auto_catalogs(db, catalog_items: Dict[str, List[dict]], enabled_names: Set[str]) -> None:
@@ -593,7 +673,10 @@ async def _rebuild_auto_catalogs(db, catalog_items: Dict[str, List[dict]], enabl
             seen.add(key)
             unique_items.append(item)
 
-        unique_items.sort(key=lambda it: it.get("updated_on") or it.get("added_at") or datetime.min, reverse=True)
+        if name == RECENT:
+            unique_items.sort(key=catalog_sort_key, reverse=True)
+        else:
+            unique_items.sort(key=lambda it: it.get("updated_on") or it.get("added_at") or datetime.min, reverse=True)
 
         await collection.update_one(
             {"auto_key": _catalog_key(name)},
@@ -688,7 +771,7 @@ async def run_auto_catalog_sync(db, *, force: bool = False, force_refresh: bool 
         if not tmdb_api_key():
             LOGGER.warning(
                 "Auto catalog: no TMDB API key configured — only 'Top Rated' and "
-                "'Recently Added' will populate; language & OTT catalogs need a TMDB key."
+                "'Latest Releases' will populate; language & OTT catalogs need a TMDB key."
             )
 
         #----- Group a title's stored/fresh tags into the catalogs it belongs to
@@ -699,9 +782,8 @@ async def run_auto_catalog_sync(db, *, force: bool = False, force_refresh: bool 
             active = [tag for tag in (tags or []) if tag in enabled_names]
             if active:
                 tagged += 1
-            item = _doc_item(media_doc)
             for tag in active:
-                catalog_items.setdefault(tag, []).append(item)
+                catalog_items.setdefault(tag, []).append(_catalog_item(media_doc, tag))
 
         try:
             timeout = httpx.Timeout(18.0, connect=10.0)
@@ -716,7 +798,7 @@ async def run_auto_catalog_sync(db, *, force: bool = False, force_refresh: bool 
                     #----- Already-tagged titles skip TMDB; reuse their stored tags
                     if already_synced:
                         skipped += 1
-                        collect(doc, doc.get("auto_tags") or [])
+                        collect(doc, _stored_tags(doc))
                         continue
 
                     classified += 1

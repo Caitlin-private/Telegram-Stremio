@@ -1,8 +1,20 @@
+import secrets
+
 from fastapi import HTTPException, Request
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 from Backend.helper.passwords import verify_password
 from Backend.helper.settings_manager import SettingsManager
+from Backend.helper.bounded import BoundedDict
+
+
+_REVOKED_SESSIONS = BoundedDict(5000)
+
+
+def revoke_session(request: Request) -> None:
+    sid = request.session.get("sid")
+    if sid:
+        _REVOKED_SESSIONS[sid] = True
 
 
 #----- Match a username/password pair against the stored admin credentials
@@ -13,7 +25,13 @@ def verify_credentials(username: str, password: str) -> bool:
 
 #----- Whether the session carries a valid authentication flag
 def is_authenticated(request: Request) -> bool:
-    return bool(request.session.get("authenticated"))
+    if not request.session.get("authenticated"):
+        return False
+    sid = request.session.get("sid")
+    if not sid:
+        sid = secrets.token_urlsafe(16)
+        request.session["sid"] = sid
+    return sid not in _REVOKED_SESSIONS
 
 
 #----- Logged-in username from the session, or None
