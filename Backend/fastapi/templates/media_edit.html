@@ -2158,7 +2158,8 @@
     function switchEditTab(name, doScroll = true) {
         document.querySelectorAll('.edit-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
         document.querySelectorAll('.edit-panel').forEach(p => p.classList.toggle('hidden', p.dataset.panel !== name));
-        if (name === 'content') refreshVisibleSeasonHeights();\n        if (name === 'coverage') loadEpisodeCoverage();
+        if (name === 'content') refreshVisibleSeasonHeights();
+        if (name === 'coverage') loadEpisodeCoverage();
         try { history.replaceState(null, '', '#' + name); } catch (e) {}
         if (doScroll) {
             const tabs = document.getElementById('edit-tabs');

@@ -27,6 +27,7 @@ from Backend.helper.metadata.common import (
 from Backend.helper.settings_manager import SettingsManager
 from Backend.helper.metadata_matcher import build_title_variants, normalize_title, _number_signature
 from Backend.logger import LOGGER
+from Backend.helper.metadata.common import tag_source
 
 _tmdb_client: aioTMDb | None = None
 _tmdb_client_key: str | None = None
@@ -263,6 +264,7 @@ async def external_imdb_id(media_type: str, tmdb_id) -> str | None:
         return None
 
 
+@tag_source("TMDB")
 def build_movie_payload(movie, quality, encoded_string) -> dict:
     release = getattr(movie, "release_date", None)
     title = movie.title or getattr(movie, "original_title", "") or ""
@@ -294,6 +296,7 @@ def build_movie_payload(movie, quality, encoded_string) -> dict:
     return ensure_media_ids(payload, seed=f"tmdb:movie:{movie.id}")
 
 
+@tag_source("TMDB")
 def build_tv_payload(tv, ep, season, episode, quality, encoded_string) -> dict:
     first_air = getattr(tv, "first_air_date", None)
     last_air = getattr(tv, "last_air_date", None)

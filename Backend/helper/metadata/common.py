@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, Optional
@@ -42,6 +44,26 @@ _INFLIGHT: Dict[tuple, asyncio.Future] = {}
 _APOSTROPHE_RE = re.compile(r"['\u2018\u2019`\u00B4]")
 _SYMBOL_STRIP_RE = re.compile(r"[&.\-:]+")
 _HTML_RE = re.compile(r"<[^>]+>")
+
+
+def tag_source(name: str):
+    """Mark a provider's payload with the API it came from (shown in Verify / ingestion logs)."""
+    def decorate(fn):
+        def mark(result):
+            if isinstance(result, dict):
+                result.setdefault("meta_source", name)
+            return result
+
+        if inspect.iscoroutinefunction(fn):
+            @functools.wraps(fn)
+            async def wrapper(*args, **kwargs):
+                return mark(await fn(*args, **kwargs))
+        else:
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return mark(fn(*args, **kwargs))
+        return wrapper
+    return decorate
 
 
 async def cached_call(store: dict, key, ns: str, producer):

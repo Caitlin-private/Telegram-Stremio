@@ -28,6 +28,9 @@ _EXPLICIT_SEASON_WORD_RE = re.compile(r"(?i)\b(?:season|series)\s*0*\d{1,2}\b")
 
 
 def parse_media_name(name: str) -> dict:
+    from Backend.helper.ingestion_rules import resolution_hint, normalize_resolution_aliases
+    hinted_quality = resolution_hint(name)
+    name = normalize_resolution_aliases(name)
     try:
         ptn = PTN.parse(name) or {}
     except Exception as e:
@@ -102,6 +105,7 @@ def parse_media_name(name: str) -> dict:
     except (TypeError, ValueError):
         pass
 
+    parsed['quality'] = hinted_quality or parsed['quality']
     return parsed
 
 
@@ -268,6 +272,11 @@ def is_absolute_episode(parsed: dict, filename: str = "") -> bool:
     return extract_absolute_episode(filename, parsed) is not None
 
 def analyze_metadata_failure(filename: str) -> str:
+    from Backend.helper.multipart_video import video_part
+    from Backend.helper.settings_manager import SettingsManager
+    part = video_part(filename)
+    if part and SettingsManager.current().allow_multipart_video:
+        filename = part['clean']
     if is_multipart_video(filename or ""):
         return (
             "Looks like a multi-part video split (e.g. part1 / cd1) that can't be "
@@ -304,7 +313,7 @@ def analyze_metadata_failure(filename: str) -> str:
             "Upload one season per file. Combined episode packs within a single season are fine "
             "when named like 'Show S02 E01-E05' or 'Show S02 Combined'."
         )
-    if not quality:
+    if not quality and not SettingsManager.current().allow_unknown_resolution:
         return (
             "No video quality/resolution was found. Add one to the caption "
             "(e.g. 480p, 720p, 1080p or 2160p)."

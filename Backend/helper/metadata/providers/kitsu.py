@@ -19,6 +19,7 @@ from Backend.helper.metadata.common import (
     strip_html,
 )
 from Backend.logger import LOGGER
+from Backend.helper.metadata.common import tag_source
 
 KITSU_URL = "https://kitsu.io/api/edge"
 ANIZIP_URL = "https://api.ani.zip/mappings"
@@ -804,6 +805,7 @@ def _ids_from_anizip(doc: dict) -> dict:
             continue
     return out
 
+@tag_source("Kitsu")
 async def fetch_anime_tv(
     title: str,
     season,
@@ -989,6 +991,7 @@ async def fetch_anime_tv(
 
 
 
+@tag_source("Kitsu")
 async def fetch_anime_movie(title, encoded_string, year=None, quality=None) -> Optional[dict]:
     row = await search_anime(title, movie=True)
     if not row:

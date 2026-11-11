@@ -11,6 +11,7 @@ from Backend.helper.metadata.common import (
     ensure_media_ids,
     CINEMETA_THRESHOLD,
     IMDB_CACHE,
+    API_SEMAPHORE,
     STRONG_MATCH,
     cached_call,
     format_imdb_images,
@@ -20,6 +21,7 @@ from Backend.helper.metadata.common import (
     build_query_variants,
 )
 from Backend.logger import LOGGER
+from Backend.helper.metadata.common import tag_source
 
 BASE_URL = "https://v3-cinemeta.strem.io"
 
@@ -58,7 +60,8 @@ def _cinemeta_type(media_type: str) -> str:
 async def _fetch_json(url: str) -> Optional[Dict[str, Any]]:
     try:
         client = await _get_client()
-        resp = await client.get(url)
+        async with API_SEMAPHORE:
+            resp = await client.get(url)
         if resp.status_code != 200:
             return None
         return resp.json()
@@ -129,23 +132,26 @@ async def get_detail(imdb_id: str, media_type: str) -> Optional[Dict[str, Any]]:
 
 
 async def get_season(imdb_id: str, season_id, episode_id) -> Dict[str, Any]:
-    ctype = "series"
-    url = f"{BASE_URL}/meta/{ctype}/{imdb_id}.json"
-    data = await _fetch_json(url)
-    meta = (data or {}).get("meta") or {}
-    videos = meta.get("videos") or []
-    for v in videos:
-        try:
-            if int(v.get("season") or -1) == int(season_id) and int(v.get("episode") or -1) == int(episode_id):
-                return {
-                    "title": v.get("title") or v.get("name") or f"S{int(season_id):02d}E{int(episode_id):02d}",
-                    "image": v.get("thumbnail") or "",
-                    "plot": v.get("overview") or v.get("description") or "",
-                    "released": v.get("released") or v.get("firstAired") or "",
-                }
-        except (TypeError, ValueError):
-            continue
-    return {}
+    async def episode_index():
+        detail = await cached_detail(imdb_id, "tvSeries")
+        if not detail:
+            return {}
+        index = {}
+        for video in detail.get("videos") or []:
+            try:
+                key = (int(video.get("season")), int(video.get("episode")))
+            except (TypeError, ValueError):
+                continue
+            index[key] = {
+                "title": video.get("title") or video.get("name") or f"S{key[0]:02d}E{key[1]:02d}",
+                "image": video.get("thumbnail") or "",
+                "plot": video.get("overview") or video.get("description") or "",
+                "released": video.get("released") or video.get("firstAired") or "",
+            }
+        return index
+
+    index = await cached_call(IMDB_CACHE, ("episodes", imdb_id), "imdb_episode_index", episode_index)
+    return dict(index.get((int(season_id), int(episode_id)), {}))
 
 
 async def safe_search(title: str, type_: str, year: Optional[int] = None) -> str | None:
@@ -227,6 +233,7 @@ async def cached_season(imdb_id: str, season, episode):
     return await cached_call(IMDB_CACHE, key, "imdb_season", _produce)
 
 
+@tag_source("IMDb (Cinemeta)")
 def build_movie_payload(imdb: dict, imdb_id: str, title: str, quality, encoded_string) -> dict:
     images = format_imdb_images(imdb_id)
     display = imdb.get("title", title) or title or ""
@@ -251,6 +258,7 @@ def build_movie_payload(imdb: dict, imdb_id: str, title: str, quality, encoded_s
     return ensure_media_ids(payload, seed=f"cinemeta:{imdb_id}")
 
 
+@tag_source("IMDb (Cinemeta)")
 def build_tv_payload(imdb, ep, imdb_id, title, season, episode, quality, encoded_string) -> dict:
     images = format_imdb_images(imdb_id)
     display = imdb.get("title", title) or title or ""

@@ -76,11 +76,16 @@ async def metadata(
     instead of being logged and returned as None, so scans and Verify can tell "no match"
     apart from "could not check" and never treat an outage as an unmatched file.
     """
-    if is_multipart_video(filename):
+    from Backend.helper.multipart_video import video_part
+    playable_part = video_part(filename)
+    # "Part 1 / Part 2" videos are only indexed when "allow multipart video" is on, as separate playable parts.
+    if (is_multipart_video(filename) or playable_part) and not (playable_part and SettingsManager.current().allow_multipart_video):
         LOGGER.info(f"Skipping {filename}: split video file not meant to be combined in Stremio")
         return None
 
-    split_info = parse_split_info(filename)
+    if playable_part:
+        filename = playable_part['clean']
+    split_info = parse_split_info(filename) if not playable_part else None
     part_number = split_info[1] if split_info else None
     parse_target = strip_part_suffix(filename) if split_info else filename
 
@@ -230,6 +235,9 @@ async def metadata(
                     title, encoded_string, year=year, quality=quality, default_id=default_id
                 )
         if result is not None:
+            if playable_part:
+                result['video_part'] = playable_part['number']
+                result['video_group'] = playable_part['group']
             if anime_channel:
                 result["is_anime"] = True
             result["group_key"] = group_key
