@@ -919,6 +919,7 @@ async def get_all_tokens_api() -> dict:
 
             return {
                 "token": token_str,
+                "token_name": token_doc.get("name"),
                 "user_id": user_id,
                 "user_name": display_name(user, user_id, token_doc.get("name")),
                 "user_found": user_found,

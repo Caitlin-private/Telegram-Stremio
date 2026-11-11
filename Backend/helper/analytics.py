@@ -103,13 +103,28 @@ def parse_app(user_agent: str) -> str:
 
 
 def parse_device(user_agent: str) -> str:
-    if not user_agent:
+    """Infer a useful device family from addon-protocol User-Agent strings."""
+    ua = str(user_agent or "").strip()
+    if not ua:
         return ""
-    low = user_agent.lower()
+    low = ua.lower()
     for needle, name in _DEVICE_MAP:
         if needle in low:
+            if name == "Android":
+                # Android browsers and players often include the hardware model.
+                import re
+                match = re.search(r"\bandroid\s+[0-9.]+;\s*([^;)]+)", ua, re.I)
+                model = (match.group(1).strip() if match else "")
+                if model and model.lower() not in ("k", "wv", "mobile"):
+                    return f"Android · {model[:32]}"
             return name
-    return ""
+    # A number of Stremio-compatible clients expose app names but omit a platform.
+    app = parse_app(ua)
+    if app not in ("Unknown", "Browser"):
+        return f"{app} device"
+    if "mozilla/" in low and ("applewebkit" in low or "gecko/" in low):
+        return "Web browser"
+    return "Other client"
 
 
 def cached_ip_info(ip: str) -> dict:

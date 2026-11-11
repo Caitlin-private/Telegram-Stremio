@@ -25,42 +25,34 @@ async def viewer_history(client: Client, message):
 
         token = str(token_doc["token"])
         records = await db.fetch_insight_records(days=30, limit=2000, token=token)
-        if not records:
-            await message.reply_text(
-                "📺 <b>Your viewing history</b>\n\nNo playback history has been recorded in the last 30 days yet.",
-                quote=True, parse_mode=enums.ParseMode.HTML,
-            )
-            return
-
         token_map = await db.get_token_user_map()
         sessions = insights_agg.build_sessions(records)
         profile = insights_agg.viewer_profile(sessions, token_map, token=token)
         totals = profile.get("totals") or {}
         viewer = profile.get("viewer") or {}
         lines = [
-            "📺 <b>Your viewing history</b>",
+            "📺 <b>Your viewing insights</b>",
             "<i>Last 30 days · private to you</i>",
             "",
-            f"▶️ Plays: <b>{totals.get('plays', 0)}</b>",
-            f"⏱ Watch time: <b>{totals.get('watch_time', '0m')}</b>",
-            f"🎞 Titles: <b>{totals.get('unique_titles', 0)}</b>",
+            f"▶️ Total plays: <b>{totals.get('plays', 0)}</b>",
+            f"⏱ Total watch time: <b>{totals.get('watch_time', '0m')}</b>",
+            f"🎞 Total titles: <b>{totals.get('unique_titles', 0)}</b>",
         ]
         completion = totals.get("avg_completion")
-        if isinstance(completion, (int, float)):
-            lines.append(f"📊 Average completion: <b>{round(completion * 100)}%</b>")
-        if viewer.get("place"):
-            lines.append(f"📍 Last known location: <b>{escape(str(viewer['place']))}</b>")
-        lines.extend(["", "<b>Recently watched</b>"])
-        for index, item in enumerate((profile.get("history") or [])[:10], 1):
+        if not isinstance(completion, (int, float)):
+            values = [s.get("completion") for s in sessions if isinstance(s.get("completion"), (int, float))]
+            completion = (sum(values) / len(values)) if values else None
+        lines.append(f"📊 Average completion: <b>{round(completion * 100)}%</b>" if isinstance(completion, (int, float)) else "📊 Average completion: <b>—</b>")
+        lines.extend(["", "<b>Last 3 titles played</b>"])
+        history = profile.get("history") or []
+        if not history:
+            lines.append("No recent titles found.")
+        for index, item in enumerate(history[:3], 1):
             pct = item.get("completion")
-            pct_text = f" · {round(float(pct) * 100)}%" if isinstance(pct, (int, float)) else ""
-            device = item.get("device") or item.get("app") or "Unknown device"
-            place = ", ".join(x for x in (item.get("city"), item.get("country")) if x)
-            place_text = f" · {place}" if place else ""
+            pct_text = f" · {round(float(pct) * 100)}% complete" if isinstance(pct, (int, float)) else ""
             lines.append(
-                f"{index}. <b>{escape(str(item.get('title') or 'Unknown title')[:100])}</b>\n"
-                f"   {escape(str(item.get('when') or 'Unknown date'))} · {escape(str(item.get('watch_time') or '—'))}{pct_text}\n"
-                f"   {escape(str(device)[:40])}{escape(str(place_text)[:70])}"
+                f"{index}. <b>{escape(str(item.get('title') or 'Unknown title')[:100])}</b>"
+                f"\n   {escape(str(item.get('when') or 'Unknown date'))} · {escape(str(item.get('watch_time') or '—'))}{pct_text}"
             )
         await message.reply_text("\n".join(lines), quote=True, parse_mode=enums.ParseMode.HTML)
     except Exception as exc:

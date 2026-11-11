@@ -2891,7 +2891,7 @@ class Database:
             if token:
                 query["token"] = str(token)
             projection = {"_id": 0, "title": 1, "filename": 1, "source_type": 1, "user_name": 1,
-                "token": 1, "token_user_id": 1, "client_ip": 1, "device": 1, "app": 1,
+                "token": 1, "token_user_id": 1, "client_ip": 1, "device": 1, "app": 1, "user_agent": 1,
                 "media": 1, "playback_id": 1, "geo": 1, "completion": 1,
                 "watched_offset": 1, "file_size": 1, "total_bytes": 1,
                 "duration_sec": 1, "chat_id": 1, "msg_id": 1, "logged_at": 1, "status": 1}
@@ -2919,6 +2919,20 @@ class Database:
                         row["app"] = current.get("app")
                     if not row.get("device"):
                         row["device"] = current.get("device")
+                    if not row.get("user_agent"):
+                        row["user_agent"] = current.get("user_agent")
+            # Backfill device labels for historical rows and clients whose UA parser
+            # did not recognize a platform when the event was first recorded.
+            try:
+                from Backend.helper.analytics import parse_device, parse_app
+                for row in rows:
+                    ua = row.get("user_agent") or ""
+                    if not row.get("device") or str(row.get("device")).lower() in ("unknown", "other"):
+                        row["device"] = parse_device(ua) or row.get("device") or "Other client"
+                    if (not row.get("app") or str(row.get("app")).lower() == "unknown") and ua:
+                        row["app"] = parse_app(ua)
+            except Exception:
+                pass
             return rows
         except Exception as e:
             LOGGER.warning("Viewer insights fetch failed: %s", e)

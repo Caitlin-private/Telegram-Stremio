@@ -302,12 +302,21 @@ _STREAM_LOG_COOLDOWN = 900  # players fire many range requests; log one start pe
 
 def _device_label(user_agent: str) -> str:
     ua = (user_agent or "").strip()
-    for needle, label in (("stremio", "Stremio"), ("vlc", "VLC"), ("infuse", "Infuse"), ("kodi", "Kodi"),
-                          ("exoplayer", "ExoPlayer (Android)"), ("mpv", "mpv"), ("nuvio", "Nuvio"),
-                          ("edg/", "Edge"), ("chrome", "Chrome"), ("firefox", "Firefox"), ("safari", "Safari")):
-        if needle in ua.lower():
-            return f"{label} · {ua[:60]}" if label.lower() not in ua[:25].lower() else ua[:70]
-    return ua[:70] or "Unknown"
+    if not ua:
+        return "Other client"
+    try:
+        from Backend.helper.analytics import parse_app, parse_device
+        device = parse_device(ua)
+        app = parse_app(ua)
+        if device and app not in ("Unknown", "Browser"):
+            return f"{app} · {device}"[:90]
+        if device:
+            return device[:90]
+        if app != "Unknown":
+            return app[:90]
+    except Exception:
+        pass
+    return ua[:70]
 
 
 async def _log_stream_start(request: Request, token: str, token_data: dict, stream_id: str, name: str) -> None:

@@ -494,6 +494,106 @@ async def get_access_tokens(_: bool = Depends(require_auth)):
 async def delete_access_token(token: str, _: bool = Depends(require_auth)):
     return await revoke_token_api(token)
 
+@app.get("/api/admin/access/users/{user_id}/messages")
+async def get_access_user_messages(user_id: int, _: bool = Depends(require_auth)):
+    token_doc = await db.get_api_token_by_user(user_id)
+    if not token_doc:
+        raise HTTPException(status_code=404, detail="No linked addon token for this user.")
+    from Backend.helper.settings_manager import SettingsManager
+    global_notice = SettingsManager.current().stream_notice or {"enabled": False}
+    return {
+        "stream_notice": token_doc.get("stream_notice", global_notice),
+        "has_stream_override": "stream_notice" in token_doc,
+        "global_stream_notice": global_notice,
+        "user_name": token_doc.get("name") or f"User {user_id}",
+    }
+
+
+@app.get("/api/admin/access/broadcast/stream-notice")
+async def get_access_broadcast_stream_notice(_: bool = Depends(require_auth)):
+    from Backend.helper.settings_manager import SettingsManager
+    return {"stream_notice": SettingsManager.current().stream_notice or {"enabled": False}}
+
+
+@app.put("/api/admin/access/users/{user_id}/stream-notice")
+async def save_access_user_stream_notice(user_id: int, payload: dict, _: bool = Depends(require_auth)):
+    if payload.get("inherit"):
+        if not await db.set_user_stream_notice(user_id, None):
+            raise HTTPException(status_code=404, detail="No linked addon token for this user.")
+        return {"status": "success", "stream_notice": None}
+    enabled = bool(payload.get("enabled"))
+    notice = {"enabled": False}
+    if enabled:
+        name, message, url = (str(payload.get(k) or "").strip() for k in ("name", "message", "url"))
+        from urllib.parse import urlsplit
+        parsed = urlsplit(url)
+        if not name or len(name) > 80 or not message or len(message) > 500 or not url or len(url) > 2048 or parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise HTTPException(status_code=400, detail="Enter a label (80 chars), message (500 chars), and valid HTTP(S) link.")
+        notice = {"enabled": True, "name": name, "message": message, "url": url}
+    if not await db.set_user_stream_notice(user_id, notice):
+        raise HTTPException(status_code=404, detail="No linked addon token for this user.")
+    return {"status": "success", "stream_notice": notice}
+
+
+@app.put("/api/admin/access/broadcast/stream-notice")
+async def save_access_broadcast_stream_notice(payload: dict, _: bool = Depends(require_auth)):
+    from Backend.helper.settings_manager import SettingsManager
+    enabled = bool(payload.get("enabled"))
+    notice = {"enabled": False}
+    if enabled:
+        name, message, url = (str(payload.get(k) or "").strip() for k in ("name", "message", "url"))
+        from urllib.parse import urlsplit
+        parsed = urlsplit(url)
+        if not name or len(name) > 80 or not message or len(message) > 500 or not url or len(url) > 2048 or parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise HTTPException(status_code=400, detail="Enter a label, message, and valid HTTP(S) link.")
+        notice = {"enabled": True, "name": name, "message": message, "url": url}
+    await SettingsManager.update(db, {"stream_notice": notice})
+    return {"status": "success", "stream_notice": notice}
+
+
+@app.post("/api/admin/access/users/{user_id}/message")
+async def send_access_user_message(user_id: int, payload: dict, _: bool = Depends(require_auth)):
+    text = str(payload.get("text") or "").strip()
+    if not text or len(text) > 3500:
+        raise HTTPException(status_code=400, detail="Message must contain 1–3500 characters.")
+    if not await db.get_api_token_by_user(user_id):
+        raise HTTPException(status_code=404, detail="No linked addon token for this user.")
+    from Backend.pyrofork.bot import StreamBot
+    try:
+        await StreamBot.send_message(user_id, text, disable_web_page_preview=True)
+        return {"status": "sent", "sent": 1, "failed": 0}
+    except Exception as exc:
+        LOGGER.warning("Dashboard subscriber DM failed for %s: %s", user_id, type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Telegram could not deliver this message.")
+
+
+@app.post("/api/admin/access/broadcast/message")
+async def send_access_broadcast_message(payload: dict, _: bool = Depends(require_auth)):
+    text = str(payload.get("text") or "").strip()
+    if not text or len(text) > 3500:
+        raise HTTPException(status_code=400, detail="Message must contain 1–3500 characters.")
+    from Backend.pyrofork.bot import StreamBot
+    from wzgram.errors import FloodWait
+    user_ids = await db.get_registered_user_ids()
+    sent = failed = 0
+    for uid in user_ids:
+        try:
+            await StreamBot.send_message(int(uid), text, disable_web_page_preview=True)
+            sent += 1
+            await asyncio.sleep(1)
+        except FloodWait as exc:
+            await asyncio.sleep(max(1, int(exc.value)) + 1)
+            try:
+                await StreamBot.send_message(int(uid), text, disable_web_page_preview=True)
+                sent += 1
+            except Exception:
+                failed += 1
+        except Exception as exc:
+            failed += 1
+            LOGGER.debug("Dashboard broadcast failed for %s: %s", uid, type(exc).__name__)
+    return {"status": "complete", "total": len(user_ids), "sent": sent, "failed": failed}
+
+
 @app.post("/api/admin/access/users/{user_id}/assign-plan")
 async def assign_access_plan(user_id: int, payload: dict, _: bool = Depends(require_auth)):
     days = int(payload.get("days", 0))

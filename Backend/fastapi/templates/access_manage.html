@@ -173,10 +173,24 @@
     </section>
 
     <section class="section-panel p-4 sm:p-5 lg:p-6">
+        <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
+            <div class="min-w-0">
+                <h2 class="text-lg sm:text-xl font-bold section-title"><i class="fas fa-bullhorn mr-2" style="color:var(--primary)"></i>Common broadcast</h2>
+                <p class="text-sm section-muted mt-1">Messages for all linked Telegram users. Individual stream notices override this default.</p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <button onclick="editBroadcastNotice()" class="glass-btn glass-btn-primary rounded-xl px-4 py-2.5 text-sm font-bold">Global stream message</button>
+                <button onclick="broadcastTelegramMessage()" class="glass-btn rounded-xl px-4 py-2.5 text-sm font-bold">Telegram broadcast</button>
+            </div>
+        </div>
+        <div id="broadcast-notice-summary" class="mt-4 text-xs section-muted">Global stream message is inherited by users without an individual override.</div>
+    </section>
+
+    <section class="section-panel p-4 sm:p-5 lg:p-6">
         <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 mb-5">
             <div>
-                <h2 class="text-lg sm:text-xl font-bold section-title">Access Tokens</h2>
-                <p class="text-sm section-muted mt-1">Search, filter, and manage every token and its access.</p>
+                <h2 class="text-lg sm:text-xl font-bold section-title">Telegram users &amp; tokens</h2>
+                <p class="text-sm section-muted mt-1">Select a user to expand their linked addon token and access controls.</p>
             </div>
 
             <div class="w-full lg:w-auto grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -360,6 +374,51 @@
     </div>
 </div>
 
+<!-- Subscriber messaging modal -->
+<div id="user-messages-modal" class="fixed inset-0 hidden z-50 modal-backdrop items-center justify-center p-4">
+    <div class="modal-glass" style="max-width:760px">
+        <div class="flex items-start justify-between gap-4 mb-5">
+            <div><h3 class="text-xl font-bold section-title" id="user-message-title">Subscriber messages</h3><p class="text-sm text-soft mt-1" id="user-message-subtitle">Manage this user's messages.</p></div>
+            <button onclick="closeModal('user-messages-modal')" class="glass-btn rounded-xl px-3 py-2">✕</button>
+        </div>
+        <input type="hidden" id="message-user-id">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <section class="rounded-2xl p-4" style="background:color-mix(in srgb,var(--bg) 55%,transparent);border:1px solid var(--border)">
+                <h4 class="font-bold section-title mb-1">Telegram message</h4><p class="text-xs text-soft mb-3">Send a private message through the bot.</p>
+                <textarea id="user-telegram-message" rows="6" maxlength="3500" class="glass-input w-full" placeholder="Write a message to this Telegram user…"></textarea>
+                <button onclick="sendUserTelegramMessage()" class="glass-btn glass-btn-primary rounded-xl px-4 py-2.5 text-sm font-bold mt-3 w-full">Send through bot</button>
+            </section>
+            <section class="rounded-2xl p-4" style="background:color-mix(in srgb,var(--bg) 55%,transparent);border:1px solid var(--border)">
+                <h4 class="font-bold section-title mb-1">Stream ID message</h4><p class="text-xs text-soft mb-3">Shown in this user's Stremio stream list.</p>
+                <div id="user-stream-current" class="text-xs text-soft mb-3">Loading current message…</div>
+                <label class="text-xs font-semibold section-title">Label</label><input id="user-stream-name" maxlength="80" class="glass-input w-full mb-2" placeholder="e.g. Service notice">
+                <label class="text-xs font-semibold section-title">Message</label><textarea id="user-stream-text" maxlength="500" rows="2" class="glass-input w-full mb-2" placeholder="Message shown in stream list"></textarea>
+                <label class="text-xs font-semibold section-title">Link</label><input id="user-stream-url" maxlength="2048" class="glass-input w-full" placeholder="https://example.com">
+                <div class="flex flex-wrap gap-2 mt-3"><button onclick="saveUserStreamNotice(true)" class="glass-btn glass-btn-primary rounded-xl px-3 py-2 text-xs font-bold">Save message</button><button onclick="saveUserStreamNotice(false)" class="glass-btn rounded-xl px-3 py-2 text-xs font-bold">Disable</button><button onclick="inheritUserStreamNotice()" class="glass-btn rounded-xl px-3 py-2 text-xs font-bold">Use global</button></div>
+            </section>
+        </div>
+    </div>
+</div>
+
+<div id="broadcast-notice-modal" class="fixed inset-0 hidden z-50 modal-backdrop items-center justify-center p-4">
+    <div class="modal-glass" style="max-width:560px">
+        <h3 class="text-xl font-bold section-title mb-4">Global stream message</h3>
+        <label class="text-xs font-semibold section-title">Label</label><input id="broadcast-stream-name" maxlength="80" class="glass-input w-full mb-3" placeholder="Service notice">
+        <label class="text-xs font-semibold section-title">Message</label><textarea id="broadcast-stream-text" maxlength="500" rows="3" class="glass-input w-full mb-3" placeholder="Message shown in every stream list"></textarea>
+        <label class="text-xs font-semibold section-title">Link</label><input id="broadcast-stream-url" maxlength="2048" class="glass-input w-full mb-4" placeholder="https://example.com">
+        <div class="flex flex-wrap justify-end gap-2"><button onclick="closeModal('broadcast-notice-modal')" class="glass-btn rounded-xl px-4 py-2">Cancel</button><button onclick="saveBroadcastNotice(false)" class="glass-btn rounded-xl px-4 py-2">Disable</button><button onclick="saveBroadcastNotice(true)" class="glass-btn glass-btn-primary rounded-xl px-4 py-2 font-bold">Save global message</button></div>
+    </div>
+</div>
+
+<div id="broadcast-message-modal" class="fixed inset-0 hidden z-50 modal-backdrop items-center justify-center p-4">
+    <div class="modal-glass" style="max-width:560px">
+        <h3 class="text-xl font-bold section-title mb-2">Telegram broadcast</h3>
+        <p class="text-sm text-soft mb-4">Send a private bot message to every linked Telegram user, including expired subscribers.</p>
+        <textarea id="broadcast-telegram-text" maxlength="3500" rows="7" class="glass-input w-full" placeholder="Write the broadcast message…"></textarea>
+        <div class="flex flex-wrap justify-end gap-2 mt-4"><button onclick="closeModal('broadcast-message-modal')" class="glass-btn rounded-xl px-4 py-2">Cancel</button><button onclick="sendBroadcastTelegramMessage()" class="glass-btn glass-btn-primary rounded-xl px-4 py-2 font-bold">Send to all users</button></div>
+    </div>
+</div>
+
 <script>
     let allTokens = [];
     let currentPage = 1;
@@ -439,6 +498,7 @@
         if (t.has_token) {
             btns += `<button onclick="openLimitsModal('${tokenArg}', ${t.daily_limit_gb || 0}, ${t.monthly_limit_gb || 0}, ${!!t.session_streaming_allowed}, ${!!t.is_admin})" class="action-chip glass-btn">Playback & Limits</button>`;
         }
+        if (t.user_id && t.has_token) btns += `<button onclick="openUserMessages(${t.user_id}, '${safeName}')" class="action-chip glass-btn-purple">Messages</button>`;
 
         if (subEnabled) {
             if (t.user_id) {
@@ -460,71 +520,65 @@
         return btns;
     }
 
+    function groupedUsers(slice) {
+        const groups = new Map();
+        slice.forEach(t => {
+            const key = t.user_id ? `tg:${t.user_id}` : `token:${t.token || 'unlinked'}`;
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(t);
+        });
+        return [...groups.entries()].map(([key, tokens]) => ({key, tokens, user:tokens[0]}));
+    }
+
+    function toggleUserDetails(key) {
+        const el = document.getElementById(`user-details-${key.replace(/[^a-zA-Z0-9_-]/g, '-')}`);
+        if (!el) return;
+        const open = el.classList.toggle('hidden') === false;
+        const button = document.querySelector(`[data-user-toggle="${key}"]`);
+        if (button) button.innerHTML = `<i class="fas fa-chevron-${open ? 'up' : 'down'} mr-2"></i>${open ? 'Hide' : 'View'} linked tokens`;
+    }
+
     function renderDesktopRows(slice) {
         const tbody = document.getElementById('token-table-body');
-        if (!slice.length) { tbody.innerHTML = `<tr><td colspan="6" class="text-center py-10 text-soft">No tokens match your search.</td></tr>`; return; }
-
-        tbody.innerHTML = slice.map(t => {
-            const displayName = t.user_name || (t.user_id ? 'Telegram User' : 'Web Token');
-            const idHtml = t.user_id ? `<div class="text-xs text-soft mt-1">ID: ${t.user_id}</div>` : `<div class="text-xs text-soft mt-1">No linked user</div>`;
-            return `
-                <tr class="${t.is_expired ? 'row-expired' : ''}">
-                    <td class="px-4 py-4">${statusBadge(t)}</td>
-                    <td class="px-4 py-4"><div class="font-semibold section-title">${escHtml(displayName)}</div>${idHtml}</td>
-                    <td class="px-4 py-4">${addonHtml(t)}</td>
-                    <td class="px-4 py-4">${usageHtml(t)}</td>
-                    <td class="px-4 py-4 text-xs">${expiryHtml(t)}</td>
-                    <td class="px-4 py-4"><div class="flex flex-wrap gap-2 justify-center">${buildActions(t)}</div></td>
-                </tr>`;
+        const groups = slice.length && slice[0].tokens ? slice : groupedUsers(slice);
+        if (!groups.length) { tbody.innerHTML = `<tr><td colspan="6" class="text-center py-10 text-soft">No users match your search.</td></tr>`; return; }
+        tbody.innerHTML = groups.map(group => {
+            const t = group.user;
+            const key = group.key.replace(/[^a-zA-Z0-9_-]/g, '-');
+            const name = t.user_name || (t.user_id ? 'Telegram User' : 'Unlinked token');
+            const tokensHtml = group.tokens.map((token, index) => `
+                <div class="rounded-2xl p-4 mb-3 last:mb-0" style="background:color-mix(in srgb,var(--bg) 55%,transparent);border:1px solid var(--border)">
+                    <div class="flex flex-wrap items-center justify-between gap-3 mb-3"><div><div class="font-bold section-title">${escHtml(token.name || `Addon token ${index+1}`)}</div><div class="text-xs text-soft">${token.has_token ? 'Token linked' : 'No addon token issued'}</div></div>${statusBadge(token)}</div>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm"><div><div class="text-xs text-soft mb-1">Addon access</div>${addonHtml(token)}</div><div><div class="text-xs text-soft mb-1">Usage / limits</div>${usageHtml(token)}</div><div><div class="text-xs text-soft mb-1">Expires</div>${expiryHtml(token)}</div></div>
+                    <div class="flex flex-wrap gap-2 mt-4">${buildActions(token)}</div>
+                </div>`).join('');
+            return `<tr class="${t.is_expired ? 'row-expired' : ''}"><td class="px-4 py-4">${statusBadge(t)}</td><td class="px-4 py-4"><div class="font-semibold section-title">${escHtml(name)}</div><div class="text-xs text-soft mt-1">${t.user_id ? `Telegram ID: ${t.user_id}` : 'Not linked to Telegram'}</div></td><td colspan="3" class="px-4 py-4 text-xs text-soft">${group.tokens.length} linked token${group.tokens.length===1?'':'s'} · ${group.tokens.filter(x=>x.has_token).length} active token record(s)</td><td class="px-4 py-4 text-center"><button data-user-toggle="${group.key}" onclick="toggleUserDetails('${group.key}')" class="glass-btn rounded-xl px-3 py-2 text-xs font-bold"><i class="fas fa-chevron-down mr-2"></i>View linked tokens</button></td></tr><tr id="user-details-${key}" class="hidden"><td colspan="6" class="px-4 py-4" style="background:color-mix(in srgb,var(--card) 35%,transparent)">${tokensHtml}</td></tr>`;
         }).join('');
     }
 
     function renderMobileCards(slice) {
         const wrap = document.getElementById('token-mobile-list');
-        if (!slice.length) { wrap.innerHTML = `<div class="empty-state text-center px-4 py-8 text-soft">No tokens match your search.</div>`; return; }
-
-        wrap.innerHTML = slice.map(t => {
-            const displayName = t.user_name || (t.user_id ? 'Telegram User' : 'Web Token');
-            return `
-                <div class="mobile-token-card ${t.is_expired ? 'row-expired' : ''}">
-                    <div class="flex items-start justify-between gap-3 mb-3">
-                        <div class="min-w-0">
-                            <div class="font-semibold section-title break-words">${escHtml(displayName)}</div>
-                            <div class="text-xs text-soft mt-1 break-all">${t.user_id ? 'ID: ' + t.user_id : 'No linked user'}</div>
-                        </div>
-                        <div class="shrink-0">${statusBadge(t)}</div>
-                    </div>
-                    <div class="grid grid-cols-1 gap-3 mb-3">
-                        <div class="rounded-2xl px-4 py-3" style="background: color-mix(in srgb, var(--bg) 55%, transparent); border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);">
-                            <div class="text-[11px] uppercase tracking-[0.14em] text-soft font-bold mb-1">Addon Access</div>${addonHtml(t)}
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div class="rounded-2xl px-4 py-3" style="background: color-mix(in srgb, var(--bg) 55%, transparent); border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);">
-                                <div class="text-[11px] uppercase tracking-[0.14em] text-soft font-bold mb-1">Usage / Limits</div>${usageHtml(t)}
-                            </div>
-                            <div class="rounded-2xl px-4 py-3" style="background: color-mix(in srgb, var(--bg) 55%, transparent); border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);">
-                                <div class="text-[11px] uppercase tracking-[0.14em] text-soft font-bold mb-1">Expires</div>
-                                <div class="text-sm font-semibold ${t.is_expired ? 'text-red-300' : 'section-title'} break-words">
-                                    ${t.never_expires ? 'Never expires' : (t.expires_at ? fmtDate(t.expires_at) : '—')}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="flex flex-wrap gap-2">${buildActions(t)}</div>
-                </div>`;
+        const groups = slice.length && slice[0].tokens ? slice : groupedUsers(slice);
+        if (!groups.length) { wrap.innerHTML = `<div class="empty-state text-center px-4 py-8 text-soft">No users match your search.</div>`; return; }
+        wrap.innerHTML = groups.map(group => {
+            const t = group.user;
+            const key = group.key.replace(/[^a-zA-Z0-9_-]/g, '-');
+            const name = t.user_name || (t.user_id ? 'Telegram User' : 'Unlinked token');
+            const details = group.tokens.map(token => `<div class="rounded-2xl p-3 mt-3" style="background:color-mix(in srgb,var(--bg) 55%,transparent);border:1px solid var(--border)"><div class="flex justify-between gap-2 items-center mb-3">${statusBadge(token)}<span class="text-xs text-soft">${token.has_token ? 'Addon token' : 'No token'}</span></div><div class="mb-3">${addonHtml(token)}</div><div class="mb-3">${usageHtml(token)}</div><div class="mb-3">${expiryHtml(token)}</div><div class="flex flex-wrap gap-2">${buildActions(token)}</div></div>`).join('');
+            return `<div class="mobile-token-card"><div class="flex items-start justify-between gap-3"><div class="min-w-0"><div class="font-semibold section-title break-words">${escHtml(name)}</div><div class="text-xs text-soft mt-1">${t.user_id ? `Telegram ID: ${t.user_id}` : 'Not linked'} · ${group.tokens.length} token(s)</div></div>${statusBadge(t)}</div><button data-user-toggle="${group.key}" onclick="toggleUserDetails('${group.key}')" class="glass-btn rounded-xl px-3 py-2 text-xs font-bold mt-3 w-full"><i class="fas fa-chevron-down mr-2"></i>View linked tokens</button><div id="user-details-${key}" class="hidden mt-2">${details}</div></div>`;
         }).join('');
     }
 
     function renderPage() {
-        const filtered = getFiltered();
+        const groups = groupedUsers(getFiltered());
         const pageSize = parseInt(document.getElementById('page-size').value);
-        const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+        const totalPages = Math.max(1, Math.ceil(groups.length / pageSize));
         if (currentPage > totalPages) currentPage = totalPages;
-        const start = filtered.length ? (currentPage - 1) * pageSize : 0;
-        const slice = filtered.slice(start, start + pageSize);
+        const start = groups.length ? (currentPage - 1) * pageSize : 0;
+        const slice = groups.slice(start, start + pageSize);
 
-        document.getElementById('page-info').textContent = filtered.length
-            ? `Showing ${start + 1}–${Math.min(start + pageSize, filtered.length)} of ${filtered.length}` : 'Showing 0 of 0';
+        document.getElementById('page-info').textContent = groups.length
+            ? `Showing users ${start + 1}–${Math.min(start + pageSize, groups.length)} of ${groups.length}` : 'Showing 0 of 0 users';
         document.getElementById('page-num').textContent = `Page ${currentPage} / ${totalPages}`;
 
         const prevBtn = document.getElementById('btn-prev'), nextBtn = document.getElementById('btn-next');
@@ -536,9 +590,9 @@
     }
 
     function changePage(dir) {
-        const filtered = getFiltered();
+        const groups = groupedUsers(getFiltered());
         const pageSize = parseInt(document.getElementById('page-size').value);
-        const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+        const totalPages = Math.max(1, Math.ceil(groups.length / pageSize));
         currentPage = Math.min(Math.max(1, currentPage + dir), totalPages);
         renderPage();
     }
@@ -559,6 +613,104 @@
             document.getElementById('token-table-body').innerHTML = `<tr><td colspan="6" class="text-center py-10 text-red-300">Error: ${err.message}</td></tr>`;
             showToast('Failed to load access tokens.', 'error', 'Load Error');
         }
+    }
+
+    async function openUserMessages(userId, userName) {
+        document.getElementById('message-user-id').value = userId;
+        document.getElementById('user-message-title').textContent = `${userName || 'Telegram user'} · Messages`;
+        document.getElementById('user-message-subtitle').textContent = `Telegram ID: ${userId}`;
+        document.getElementById('user-telegram-message').value = '';
+        document.getElementById('user-stream-current').textContent = 'Loading current Stream ID message…';
+        openModal('user-messages-modal');
+        try {
+            const r = await fetch(`/api/admin/access/users/${userId}/messages`);
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || 'Could not load messages');
+            const n = d.stream_notice || {};
+            document.getElementById('user-stream-name').value = n.name || '';
+            document.getElementById('user-stream-text').value = n.message || '';
+            document.getElementById('user-stream-url').value = n.url || '';
+            document.getElementById('user-stream-current').innerHTML = n.enabled
+                ? `<div class="font-semibold section-title mb-1">Currently active</div><div>${escHtml(n.name || '')}</div><div class="mt-1">${escHtml(n.message || '')}</div><div class="mt-1 break-all">${escHtml(n.url || '')}</div>`
+                : '<span class="italic">No individual Stream ID message is set. This user inherits the global message.</span>';
+        } catch (e) { document.getElementById('user-stream-current').textContent = e.message; }
+    }
+
+    async function sendUserTelegramMessage() {
+        const uid = document.getElementById('message-user-id').value;
+        const text = document.getElementById('user-telegram-message').value.trim();
+        if (!text) return showToast('Enter a message first.', 'error', 'Empty message');
+        if (!confirm(`Send this Telegram message to user ${uid}?`)) return;
+        try {
+            const r = await fetch(`/api/admin/access/users/${uid}/message`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text})});
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || 'Delivery failed');
+            showToast('Telegram message sent.', 'success', 'Delivered');
+            document.getElementById('user-telegram-message').value = '';
+        } catch(e) { showToast(e.message, 'error', 'Send failed'); }
+    }
+
+    async function saveUserStreamNotice(enabled) {
+        const uid = document.getElementById('message-user-id').value;
+        const payload = {enabled, name:document.getElementById('user-stream-name').value, message:document.getElementById('user-stream-text').value, url:document.getElementById('user-stream-url').value};
+        try {
+            const r = await fetch(`/api/admin/access/users/${uid}/stream-notice`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+            const d = await r.json(); if (!r.ok) throw new Error(d.detail || 'Save failed');
+            showToast(enabled ? 'Individual stream message saved.' : 'Individual stream message disabled.', 'success', 'Updated');
+            openUserMessages(uid, document.getElementById('user-message-title').textContent.split(' · ')[0]);
+        } catch(e) { showToast(e.message, 'error', 'Save failed'); }
+    }
+
+    async function inheritUserStreamNotice() {
+        const uid = document.getElementById('message-user-id').value;
+        if (!confirm('Remove this individual override and use the global stream message?')) return;
+        try {
+            const r = await fetch(`/api/admin/access/users/${uid}/stream-notice`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:false, inherit:true})});
+            const d = await r.json(); if (!r.ok) throw new Error(d.detail || 'Update failed');
+            // Disabled individual notice is intentionally equivalent to no override in this UI.
+            showToast('Individual message disabled. Global message will apply.', 'success', 'Updated');
+            openUserMessages(uid, document.getElementById('user-message-title').textContent.split(' · ')[0]);
+        } catch(e) { showToast(e.message, 'error', 'Update failed'); }
+    }
+
+    async function editBroadcastNotice() {
+        try {
+            const r = await fetch('/api/admin/access/broadcast/stream-notice');
+            const d = await r.json();
+            const n = d.stream_notice || {};
+            document.getElementById('broadcast-stream-name').value = n.name || '';
+            document.getElementById('broadcast-stream-text').value = n.message || '';
+            document.getElementById('broadcast-stream-url').value = n.url || '';
+        } catch(e) { /* global form remains editable */ }
+        openModal('broadcast-notice-modal');
+    }
+
+    async function saveBroadcastNotice(enabled) {
+        const payload = {enabled, name:document.getElementById('broadcast-stream-name').value, message:document.getElementById('broadcast-stream-text').value, url:document.getElementById('broadcast-stream-url').value};
+        try {
+            const r = await fetch('/api/admin/access/broadcast/stream-notice', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+            const d = await r.json(); if (!r.ok) throw new Error(d.detail || 'Save failed');
+            closeModal('broadcast-notice-modal');
+            document.getElementById('broadcast-notice-summary').textContent = enabled ? `Global stream message active: ${d.stream_notice.name}` : 'Global stream message disabled.';
+            showToast('Global stream message updated.', 'success', 'Updated');
+        } catch(e) { showToast(e.message, 'error', 'Save failed'); }
+    }
+
+    function broadcastTelegramMessage() {
+        document.getElementById('broadcast-telegram-text').value = '';
+        openModal('broadcast-message-modal');
+    }
+
+    async function sendBroadcastTelegramMessage() {
+        const text = document.getElementById('broadcast-telegram-text').value.trim();
+        if (!text || text.length > 3500) return showToast('Message must contain 1–3500 characters.', 'error', 'Invalid message');
+        if (!confirm('Send this message to every linked Telegram user? This cannot be undone.')) return;
+        try {
+            const r = await fetch('/api/admin/access/broadcast/message', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text})});
+            const d = await r.json(); if (!r.ok) throw new Error(d.detail || 'Broadcast failed');
+            closeModal('broadcast-message-modal');
+            showToast(`Sent ${d.sent}/${d.total}; failed ${d.failed}.`, d.failed ? 'warning' : 'success', 'Broadcast complete');
+        } catch(e) { showToast(e.message, 'error', 'Broadcast failed'); }
     }
 
     async function loadPlans() {
@@ -750,14 +902,15 @@
         catch { prompt('Copy this link:', url); }
     }
 
-    ['create-modal', 'limits-modal', 'assign-modal', 'sub-action-modal'].forEach(id => {
+    ['create-modal', 'limits-modal', 'assign-modal', 'sub-action-modal', 'user-messages-modal', 'broadcast-notice-modal', 'broadcast-message-modal'].forEach(id => {
         document.getElementById(id).addEventListener('click', function (e) { if (e.target === this) closeModal(id); });
     });
     document.addEventListener('keydown', e => {
-        if (e.key === 'Escape') ['create-modal', 'limits-modal', 'assign-modal', 'sub-action-modal'].forEach(closeModal);
+        if (e.key === 'Escape') ['create-modal', 'limits-modal', 'assign-modal', 'sub-action-modal', 'user-messages-modal', 'broadcast-notice-modal', 'broadcast-message-modal'].forEach(closeModal);
     });
 
     loadPlans();
     loadTokens();
+    (async () => { try { const r = await fetch('/api/admin/access/broadcast/stream-notice'); const d = await r.json(); const n = d.stream_notice || {}; document.getElementById('broadcast-notice-summary').textContent = n.enabled ? `Global stream message active: ${n.name || 'Untitled'}` : 'Global stream message is disabled. Individual overrides still take priority.'; } catch(e) {} })();
 </script>
 {% endblock %}
