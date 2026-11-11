@@ -548,6 +548,17 @@
             </div>
 
             <div class="px-5 sm:px-6 py-5 space-y-5 max-h-[75vh] overflow-y-auto">
+                <div class="flex gap-2">
+                    <button type="button" id="ma-mode-form" onclick="maSetInputMode('form')" class="ma-tab active">Manual form</button>
+                    <button type="button" id="ma-mode-json" onclick="maSetInputMode('json')" class="ma-tab">Paste JSON batch</button>
+                </div>
+                <div id="ma-json-panel" class="hidden space-y-3">
+                    <p class="text-sm text-text-secondary">Paste one item, an array of items, or an object with an <code>items</code> array. Each item uses the same fields as the manual form. Up to 100 titles per batch.</p>
+                    <textarea id="ma-json-input" rows="14" class="ma-input font-mono text-xs" placeholder='{"items":[{"media_type":"tv","stream":{"parts":[{"url":"https://t.me/c/4486527497/124-https://t.me/c/4486527497/142"}]},"manual_metadata":{"title":"Prep: ENT RR","year":2026,"genres":["FMGE"],"description":"Prepladder RR XI","poster":"https://drive.fowlers.site/0:/Misc/prep.jpeg"},"episode_detection":"order","season_number":11}]}'></textarea>
+                    <p id="ma-json-status" class="text-xs text-text-secondary"></p>
+                </div>
+                <div id="ma-standard-fields">
+
                 <section class="rounded-2xl border border-hairline p-4 space-y-3" aria-label="Auth-channel auto-add">
                     <label class="flex items-center gap-2 font-bold text-text">
                         <input id="ma-auto" type="checkbox" onchange="maToggleAuto()" class="accent-emerald-500">
@@ -694,6 +705,7 @@
                         <p class="text-xs text-text-secondary">Loading catalogs...</p>
                     </div>
                     <p class="text-xs text-text-secondary mt-1">Exclusive catalogs don't allow other selections.</p>
+                </div>
                 </div>
             </div>
 
@@ -917,6 +929,9 @@
     }
 
     function openManualAdd() {
+        maSetInputMode('form');
+        document.getElementById('ma-json-input').value = '';
+        document.getElementById('ma-json-status').textContent = '';
         document.getElementById('ma-episode-mode').value = 'fixed';
         document.getElementById('ma-auto').checked = false;
         maToggleAuto();
@@ -988,8 +1003,39 @@
         return sel.value;
     }
 
+    let maInputMode = 'form';
+    function maSetInputMode(mode) {
+        maInputMode = mode;
+        document.getElementById('ma-standard-fields').classList.toggle('hidden', mode !== 'form');
+        document.getElementById('ma-json-panel').classList.toggle('hidden', mode !== 'json');
+        document.getElementById('ma-mode-form').classList.toggle('active', mode === 'form');
+        document.getElementById('ma-mode-json').classList.toggle('active', mode === 'json');
+        document.getElementById('ma-submit').textContent = mode === 'json' ? 'Add JSON batch' : (document.getElementById('ma-auto').checked ? 'Start auto-add' : 'Add Content');
+    }
+
     async function submitManualAdd() {
         const btn = document.getElementById('ma-submit');
+        if (maInputMode === 'json') {
+            let parsed;
+            try { parsed = JSON.parse(document.getElementById('ma-json-input').value); }
+            catch (e) { showToast(`Invalid JSON: ${e.message}`, 'error', 'JSON error'); return; }
+            const items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.items) ? parsed.items : [parsed]);
+            if (!items.length || items.length > 100) { showToast('Provide 1–100 JSON items.', 'error', 'Batch size'); return; }
+            btn.disabled = true;
+            const status = document.getElementById('ma-json-status');
+            status.textContent = `Submitting ${items.length} title(s)…`;
+            try {
+                const res = await fetch('/api/media/manual-add/batch', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(parsed)});
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || 'Batch failed');
+                const errors = (data.results || []).filter(r => !r.ok).map(r => `#${r.index}: ${r.error}`);
+                status.textContent = `${data.succeeded} succeeded; ${data.failed} failed.${errors.length ? '\\n' + errors.join('\\n') : ''}`;
+                showToast(`${data.succeeded} added; ${data.failed} failed.`, data.failed ? 'error' : 'success', 'JSON batch');
+                if (data.succeeded) loadMedia(currentPage, currentSearch);
+            } catch (e) { status.textContent = e.message; showToast(e.message, 'error', 'JSON batch'); }
+            finally { btn.disabled = false; }
+            return;
+        }
         const parts = maCollectParts();
         const quality = maQuality();
         const title = document.getElementById('ma-m-title').value.trim();

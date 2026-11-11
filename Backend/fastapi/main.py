@@ -96,6 +96,7 @@ from Backend.fastapi.routes.api_routes import (
     channel_auto_add_stop_api,
     manage_subscriber_api,
     manual_add_media_api,
+    manual_add_media_batch_api,
     list_manual_add_catalogs_api,
     resolve_manual_metadata_api,
     purge_dead_links_api,
@@ -740,6 +741,10 @@ async def resolve_telegram(payload: dict, _: bool = Depends(require_auth)):
 @app.post("/api/media/manual-add")
 async def manual_add_media(payload: dict, _: bool = Depends(require_auth)):
     return await manual_add_media_api(payload)
+
+@app.post("/api/media/manual-add/batch")
+async def manual_add_media_batch(payload: dict, _: bool = Depends(require_auth)):
+    return await manual_add_media_batch_api(payload)
 
 @app.get("/api/media/manual-add/catalogs")
 async def manual_add_catalogs(_: bool = Depends(require_auth)):

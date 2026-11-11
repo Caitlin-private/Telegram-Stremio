@@ -1543,6 +1543,32 @@ async def manual_add_media_api(payload: dict) -> dict:
     }
 
 
+async def manual_add_media_batch_api(payload: dict) -> dict:
+    """Add multiple independent movie/series entries from one JSON document."""
+    items = payload.get("items") if isinstance(payload, dict) and "items" in payload else payload
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=400, detail="JSON must be an object, an array, or an object with a non-empty 'items' array.")
+    if len(items) > 100:
+        raise HTTPException(status_code=400, detail="A batch can contain at most 100 titles.")
+    results = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            results.append({"index": index, "ok": False, "error": "Each item must be a JSON object."})
+            continue
+        try:
+            result = await manual_add_media_api(item)
+            results.append({"index": index, "ok": True, **result})
+        except HTTPException as exc:
+            results.append({"index": index, "ok": False, "error": exc.detail, "status_code": exc.status_code})
+        except Exception as exc:
+            results.append({"index": index, "ok": False, "error": str(exc)})
+    succeeded = sum(1 for item in results if item["ok"])
+    return {"status": "success" if succeeded == len(results) else "partial", "total": len(results),
+            "succeeded": succeeded, "failed": len(results) - succeeded, "results": results}
+
+
 #----- Custom catalog APIs
 def _normalize_media_type(media_type: str) -> str:
     return "tv" if media_type in ["tv", "series"] else "movie"
