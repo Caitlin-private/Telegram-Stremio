@@ -67,6 +67,7 @@ class TVShowSchema(BaseModel):
     watch_providers: Optional[List[str]] = Field(default_factory=list)
     auto_tags: Optional[List[str]] = Field(default_factory=list)
     auto_catalog: Optional[dict] = None
+    manual_added: Optional[bool] = False
 
 
 class MovieSchema(BaseModel):
@@ -97,3 +98,4 @@ class MovieSchema(BaseModel):
     watch_providers: Optional[List[str]] = Field(default_factory=list)
     auto_tags: Optional[List[str]] = Field(default_factory=list)
     auto_catalog: Optional[dict] = None
+    manual_added: Optional[bool] = False

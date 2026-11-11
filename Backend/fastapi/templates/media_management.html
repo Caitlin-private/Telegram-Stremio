@@ -668,7 +668,7 @@
                         <button type="button" onclick="maAddPart()" class="text-xs font-bold text-primary shrink-0"><i class="fa-solid fa-plus"></i> Add another link</button>
                     </div>
                     <div id="ma-parts" class="space-y-2"></div>
-                    <p class="text-xs text-text-secondary">With automatic TV episode detection, each link is a separate episode. In fixed mode, multiple links are joined as split parts of one file.</p>
+                    <p class="text-xs text-text-secondary">Paste a single message link, multiple links, or an inclusive range such as https://t.me/c/4486527497/33-https://t.me/c/4486527497/373. Range entries index every downloadable file between the endpoints. Movies attach every file to this title; TV uses the selected fixed episode, adding order, or episode numbers detected from filenames.</p>
                     <p id="ma-resolve-state" class="text-xs text-text-secondary hidden"></p>
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div>
@@ -897,7 +897,7 @@
     function maResetParts() {
         document.getElementById('ma-parts').innerHTML =
             `<div class="flex flex-col sm:flex-row gap-2" data-part>
-                <input class="ma-input ma-part-url" placeholder="https://t.me/c/123456/789">
+                <input class="ma-input ma-part-url" placeholder="Telegram link or range: https://t.me/c/4486527497/33-https://t.me/c/4486527497/373">
                 <button type="button" onclick="maResolve()" class="px-4 py-2.5 rounded-xl glass-panel border border-hairline text-text font-bold text-sm shrink-0">Resolve</button>
              </div>`;
     }
@@ -973,7 +973,9 @@
                 if (d.season != null && !document.getElementById('ma-season').value) document.getElementById('ma-season').value = d.season;
                 if (d.episode != null && !document.getElementById('ma-episode').value) document.getElementById('ma-episode').value = d.episode;
             }
-            state.textContent = `Found: ${d.name || 'file'} (${d.size || '—'})`;
+            state.textContent = data.range
+                ? `Range indexed: ${data.media_count} media file(s) found across ${data.message_count} messages. First: ${d.name || 'file'} (${d.size || '—'}).`
+                : `Found: ${d.name || 'file'} (${d.size || '—'})`;
         } catch (e) {
             state.textContent = e.message || 'Could not resolve link.';
             showToast(e.message || 'Could not resolve link.', 'error', 'Error');

@@ -190,6 +190,10 @@ async def iter_units(db) -> AsyncIterator[dict]:
                     break
                 for doc in docs:
                     last_id = doc["_id"]
+                    # Hand-entered titles use curated metadata and manual
+                    # tagging; provider verification must leave them untouched.
+                    if doc.get("manual_added") or str(doc.get("imdb_id") or "").startswith("tg"):
+                        continue
                     for unit in _doc_units(i, media_type, doc):
                         yield unit
 

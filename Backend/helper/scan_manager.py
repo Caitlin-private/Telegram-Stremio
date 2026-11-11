@@ -1379,6 +1379,8 @@ class DbCheckManager:
                         break
                     for movie in docs:
                         last_id = movie["_id"]
+                        if movie.get("manual_added") or str(movie.get("imdb_id") or "").startswith("tg"):
+                            continue
                         stream_ids = [q.get("id") for q in movie.get("telegram", []) if q.get("id")]
                         for x in range(0, len(stream_ids), DBCHECK_CONCURRENCY):
                             if self._cancel:
@@ -1399,6 +1401,8 @@ class DbCheckManager:
                         break
                     for show in docs:
                         last_id = show["_id"]
+                        if show.get("manual_added") or str(show.get("imdb_id") or "").startswith("tg"):
+                            continue
                         stream_ids = []
                         for season in show.get("seasons", []):
                             for episode in season.get("episodes", []):
@@ -1625,6 +1629,8 @@ class DuplicateManager:
                 async for movie in storage["movie"].find({}):
                     if self._cancel:
                         break
+                    if movie.get("manual_added") or str(movie.get("imdb_id") or "").startswith("tg"):
+                        continue
                     s["scanned"] += 1
                     year = movie.get("release_year")
                     label = f"{movie.get('title') or 'Unknown'}{f' ({year})' if year else ''}"
@@ -1633,6 +1639,8 @@ class DuplicateManager:
                 async for show in storage["tv"].find({}):
                     if self._cancel:
                         break
+                    if show.get("manual_added") or str(show.get("imdb_id") or "").startswith("tg"):
+                        continue
                     s["scanned"] += 1
                     title = show.get("title") or "Unknown"
                     for season in show.get("seasons", []):

@@ -12,6 +12,7 @@ from Backend.helper.ingestion_rules import resolution_hint
 
 _PRIVATE_LINK = re.compile(r"t\.me/c/(\d+)(?:/\d+)*/(\d+)")
 _PUBLIC_LINK = re.compile(r"t\.me/([A-Za-z][\w]{3,})/(?:\d+/)?(\d+)")
+_TELEGRAM_LINK = re.compile(r"https?://t\.me/(?:c/\d+|[A-Za-z][\w]{3,})/(?:\d+/)?\d+", re.I)
 
 
 #----- Parse a Telegram post link into (chat_ref, msg_id).
@@ -25,6 +26,34 @@ def parse_telegram_link(url: str) -> Tuple[Optional[object], Optional[int]]:
     if public:
         return public.group(1), int(public.group(2))
     return None, None
+
+
+def expand_telegram_link_range(value: str, max_messages: int = 1000) -> list[str]:
+    """Expand `message-link - message-link` into every inclusive message URL.
+
+    A range must refer to the same Telegram chat and be in ascending order.
+    A normal single message URL is returned unchanged.
+    """
+    value = (value or "").strip()
+    links = _TELEGRAM_LINK.findall(value)
+    if len(links) <= 1:
+        return [value] if value else []
+    if len(links) != 2:
+        raise ValueError("Enter one Telegram link or a range with exactly two endpoint links.")
+    first_chat, first_id = parse_telegram_link(links[0])
+    last_chat, last_id = parse_telegram_link(links[1])
+    if first_chat is None or last_chat is None:
+        raise ValueError("Could not parse both Telegram range endpoints.")
+    if str(first_chat) != str(last_chat):
+        raise ValueError("Both Telegram range links must belong to the same channel.")
+    if last_id < first_id:
+        raise ValueError("The ending message number must be greater than the starting number.")
+    count = last_id - first_id + 1
+    if count > max_messages:
+        raise ValueError(f"That range contains {count} messages. The maximum per manual add is {max_messages}.")
+    # Preserve the endpoint's public/private URL form and channel identifier.
+    prefix = links[0][:links[0].rfind("/") + 1]
+    return [f"{prefix}{msg_id}" for msg_id in range(first_id, last_id + 1)]
 
 
 #----- Map a video pixel height to a standard quality label

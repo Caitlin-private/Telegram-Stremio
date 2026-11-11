@@ -23,13 +23,16 @@ async def viewer_history(client: Client, message):
             )
             return
 
-        token = str(token_doc["token"])
-        records = await db.fetch_insight_records(days=30, limit=2000, token=token)
+        # A Telegram subscriber may own several addon tokens. The web Insights
+        # page groups those sessions by Telegram identity, so /history must do
+        # the same instead of filtering to the single token returned by lookup.
+        records = await db.fetch_insight_records(days=30, limit=5000)
         token_map = await db.get_token_user_map()
         sessions = insights_agg.build_sessions(records)
-        profile = insights_agg.viewer_profile(sessions, token_map, token=token)
+        profile = insights_agg.viewer_profile(
+            sessions, token_map, viewer_key=f"user:{int(user_id)}"
+        )
         totals = profile.get("totals") or {}
-        viewer = profile.get("viewer") or {}
         lines = [
             "📺 <b>Your viewing insights</b>",
             "<i>Last 30 days · private to you</i>",
@@ -39,9 +42,6 @@ async def viewer_history(client: Client, message):
             f"🎞 Total titles: <b>{totals.get('unique_titles', 0)}</b>",
         ]
         completion = totals.get("avg_completion")
-        if not isinstance(completion, (int, float)):
-            values = [s.get("completion") for s in sessions if isinstance(s.get("completion"), (int, float))]
-            completion = (sum(values) / len(values)) if values else None
         lines.append(f"📊 Average completion: <b>{round(completion * 100)}%</b>" if isinstance(completion, (int, float)) else "📊 Average completion: <b>—</b>")
         lines.extend(["", "<b>Last 3 titles played</b>"])
         history = profile.get("history") or []

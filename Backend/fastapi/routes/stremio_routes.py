@@ -587,7 +587,8 @@ def convert_to_stremio_meta(item: dict) -> dict:
         "id": series_id(imdb) if media_type == 'series' else imdb,
         "type": media_type,
         "name": _display_title(item),
-        "poster": _poster_url(imdb, item.get("poster"), item.get('tmdb_id'), media_type),
+        "poster": _poster_url(imdb, item.get("poster"), item.get('tmdb_id'), media_type,
+                              provider="default" if item.get("poster") else None),
         "logo": item.get("logo") or "",
         "year": _year_label(item) or item.get("release_year") or "",
         "releaseInfo": _year_label(item) or "",
@@ -1632,7 +1633,8 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
         "year": _year_label(media) or (str(media.get("release_year")) if media.get("release_year") else ""),
         "imdbRating": str(media.get("rating") or "") if media.get("rating") not in (None, "") else "",
         "genres": media.get("genres") or [],
-        "poster": _poster_url(media.get("imdb_id") or imdb_id, media.get("poster"), media.get('tmdb_id'), media.get('media_type')),
+        "poster": _poster_url(media.get("imdb_id") or imdb_id, media.get("poster"), media.get('tmdb_id'), media.get('media_type'),
+                              provider="default" if media.get("poster") else None),
         "logo": media.get("logo") or "",
         "background": _abs_media_url(media.get("backdrop")),
         "imdb_id": media.get("imdb_id") or (id if not parsed["is_kitsu"] and not parsed.get("is_tmdb") else ""),
@@ -1643,6 +1645,10 @@ async def get_meta(token: str, media_type: str, id: str, token_data: dict = Depe
     }
 
     await _apply_fanart(meta_obj, media)
+    # A poster explicitly stored on this media record is authoritative and
+    # must win over global poster providers and optional Fanart enrichment.
+    if media.get("poster"):
+        meta_obj["poster"] = _abs_media_url(media["poster"])
 
     if media.get("media_type") == "movie":
         released_date = format_released_date(media)

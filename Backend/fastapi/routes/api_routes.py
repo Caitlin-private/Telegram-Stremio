@@ -31,7 +31,7 @@ from Backend.helper.backup import export_config, import_config
 from Backend.helper.custom_dl import ByteStreamer, _speed_test_single_client, run_speed_test
 from Backend.helper.encrypt import decode_string, encode_string
 from Backend.helper.health import run_health_checks
-from Backend.helper.manual_add import resolve_telegram_message, retag_media, stamp_caption_by_ref
+from Backend.helper.manual_add import resolve_telegram_message, retag_media, stamp_caption_by_ref, expand_telegram_link_range
 from Backend.helper.ingestion_rules import serialize_manual_ingestion
 from Backend.helper.pyro import resolve_video_thumb_url
 from Backend.helper.requests_manager import (
@@ -1135,17 +1135,30 @@ async def resolve_telegram_api(payload: dict) -> dict:
     if client is None:
         raise HTTPException(status_code=503, detail="No Telegram client is connected yet.")
     try:
+        url = payload.get("url")
+        urls = expand_telegram_link_range(url) if url else []
+        if len(urls) > 1:
+            first = None
+            media_count = 0
+            for item_url in urls:
+                try:
+                    item = await resolve_telegram_message(client, url=item_url)
+                    media_count += 1
+                    if first is None:
+                        first = item
+                except ValueError:
+                    continue
+            if first is None:
+                raise ValueError("No downloadable media files were found in that Telegram range.")
+            return {"status": "success", "data": first, "range": True, "media_count": media_count, "message_count": len(urls)}
         data = await resolve_telegram_message(
-            client,
-            url=payload.get("url"),
-            chat_id=payload.get("chat_id"),
-            msg_id=payload.get("msg_id"),
+            client, url=url, chat_id=payload.get("chat_id"), msg_id=payload.get("msg_id"),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Could not read that message: {exc}")
-    return {"status": "success", "data": data}
+    return {"status": "success", "data": data, "range": False, "media_count": 1}
 
 
 async def resolve_subtitle_api(payload: dict) -> dict:
@@ -1309,6 +1322,21 @@ async def manual_add_media_api(payload: dict) -> dict:
     if not part_sources:
         raise HTTPException(status_code=400, detail="Provide at least one Telegram message link.")
 
+    # A range is a batch of independent Telegram files, not a multipart/split file.
+    range_expanded = False
+    expanded_sources = []
+    try:
+        for source in part_sources:
+            if source.get("url"):
+                urls = expand_telegram_link_range(source["url"])
+                range_expanded = range_expanded or len(urls) > 1
+                expanded_sources.extend({"url": url} for url in urls)
+            else:
+                expanded_sources.append(source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    part_sources = expanded_sources
+
     client = _scan_client()
     if client is None:
         raise HTTPException(status_code=503, detail="No Telegram client is connected yet.")
@@ -1320,9 +1348,16 @@ async def manual_add_media_api(payload: dict) -> dict:
                 client, url=src.get("url"), chat_id=src.get("chat_id"), msg_id=src.get("msg_id"),
             ))
         except ValueError as exc:
+            # Channel ranges can contain ordinary text posts, deleted messages,
+            # or non-media posts. Index only downloadable media in the interval.
+            if range_expanded:
+                continue
             raise HTTPException(status_code=400, detail=str(exc))
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Could not read that message: {exc}")
+
+    if not resolved_parts:
+        raise HTTPException(status_code=400, detail="No downloadable media files were found in that Telegram range.")
 
     unique_parts = {}
     for part in resolved_parts:
@@ -1337,7 +1372,7 @@ async def manual_add_media_api(payload: dict) -> dict:
         detection = episode_mode(payload.get('episode_detection')) if media_type == 'tv' else 'fixed'
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    is_split = len(resolved_parts) > 1 and detection == 'fixed'
+    is_split = len(resolved_parts) > 1 and detection == 'fixed' and not range_expanded
     raw_name = (stream.get("name") or primary["name"]).strip()
     name = strip_part_suffix(raw_name) if is_split else raw_name
 
@@ -1360,6 +1395,7 @@ async def manual_add_media_api(payload: dict) -> dict:
         if not selection:
             raise HTTPException(status_code=404, detail="Could not fetch metadata for the selected title.")
         base = _metadata_base(selection, from_doc=True)
+    manual_title_created = base is None and not selected_id and not (tmdb_id and db_index)
     if base is None:
         base = _metadata_base(payload.get("manual_metadata") or {})
         if not base["title"]:
@@ -1367,6 +1403,10 @@ async def manual_add_media_api(payload: dict) -> dict:
         if not base["year"]:
             base["year"] = int(primary.get("upload_year") or 0)
 
+    #----- Mark hand-entered titles so verification/automated scans never
+    #----- replace curated metadata or remove their manually-tagged streams.
+    if manual_title_created:
+        base["manual_added"] = True
     #----- Brand-new hand-made titles get a negative synthetic id (never collides with TMDB)
     if not base.get("tmdb_id"):
         base["tmdb_id"] = -(secrets.randbelow(2_000_000_000) + 1)
@@ -1442,6 +1482,7 @@ async def manual_add_media_api(payload: dict) -> dict:
         updated_id = await db.insert_media(
             metadata_info, channel=p_channel, msg_id=p_msg,
             size=part["size"], name=part_name, raw_size=int(part.get("raw_size") or 0),
+            status={"preserve_quality_variants": True} if range_expanded else None,
         )
         if not updated_id:
             raise HTTPException(status_code=500, detail="Failed to add media (validation error).")
@@ -1487,7 +1528,8 @@ async def manual_add_media_api(payload: dict) -> dict:
         except Exception:
             pass
 
-    message = f"Split stream added ({len(resolved_parts)} parts)." if is_split else "Stream added successfully."
+    message = (f"Indexed {len(resolved_parts)} media file(s) from the Telegram range and assigned them to this title." if range_expanded
+               else (f"Split stream added ({len(resolved_parts)} parts)." if is_split else "Stream added successfully."))
     if media_type == 'tv' and detection != 'fixed':
         message = f'Added {len(resolved_parts)} separate episode stream(s).'
     if catalogs_added:

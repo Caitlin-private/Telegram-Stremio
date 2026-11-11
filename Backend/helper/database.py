@@ -1493,7 +1493,7 @@ class Database:
         if not incoming_parts:
             return qualities + [quality_to_update]
         new_part = incoming_parts[0]
-        replace_mode = SettingsManager.current().replace_mode
+        replace_mode = SettingsManager.current().replace_mode and not (status or {}).get("preserve_quality_variants")
 
         merged = False
         result = []
