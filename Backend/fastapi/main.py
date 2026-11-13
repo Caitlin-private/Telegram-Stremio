@@ -10,7 +10,7 @@ from Backend import __version__, db
 from Backend.helper.digital_release_cleaner import DigitalReleaseCleaner
 
 from Backend.logger import LOGGER
-from Backend.fastapi.themes import DEFAULT_THEME, DEFAULT_STYLE, get_theme
+from Backend.fastapi.themes import get_theme, theme_key
 from Backend.fastapi.routes.api_routes import (
     add_custom_catalog_item_api,
     add_subscription_plan_api,
@@ -214,14 +214,12 @@ async def logout_route(request: Request):
     return await logout(request)
 
 @app.post("/set-theme")
-async def set_theme_route(request: Request, theme: str = Form(None), style: str = Form(None)):
-    return await set_theme(request, theme, style)
+async def set_theme_route(request: Request, theme: str = Form(None)):
+    return await set_theme(request, theme)
 
 @app.get("/manifest.webmanifest")
 async def pwa_manifest(request: Request):
-    theme_name = request.session.get("theme", DEFAULT_THEME)
-    style_name = request.session.get("style", DEFAULT_STYLE)
-    theme = get_theme(theme_name, style_name)
+    theme = get_theme(theme_key(request))
     return JSONResponse(
         {
             "name": "Telegram Stremio",
@@ -254,9 +252,7 @@ async def pwa_manifest(request: Request):
 
 @app.get("/pwa-icon.svg")
 async def pwa_icon(request: Request):
-    theme_name = request.session.get("theme", DEFAULT_THEME)
-    style_name = request.session.get("style", DEFAULT_STYLE)
-    theme = get_theme(theme_name, style_name)
+    theme = get_theme(theme_key(request))
     primary = theme["colors"]["primary"]
     svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
@@ -963,6 +959,15 @@ async def admin_backup_export(_: bool = Depends(require_auth)):
     return JSONResponse(
         content=data,
         headers={"Content-Disposition": 'attachment; filename="telegram-stremio-backup.json"'},
+    )
+
+@app.get("/api/admin/backup/library")
+async def admin_backup_library(_: bool = Depends(require_auth)):
+    from fastapi.responses import StreamingResponse
+    from Backend.helper.backup import export_library
+    return StreamingResponse(
+        export_library(), media_type="application/gzip",
+        headers={"Content-Disposition": 'attachment; filename="telestremio-catalog.json.gz"'},
     )
 
 @app.post("/api/admin/backup/import")

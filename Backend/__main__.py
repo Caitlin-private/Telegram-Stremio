@@ -70,6 +70,8 @@ async def start_services():
 
         LOGGER.info("Initializing Multi Clients...")
         await initialize_clients()
+        from Backend.fastapi.routes.stream_routes import warm_streamers
+        warm_streamers()
         from Backend.pyrofork.plugins.receiver import process_channel_message, process_edited_message
         await durable_ingestion.start(StreamBot, process_channel_message, process_edited_message)
         await asyncio.sleep(2)

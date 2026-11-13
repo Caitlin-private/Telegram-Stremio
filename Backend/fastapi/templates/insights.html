@@ -31,7 +31,7 @@
           <option value="30" selected>Last 30 days</option>
           
         </select>
-        <button onclick="loadInsights()" class="bg-primary text-background px-4 py-2 rounded-full font-bold text-sm"><i class="fa-solid fa-rotate mr-1"></i> Refresh</button>
+        <button onclick="loadInsights()" class="bg-primary text-on-primary px-4 py-2 rounded-full font-bold text-sm"><i class="fa-solid fa-rotate mr-1"></i> Refresh</button>
         <button onclick="exportCsv('plays')" class="border border-hairline px-4 py-2 rounded-full font-bold text-sm hover:bg-primary/10">CSV: plays</button>
         <button onclick="exportCsv('titles')" class="border border-hairline px-4 py-2 rounded-full font-bold text-sm hover:bg-primary/10">CSV: titles</button>
         <button onclick="exportCsv('viewers')" class="border border-hairline px-4 py-2 rounded-full font-bold text-sm hover:bg-primary/10">CSV: viewers</button>
@@ -219,7 +219,7 @@ async function openViewer(key){
         <label class="flex items-center gap-2 mt-3 text-sm"><input id="viewer-session-allowed" type="checkbox" ${d.access.session_streaming_allowed?'checked':''}> Allow Telegram session playback</label>
         <p class="text-xs ins-muted mt-1">Session playback permission controls Userbot/session-only playback. Set a data limit to 0 for unlimited. Owner access remains exempt.</p>
         <p class="text-xs ins-muted mt-2">Access: ${d.access.is_admin?'Owner':(d.access.subscription_exempt?'Lifetime / exempt':(d.access.expires_at?`Expires ${esc(d.access.expires_at)}`:'Subscription-managed'))}</p>
-        <button onclick="saveViewerLimits('${esc(d.access.token)}')" class="mt-3 bg-primary text-background px-4 py-2 rounded-full text-sm font-bold">Save viewer restrictions</button>
+        <button onclick="saveViewerLimits('${esc(d.access.token)}')" class="mt-3 bg-primary text-on-primary px-4 py-2 rounded-full text-sm font-bold">Save viewer restrictions</button>
       </div>` : ''}
     `;
   document.getElementById('ins-detail').scrollIntoView({behavior:'smooth'});

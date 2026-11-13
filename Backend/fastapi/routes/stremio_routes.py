@@ -22,7 +22,7 @@ from Backend.config import Telegram
 from Backend.helper.analytics import client_ip_from, record_client
 from Backend.fastapi.security.tokens import can_stream_session, verify_token
 from Backend.helper.cf_stream import cf_enabled, cf_stream_url
-from Backend.fastapi.themes import DEFAULT_THEME, DEFAULT_STYLE, get_theme
+from Backend.fastapi.themes import get_theme, theme_key
 from Backend.helper.poster_provider import _abs_media_url, _poster_url, _apply_fanart
 from Backend.helper.global_search import global_search, is_global_search_enabled
 from Backend.helper.metadata.providers.cinemeta import get_detail, get_season
@@ -1455,6 +1455,172 @@ async def build_nuvio_collection_data(token: str, collection_type: str = "full",
         "pinToTop": True, "viewMode": "TABBED_GRID", "showAllTab": True, "focusGlowEnabled": True
     }
 
+    # =========================================================================
+    # 04 ✦ REGIONAL & SPOTLIGHT (Languages + Seasonal)
+    # =========================================================================
+    spotlight_collection = {
+        "id": "collection-spotlight-regional",
+        "title": "Regional & Spotlight",
+        "folders": [
+            {
+                "id": "folder-bollywood-hindi",
+                "title": "Bollywood 🇮🇳",
+                "sources": [
+                    {"type": "movie", "addonId": addon_id, "provider": "addon", "catalogId": bollywood_movie},
+                    {"type": "series", "addonId": addon_id, "provider": "addon", "catalogId": bollywood_series},
+                    {
+                        "title": "Top Bollywood Hits",
+                        "sortBy": "popularity.desc",
+                        "filters": {"withOriginalLanguage": "hi"},
+                        "provider": "tmdb",
+                        "mediaType": "MOVIE",
+                        "tmdbSourceType": "DISCOVER"
+                    }
+                ],
+                "hideTitle": False,
+                "tileShape": "landscape",
+                "focusGifUrl": "",
+                "titleLogoUrl": f"{NUVIO_CDN}/Bollywood_logo.webp",
+                "coverImageUrl": f"{NUVIO_CDN}/Bollywood_cover.webp",
+                "heroBackdropUrl": f"{NUVIO_CDN}/Bollywood_backdrop.webp",
+                "catalogSources": [
+                    {"type": "movie", "addonId": addon_id, "catalogId": bollywood_movie},
+                    {"type": "series", "addonId": addon_id, "catalogId": bollywood_series}
+                ],
+                "focusGifEnabled": False
+            },
+            {
+                "id": "folder-south-indian",
+                "title": "South Indian Cinema",
+                "sources": [
+                    {"type": "movie", "addonId": addon_id, "provider": "addon", "catalogId": south_indian_movie},
+                    {"type": "series", "addonId": addon_id, "provider": "addon", "catalogId": south_indian_series},
+                    {
+                        "title": "South Indian Blockbusters",
+                        "sortBy": "popularity.desc",
+                        "filters": {"withOriginalLanguage": "te|ta|ml|kn"},
+                        "provider": "tmdb",
+                        "mediaType": "MOVIE",
+                        "tmdbSourceType": "DISCOVER"
+                    }
+                ],
+                "hideTitle": False,
+                "tileShape": "landscape",
+                "focusGifUrl": "",
+                "titleLogoUrl": f"{NUVIO_CDN}/SouthIndian_logo.webp",
+                "coverImageUrl": f"{NUVIO_CDN}/SouthIndian_cover.webp",
+                "heroBackdropUrl": f"{NUVIO_CDN}/SouthIndian_backdrop.webp",
+                "catalogSources": [
+                    {"type": "movie", "addonId": addon_id, "catalogId": south_indian_movie},
+                    {"type": "series", "addonId": addon_id, "catalogId": south_indian_series}
+                ],
+                "focusGifEnabled": False
+            },
+            {
+                "id": "folder-anime-spotlight",
+                "title": "Anime Spotlight 🇯🇵",
+                "sources": [
+                    {"type": "series", "addonId": addon_id, "provider": "addon", "catalogId": anime_series},
+                    {"type": "movie", "addonId": addon_id, "provider": "addon", "catalogId": anime_movie},
+                    {
+                        "title": "Trending Anime Series",
+                        "sortBy": "popularity.desc",
+                        "filters": {
+                            "withGenres": "16",
+                            "voteCountGte": 60,
+                            "withoutKeywords": "198385|378816|155477|256466|329280|570|1817|15078|13059|195669|325693|360629|284535|356759|337946",
+                            "withOriginalLanguage": "ja"
+                        },
+                        "provider": "tmdb",
+                        "mediaType": "TV",
+                        "tmdbSourceType": "DISCOVER"
+                    },
+                    {
+                        "title": "Trending Anime Films",
+                        "sortBy": "popularity.desc",
+                        "filters": {
+                            "withGenres": "16",
+                            "voteCountGte": 120,
+                            "withoutKeywords": "198385|378816|155477|256466|329280|570|1817|15078|13059|195669|325693|360629|284535|356759|337946",
+                            "withOriginalLanguage": "ja"
+                        },
+                        "provider": "tmdb",
+                        "mediaType": "MOVIE",
+                        "tmdbSourceType": "DISCOVER"
+                    }
+                ],
+                "hideTitle": False,
+                "tileShape": "landscape",
+                "focusGifUrl": "",
+                "titleLogoUrl": f"{K_IMG}/Anime/Popular/logo.webp",
+                "coverImageUrl": f"{K_IMG}/Anime/Popular/cover.webp",
+                "heroBackdropUrl": f"{K_IMG}/Anime/Popular/backdrop.webp",
+                "catalogSources": [
+                    {"type": "series", "addonId": addon_id, "catalogId": anime_series},
+                    {"type": "movie", "addonId": addon_id, "catalogId": anime_movie}
+                ],
+                "focusGifEnabled": False
+            },
+            {
+                "id": "folder-kdrama-korean",
+                "title": "K-Drama & Korean Waves 🇰🇷",
+                "sources": [
+                    {"type": "series", "addonId": addon_id, "provider": "addon", "catalogId": kdrama_series},
+                    {"type": "movie", "addonId": addon_id, "provider": "addon", "catalogId": kdrama_movie},
+                    {
+                        "title": "Trending K-Dramas",
+                        "sortBy": "popularity.desc",
+                        "filters": {"withOriginalLanguage": "ko"},
+                        "provider": "tmdb",
+                        "mediaType": "TV",
+                        "tmdbSourceType": "DISCOVER"
+                    },
+                    {
+                        "title": "Top Korean Cinema",
+                        "sortBy": "vote_average.desc",
+                        "filters": {"withOriginalLanguage": "ko", "voteCountGte": 200},
+                        "provider": "tmdb",
+                        "mediaType": "MOVIE",
+                        "tmdbSourceType": "DISCOVER"
+                    }
+                ],
+                "hideTitle": False,
+                "tileShape": "landscape",
+                "focusGifUrl": "",
+                "titleLogoUrl": f"{NUVIO_CDN}/KDrama_logo.webp",
+                "coverImageUrl": f"{NUVIO_CDN}/KDrama_cover.webp",
+                "heroBackdropUrl": f"{NUVIO_CDN}/KDrama_backdrop.webp",
+                "catalogSources": [
+                    {"type": "series", "addonId": addon_id, "catalogId": kdrama_series},
+                    {"type": "movie", "addonId": addon_id, "catalogId": kdrama_movie}
+                ],
+                "focusGifEnabled": False
+            },
+            {
+                "id": "folder-seasonal-holidays",
+                "title": "Seasonal & Holiday Specials 🎃 🎄",
+                "sources": [
+                    {"title": "Christmas Holiday Collection", "sortBy": "rank", "sortHow": "asc", "provider": "trakt", "mediaType": "MOVIE", "traktListId": 20735298},
+                    {"title": "Halloween & Spooky Season", "sortBy": "released", "sortHow": "desc", "provider": "trakt", "mediaType": "MOVIE", "traktListId": 3877179},
+                    {"title": "Valentine's Day (Romance & Date Night)", "sortBy": "popularity.desc", "filters": {"withGenres": "10749", "voteCountGte": 150}, "provider": "tmdb", "mediaType": "MOVIE", "tmdbSourceType": "DISCOVER"},
+                    {"title": "Summer Blockbusters & Popcorn Hits", "sortBy": "popularity.desc", "filters": {"withGenres": "28|12", "voteCountGte": 300}, "provider": "tmdb", "mediaType": "MOVIE", "tmdbSourceType": "DISCOVER"}
+                ],
+                "hideTitle": False,
+                "tileShape": "landscape",
+                "focusGifUrl": "",
+                "titleLogoUrl": f"{NUVIO_CDN}/Seasonal_logo.webp",
+                "coverImageUrl": f"{NUVIO_CDN}/Seasonal_cover.webp",
+                "heroBackdropUrl": f"{NUVIO_CDN}/Seasonal_backdrop.webp",
+                "catalogSources": [],
+                "focusGifEnabled": False
+            }
+        ],
+        "pinToTop": True,
+        "viewMode": "TABBED_GRID",
+        "showAllTab": True,
+        "focusGlowEnabled": True
+    }
+
     def _sanitize_collection(coll: dict, auto_hide_empty: bool = False) -> dict:
         clean = []
         for folder in coll.get("folders") or []:
@@ -1470,6 +1636,7 @@ async def build_nuvio_collection_data(token: str, collection_type: str = "full",
     discover_collection = _sanitize_collection(discover_collection, auto_hide_empty=True)
     ott_collection = _sanitize_collection(ott_collection, auto_hide_empty=True)
     franchises_collection = _sanitize_collection(franchises_collection)
+    spotlight_collection = _sanitize_collection(spotlight_collection)
 
     if collection_type == "discover":
         return [discover_collection]
@@ -1477,8 +1644,10 @@ async def build_nuvio_collection_data(token: str, collection_type: str = "full",
         return [ott_collection]
     if collection_type in {"franchises", "explore"}:
         return [franchises_collection]
+    if collection_type == "spotlight":
+        return [spotlight_collection]
     # Keep Caitlin Live Sports and add the upstream Discover collection to the master bundle.
-    return [_sports_collection(), discover_collection, ott_collection, franchises_collection]
+    return [_sports_collection(), discover_collection, ott_collection, franchises_collection, spotlight_collection]
 
 
 
@@ -1507,6 +1676,11 @@ async def get_nuvio_ott_collection(token: str, token_data: dict = Depends(verify
 @router.get("/{token}/nuvio-franchises-collection.json")
 async def get_nuvio_franchises_collection(token: str, token_data: dict = Depends(verify_token)):
     return await build_nuvio_collection_data(token, "franchises", token_data)
+
+
+@router.get("/{token}/nuvio-spotlight-collection.json")
+async def get_nuvio_spotlight_collection(token: str, token_data: dict = Depends(verify_token)):
+    return await build_nuvio_collection_data(token, "spotlight", token_data)
 
 
 #----- Catalog listing (latest/popular/custom, with genre/search/skip)
@@ -2437,7 +2611,7 @@ async def configure_addon(token: str, request: Request):
 
     return templates.TemplateResponse("stremio_configure.html", {
         "request": request,
-        "theme": get_theme(request.session.get("theme", DEFAULT_THEME), request.session.get("style", DEFAULT_STYLE)),
+        "theme": get_theme(theme_key(request)),
         "manifest_url": manifest_url,
         "web_install_url": web_install_url,
         "user_name": user_name,

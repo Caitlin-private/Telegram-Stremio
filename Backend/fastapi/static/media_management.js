@@ -147,34 +147,6 @@ async function runMediaBatch(action) {
     }
 }
 
-// Delegated pagination avoids embedding search text inside inline event handlers.
-function renderLibraryPagination(page, totalPages) {
-    const wrapper = document.getElementById('pagination');
-    const box = document.getElementById('pagination-inner');
-    box.replaceChildren();
-    wrapper.classList.toggle('hidden', totalPages <= 1);
-    if (totalPages <= 1) return;
-    function button(label, target, active = false) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = label;
-        b.className = `px-4 py-2 rounded-2xl text-sm font-bold border border-hairline ${active ? 'bg-primary text-white' : 'glass-panel hover:bg-surface-2 text-text'}`;
-        if (active) b.setAttribute('aria-current', 'page');
-        b.addEventListener('click', () => loadMedia(target, currentSearch));
-        box.append(b);
-    }
-    if (page > 1) button('Previous', page - 1);
-    const pages = [...new Set([1, ...Array.from({length: 5}, (_, i) => page - 2 + i), totalPages])]
-        .filter(p => p >= 1 && p <= totalPages).sort((a, b) => a - b);
-    let last = 0;
-    for (const p of pages) {
-        if (last && p > last + 1) box.append(document.createTextNode(' … '));
-        button(String(p), p, p === page);
-        last = p;
-    }
-    if (page < totalPages) button('Next', page + 1);
-}
-
 document.addEventListener('DOMContentLoaded', () => {
     loadBulkCatalogs();
     syncMediaSelection();
