@@ -26,7 +26,6 @@ def addon_links_text(token: str) -> str:
         f'• <a href="{base}/nuvio-collection.json">Master Collection (All-in-One)</a>\n'
         f'• <a href="{base}/nuvio-ott-collection.json">Streaming Services</a>\n'
         f'• <a href="{base}/nuvio-franchises-collection.json">Franchises & Universes</a>\n'
-        f'• <a href="{base}/nuvio-spotlight-collection.json">Regional & Spotlight</a>\n'
         f'• <a href="{base}/nuvio-sports-collection.json">Live Sports</a>\n\n'
         "• Add the <b>Addon Manifest URL</b> into Stremio or Nuvio under Addons.\n"
         "• Import any <b>Nuvio Collection URL</b> in Nuvio (Settings → Collections → Import) for custom tabs and logo buttons on the home screen."
